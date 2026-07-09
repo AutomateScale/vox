@@ -83,3 +83,39 @@ After editing: click the Hammerspoon menu bar icon → **Reload Config**.
 - **"transcription failed"** → open log (menu bar → Open log console).
 - **Cleanup weird/slow** → toggle "LLM cleanup" off in the menu; raw Whisper is already very good.
 - **Ollama down** → Vox auto-falls back to raw transcript after 10s. Restart with `brew services restart ollama`.
+
+## Troubleshooting
+
+**It stopped loading after an update** — hard-reset to the latest clean release:
+
+```bash
+cd ~/vox && git fetch origin && git reset --hard origin/main
+killall Hammerspoon; open -a Hammerspoon
+```
+
+(Your `local.lua` and downloaded models are untracked — a hard reset never touches them.)
+
+**Hotkey does nothing (app looks fine)** — Accessibility isn't granted.
+System Settings → Privacy & Security → Accessibility → enable **Hammerspoon**
+(toggle off/on if already enabled). Vox picks the key up within ~15 seconds
+of the grant — no restart needed.
+
+**See the actual error** — click the Hammerspoon menubar icon → Console, or:
+
+```bash
+open -a Hammerspoon   # if it isn't running
+```
+
+The console shows `[vox]` log lines and any load errors in red.
+
+**Transcripts are empty or garbage** — your mic level is too low. Check the
+input device and its volume in System Settings → Sound → Input, and speak
+closer. Vox normalizes quiet audio, but it can't fix silence.
+
+**Fresh install from scratch:**
+
+```bash
+rm -rf ~/vox
+git clone https://github.com/AutomateScaleInc/vox.git ~/vox
+cd ~/vox && bash install.sh
+```
