@@ -19,7 +19,15 @@ pgrep -x Hammerspoon >/dev/null && ok "Hammerspoon running" || bad "Hammerspoon 
 
 echo "[2] Whisper model + server"
 MODEL=~/vox/models/ggml-large-v3-turbo-q5_0.bin
-[ -f "$MODEL" ] && ok "model present ($(du -h "$MODEL" | cut -f1))" || bad "model missing — run install.sh"
+MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+if [ ! -f "$MODEL" ]; then
+  bad "model missing — run: bash ~/vox/install.sh"
+elif [ "$(shasum -a 256 "$MODEL" 2>/dev/null | awk '{print $1}')" = "$MODEL_SHA" ]; then
+  ok "model present + checksum verified ($(du -h "$MODEL" | cut -f1))"
+else
+  bad "model CORRUPT (checksum mismatch) — delete it and re-run install.sh:"
+  info "rm '$MODEL' && bash ~/vox/install.sh"
+fi
 if pgrep -f "whisper-serve[r]" >/dev/null; then ok "whisper-server running"
 else info "whisper-server not running (Vox starts it on demand — fine)"; fi
 

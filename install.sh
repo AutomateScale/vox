@@ -1,8 +1,13 @@
 #!/bin/bash
-# Vox installer — run this from the ~/vox folder on any Mac.
-# Copy the whole ~/vox folder to the new Mac first (AirDrop / iCloud / git),
-# then:  cd ~/vox && bash install.sh
+# Vox installer — drop-in setup for a new Mac.
+#   git clone https://github.com/AutomateScaleInc/vox.git ~/vox
+#   cd ~/vox && bash install.sh
 set -e
+
+REPO="$HOME/vox"
+MODEL="$REPO/models/ggml-large-v3-turbo-q5_0.bin"
+MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
 
 # --- Homebrew: find it, or say exactly how to get it -------------
 if ! command -v brew >/dev/null 2>&1; then
@@ -17,6 +22,7 @@ if ! command -v brew >/dev/null 2>&1; then
     exit 1
   fi
 fi
+BREW_PREFIX="$(brew --prefix)"
 
 # install with one retry after brew update (stale cask/formula index)
 binstall() {
@@ -27,77 +33,129 @@ binstall() {
   brew install "$@"
 }
 
-echo "==> Installing dependencies (Homebrew)..."
+echo "==> [1/6] Installing dependencies (Homebrew)..."
 binstall --cask hammerspoon
 binstall whisper-cpp
 binstall sox
 binstall ollama
 
-echo "==> Downloading Whisper model (~575MB, skipped if present)..."
-mkdir -p ~/vox/models
-MODEL=~/vox/models/ggml-large-v3-turbo-q5_0.bin
-if [ ! -f "$MODEL" ]; then
-  curl -L -o "$MODEL" \
-    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
+echo "==> [2/6] Whisper model (~575MB) — download + checksum verify..."
+mkdir -p "$REPO/models"
+verify_model() { [ -f "$MODEL" ] && \
+  [ "$(shasum -a 256 "$MODEL" 2>/dev/null | awk '{print $1}')" = "$MODEL_SHA" ]; }
+if verify_model; then
+  echo "    model present and verified ✅"
+else
+  [ -f "$MODEL" ] && echo "    existing model failed checksum — re-downloading..."
+  ok=0
+  for attempt in 1 2 3; do
+    echo "    download attempt $attempt/3..."
+    curl -fL -C - -o "$MODEL" "$MODEL_URL" || true      # -C - resumes a partial
+    if verify_model; then ok=1; break; fi
+    echo "    incomplete/corrupt — restarting fresh..."
+    rm -f "$MODEL"
+    sleep 2
+  done
+  if [ "$ok" = 1 ]; then
+    echo "    model downloaded and verified ✅"
+  else
+    echo "    ❌ model download failed after 3 tries — check your connection and re-run."
+    echo "       (Everything else installs fine; Vox just can't transcribe until the model is present.)"
+  fi
 fi
 
-echo "==> Starting Ollama and pulling cleanup model (~2GB, skipped if present)..."
-brew services start ollama
+echo "==> [3/6] Ollama cleanup model (OPTIONAL — dictation works without it)..."
+brew services start ollama >/dev/null 2>&1 || true
 sleep 5
-ollama pull llama3.2:3b
-
-echo "==> Generating fallback UI sounds (themes normally ship in the folder)..."
-mkdir -p ~/vox/sounds/classic
-if [ ! -f ~/vox/sounds/classic/start.wav ]; then
-  sox -n -r 44100 ~/vox/sounds/classic/start.wav synth 0.12 sine 500-900 fade h 0.01 0.12 0.06 gain -18
-  sox -n -r 44100 ~/vox/sounds/classic/stop.wav  synth 0.12 sine 900-550 fade h 0.01 0.12 0.06 gain -18
-  sox -n -r 44100 ~/vox/sounds/classic/done.wav  synth 0.05 sine 1250   fade h 0.005 0.05 0.03 gain -20
+if ! ollama pull llama3.2:3b; then
+  echo "    ⚠️  Ollama pull failed (network?). Basic dictation still works; LLM cleanup /"
+  echo "        translation stay off until you run:  ollama pull llama3.2:3b"
 fi
 
-echo "==> Wiring up Hammerspoon config..."
+echo "==> [4/6] Fallback UI sounds..."
+mkdir -p "$REPO/sounds/classic"
+if [ ! -f "$REPO/sounds/classic/start.wav" ]; then
+  sox -n -r 44100 "$REPO/sounds/classic/start.wav" synth 0.12 sine 500-900 fade h 0.01 0.12 0.06 gain -18
+  sox -n -r 44100 "$REPO/sounds/classic/stop.wav"  synth 0.12 sine 900-550 fade h 0.01 0.12 0.06 gain -18
+  sox -n -r 44100 "$REPO/sounds/classic/done.wav"  synth 0.05 sine 1250   fade h 0.005 0.05 0.03 gain -20
+fi
+
+echo "==> [5/6] Wiring Hammerspoon config + hs CLI..."
 mkdir -p ~/.hammerspoon
 if ! grep -q 'require("vox")' ~/.hammerspoon/init.lua 2>/dev/null; then
-  cat >> ~/.hammerspoon/init.lua <<'EOF'
+  cat >> ~/.hammerspoon/init.lua <<EOF
 -- Vox (local dictation)
-require("hs.ipc"); pcall(hs.ipc.cliInstall, "/opt/homebrew")  -- enables `hs -c` CLI for diagnostics
+require("hs.ipc"); pcall(hs.ipc.cliInstall, "$BREW_PREFIX")  -- enables \`hs -c\` CLI for diagnostics
 package.path = package.path .. ";" .. os.getenv("HOME") .. "/vox/?.lua"
 require("vox")
 EOF
 fi
+# ensure the hs CLI is linked even if cliInstall can't write its manpage
+HS_BIN="/Applications/Hammerspoon.app/Contents/Frameworks/hs/hs"
+[ -x "$HS_BIN" ] && ln -sf "$HS_BIN" "$BREW_PREFIX/bin/hs" 2>/dev/null || true
 
-echo "==> Launching Hammerspoon..."
+echo "==> [6/6] Applying Vox icon (safe: metadata only, never re-signs the app)..."
+if command -v swift >/dev/null 2>&1 && swift "$REPO/brand.swift" /Applications/Hammerspoon.app 2>/dev/null; then
+  touch /Applications/Hammerspoon.app 2>/dev/null || true
+  killall Dock 2>/dev/null || true
+  echo "    Vox alien icon applied ✅"
+else
+  echo "    (icon step skipped — non-fatal; the menu-bar alien still shows)"
+fi
+
+echo "==> Launching Vox (Hammerspoon)..."
 open -a Hammerspoon
-sleep 2
-
-# Open the Accessibility pane directly — this grant cannot be scripted (Apple TCC),
-# and WITHOUT IT THE HOTKEY DOES NOTHING. This is the #1 "Vox isn't working" cause.
+sleep 3
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
+
+# --- Guided Accessibility grant: auto-detect + auto-relaunch --------
+HS="$BREW_PREFIX/bin/hs"
+hs_acc() { perl -e 'alarm 6; exec @ARGV' "$HS" -c "return tostring(hs.accessibilityState())" 2>/dev/null; }
 
 cat <<'EOF'
 
 ============================================================
-  DONE — but ONE manual step remains that no script can do.
+  ONE step macOS won't let a script do: grant ACCESSIBILITY
 ============================================================
+I opened System Settings > Privacy & Security > Accessibility.
+Enable **Hammerspoon** there. I'll detect it and relaunch Vox
+automatically — you do NOT need to relaunch by hand.
+EOF
 
-macOS blocks scripts from granting these two permissions
-(Apple TCC — a human must flip them). Do them now:
+echo
+printf "Waiting for the Accessibility grant"
+granted=0
+for i in $(seq 1 40); do            # ~2 minutes, then give up gracefully
+  if [ "$(hs_acc)" = "true" ]; then granted=1; break; fi
+  printf "."
+  sleep 3
+done
+echo
 
-  1. ACCESSIBILITY  <-- REQUIRED, or the hotkey is dead silent
-     I just opened: System Settings > Privacy & Security >
-     Accessibility.  Enable **Hammerspoon** (toggle off/on if
-     already listed).
+if [ "$granted" = 1 ]; then
+  echo "✅ Accessibility granted — relaunching Vox so it takes effect..."
+  killall Hammerspoon 2>/dev/null || true
+  sleep 2
+  open -a Hammerspoon
+  sleep 3
+  echo "✅ Vox is armed. HOLD RIGHT OPTION (⌥) and speak. Release to paste."
+else
+  cat <<'EOF'
+⏳ Didn't detect the grant yet — no problem. When you're ready:
+   1. System Settings > Privacy & Security > Accessibility > enable Hammerspoon
+   2. Relaunch:  killall Hammerspoon; open -a Hammerspoon
+Then HOLD RIGHT OPTION (⌥) and speak.
+EOF
+fi
 
-     THEN RELAUNCH HAMMERSPOON so the grant actually takes:
-         killall Hammerspoon; open -a Hammerspoon
-     (A running app usually ignores the grant until relaunched —
-      this is the step everyone misses.)
+echo
+echo "==> Final health check (doctor)..."
+bash "$REPO/doctor.sh" || true
 
-  2. MICROPHONE     — macOS prompts the first time you record.
-     If it doesn't: same pane, Microphone > enable Hammerspoon.
+cat <<'EOF'
 
-Then: HOLD RIGHT OPTION (⌥) and speak. Release to transcribe + paste.
-Quick-tap Right Option to lock hands-free recording; tap again to stop.
+Microphone: macOS prompts the first time you record. If it doesn't, enable
+Hammerspoon under System Settings > Privacy & Security > Microphone.
 
-If the hotkey does nothing, it is ALWAYS step 1 (grant + relaunch).
-Verify with:  bash ~/vox/doctor.sh
+The Vox menu-bar icon is the green alien. Enjoy.
 EOF
