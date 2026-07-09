@@ -1,0 +1,4 @@
+models/
+*.log
+.DS_Store
+local.lua
