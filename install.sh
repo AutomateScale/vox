@@ -67,13 +67,37 @@ fi
 
 echo "==> Launching Hammerspoon..."
 open -a Hammerspoon
+sleep 2
+
+# Open the Accessibility pane directly — this grant cannot be scripted (Apple TCC),
+# and WITHOUT IT THE HOTKEY DOES NOTHING. This is the #1 "Vox isn't working" cause.
+open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
 
 cat <<'EOF'
 
-DONE. Two one-time permission grants (macOS will prompt):
-  1. Accessibility  — System Settings > Privacy & Security > Accessibility > enable Hammerspoon
-  2. Microphone     — prompted the first time you record
+============================================================
+  DONE — but ONE manual step remains that no script can do.
+============================================================
+
+macOS blocks scripts from granting these two permissions
+(Apple TCC — a human must flip them). Do them now:
+
+  1. ACCESSIBILITY  <-- REQUIRED, or the hotkey is dead silent
+     I just opened: System Settings > Privacy & Security >
+     Accessibility.  Enable **Hammerspoon** (toggle off/on if
+     already listed).
+
+     THEN RELAUNCH HAMMERSPOON so the grant actually takes:
+         killall Hammerspoon; open -a Hammerspoon
+     (A running app usually ignores the grant until relaunched —
+      this is the step everyone misses.)
+
+  2. MICROPHONE     — macOS prompts the first time you record.
+     If it doesn't: same pane, Microphone > enable Hammerspoon.
 
 Then: HOLD RIGHT OPTION (⌥) and speak. Release to transcribe + paste.
 Quick-tap Right Option to lock hands-free recording; tap again to stop.
+
+If the hotkey does nothing, it is ALWAYS step 1 (grant + relaunch).
+Verify with:  bash ~/vox/doctor.sh
 EOF

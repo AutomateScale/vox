@@ -56,7 +56,25 @@ case "$MIC" in
   0) bad "Hammerspoon microphone: DENIED — enable it in System Settings > Privacy & Security > Microphone";;
   *) info "couldn't read TCC db — check System Settings > Privacy & Security > Microphone manually";;
 esac
-info "Accessibility can't be read from here — if the hotkey works, it's granted."
+
+HS=/opt/homebrew/bin/hs
+[ -x "$HS" ] || HS=/usr/local/bin/hs
+if [ -x "$HS" ] && pgrep -x Hammerspoon >/dev/null; then
+  ACC=$("$HS" -c "return hs.accessibilityState()" 2>/dev/null | tr -d '[:space:]')
+  case "$ACC" in
+    true)  ok "Hammerspoon accessibility: GRANTED (hotkey can arm)";;
+    false) bad "Hammerspoon accessibility: DENIED — THE HOTKEY WILL NOT WORK.";
+           info "Fix: System Settings > Privacy & Security > Accessibility > enable Hammerspoon";
+           info "(toggle off/on if already listed), THEN relaunch it so the grant takes:";
+           info "    killall Hammerspoon; open -a Hammerspoon";
+           info "A live process often ignores the grant until relaunched.";;
+    *)     info "couldn't query accessibility via hs CLI — if the hotkey does nothing, grant it in";
+           info "System Settings > Privacy & Security > Accessibility > Hammerspoon";;
+  esac
+else
+  info "Accessibility: install the hs CLI or start Hammerspoon to check. If the hotkey does"
+  info "nothing, grant it: System Settings > Privacy & Security > Accessibility > Hammerspoon."
+fi
 
 echo "[6] Default audio input device"
 system_profiler SPAudioDataType 2>/dev/null | awk '/Input Source|Default Input Device/{print "     " $0}' | head -6
