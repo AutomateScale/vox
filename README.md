@@ -138,8 +138,12 @@ bash ~/vox/uninstall.sh
 Or from anywhere (even if ~/vox is broken), no questions asked:
 
 ```bash
+cd ~
 curl -fsSL https://raw.githubusercontent.com/AutomateScaleInc/vox/main/uninstall.sh | bash -s -- --yes
 ```
+
+(The `cd ~` matters: if your terminal is inside ~/vox when it gets deleted,
+every next command fails with "no such file or directory".)
 
 Backs up your `local.lua` to `~/vox-local.lua.bak`, unwires Hammerspoon
 (preserving any non-Vox config), and removes `~/vox`. Add `--purge` to also
