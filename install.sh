@@ -59,6 +59,7 @@ mkdir -p ~/.hammerspoon
 if ! grep -q 'require("vox")' ~/.hammerspoon/init.lua 2>/dev/null; then
   cat >> ~/.hammerspoon/init.lua <<'EOF'
 -- Vox (local dictation)
+require("hs.ipc"); pcall(hs.ipc.cliInstall, "/opt/homebrew")  -- enables `hs -c` CLI for diagnostics
 package.path = package.path .. ";" .. os.getenv("HOME") .. "/vox/?.lua"
 require("vox")
 EOF

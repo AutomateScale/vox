@@ -112,6 +112,15 @@ The console shows `[vox]` log lines and any load errors in red.
 input device and its volume in System Settings → Sound → Input, and speak
 closer. Vox normalizes quiet audio, but it can't fix silence.
 
+**Anything else — run the doctor:**
+
+```bash
+bash ~/vox/doctor.sh
+```
+
+It checks dependencies, model, the whole transcription pipeline, mic signal
+level, and permissions, and tells you what's wrong in plain language.
+
 **Fresh install from scratch:**
 
 ```bash
