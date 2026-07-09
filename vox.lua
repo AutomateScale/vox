@@ -644,8 +644,26 @@ menubar:setMenu(function()
   }
 end)
 
+-- Without Accessibility access macOS silently drops all key events —
+-- prompt for it instead of dying quietly.
+if not hs.accessibilityState() then
+  hs.accessibilityState(true)   -- opens the system permission dialog
+  hs.alert.show("Vox needs Accessibility: System Settings > Privacy & Security"
+    .. " > Accessibility > enable Hammerspoon — hotkey starts working right after",
+    8)
+end
+
 flagTap:start()
 ensureServer()
+
+-- macOS also disables event taps it thinks are stuck; watchdog revives ours
+-- (and picks the hotkey up automatically once Accessibility gets granted).
+timers.tapWatchdog = hs.timer.doEvery(15, function()
+  if not flagTap:isEnabled() and hs.accessibilityState() then
+    flagTap:start()
+    log("hotkey listener re-enabled by watchdog")
+  end
+end)
 -- belt and braces: re-check a few seconds after load in case the first
 -- spawn attempt raced with config reload
 timers.srvCheck = hs.timer.doAfter(5, ensureServer)
