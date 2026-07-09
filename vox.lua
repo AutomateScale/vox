@@ -658,7 +658,7 @@ end)
 if not hs.accessibilityState() then
   hs.accessibilityState(true)   -- opens the system permission dialog
   hs.alert.show("Vox needs Accessibility: System Settings > Privacy & Security"
-    .. " > Accessibility > enable Hammerspoon — hotkey starts working right after",
+    .. " > Accessibility > enable Hammerspoon, then relaunch it — hotkey works right after",
     8)
 end
 
