@@ -10,6 +10,15 @@
 
 local M = {}
 
+-- Enable the `hs` command-line tool so Vox can be inspected/driven from a
+-- terminal (and remotely by fleet agents): e.g. `hs -c "print(1+1)"`.
+pcall(function()
+  require("hs.ipc")
+  local prefix = hs.fs.attributes("/opt/homebrew/bin") and "/opt/homebrew"
+                 or "/usr/local"
+  hs.ipc.cliInstall(prefix)
+end)
+
 -- ---------------- CONFIG (edit freely) ----------------------
 local HOME = os.getenv("HOME")
 local C = {
