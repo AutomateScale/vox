@@ -128,3 +128,21 @@ rm -rf ~/vox
 git clone https://github.com/AutomateScaleInc/vox.git ~/vox
 cd ~/vox && bash install.sh
 ```
+
+## Uninstall
+
+```bash
+bash ~/vox/uninstall.sh
+```
+
+Or from anywhere (even if ~/vox is broken), no questions asked:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AutomateScaleInc/vox/main/uninstall.sh | bash -s -- --yes
+```
+
+Backs up your `local.lua` to `~/vox-local.lua.bak`, unwires Hammerspoon
+(preserving any non-Vox config), and removes `~/vox`. Add `--purge` to also
+remove the Homebrew packages.
+
+Full copy-ready command reference: https://automatescale.com/vox-docs
