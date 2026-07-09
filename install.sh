@@ -4,11 +4,34 @@
 # then:  cd ~/vox && bash install.sh
 set -e
 
+# --- Homebrew: find it, or say exactly how to get it -------------
+if ! command -v brew >/dev/null 2>&1; then
+  if [ -x /opt/homebrew/bin/brew ]; then          # Apple Silicon, not on PATH
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [ -x /usr/local/bin/brew ]; then           # Intel
+    eval "$(/usr/local/bin/brew shellenv)"
+  else
+    echo "Homebrew is not installed on this Mac. Install it first:"
+    echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    echo "then re-run:  cd ~/vox && bash install.sh"
+    exit 1
+  fi
+fi
+
+# install with one retry after brew update (stale cask/formula index)
+binstall() {
+  brew list "$@" >/dev/null 2>&1 && return 0
+  brew install "$@" && return 0
+  echo "==> '$*' failed — updating Homebrew and retrying once..."
+  brew update
+  brew install "$@"
+}
+
 echo "==> Installing dependencies (Homebrew)..."
-brew list --cask hammerspoon >/dev/null 2>&1 || brew install --cask hammerspoon
-brew list whisper-cpp >/dev/null 2>&1 || brew install whisper-cpp
-brew list sox         >/dev/null 2>&1 || brew install sox
-brew list ollama      >/dev/null 2>&1 || brew install ollama
+binstall --cask hammerspoon
+binstall whisper-cpp
+binstall sox
+binstall ollama
 
 echo "==> Downloading Whisper model (~575MB, skipped if present)..."
 mkdir -p ~/vox/models
