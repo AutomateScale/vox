@@ -29,9 +29,13 @@ fi
 pgrep -x Hammerspoon >/dev/null && ok "Hammerspoon running" || bad "Hammerspoon not running — open -a Hammerspoon"
 
 echo "[2] Whisper model + server"
+CORES="$(sysctl -n hw.physicalcpu 2>/dev/null || echo 4)"
 if [ "$(uname -m)" = "arm64" ]; then
   MODEL=~/vox/models/ggml-large-v3-turbo-q5_0.bin
   MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+elif [ "$CORES" -le 2 ]; then
+  MODEL=~/vox/models/ggml-tiny-q5_1.bin
+  MODEL_SHA="818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7"
 else
   MODEL=~/vox/models/ggml-small-q5_1.bin
   MODEL_SHA="ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"

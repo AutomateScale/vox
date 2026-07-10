@@ -22,14 +22,20 @@ end)
 -- ---------------- CONFIG (edit freely) ----------------------
 local HOME = os.getenv("HOME")
 
--- hardware-aware defaults: Apple Silicon flies with the large model on Metal;
--- Intel Macs get the 5x-lighter `small` model (the large one crawls there)
-local IS_ARM = false
+-- hardware-aware defaults (tiers validated on real fleet hardware):
+--   Apple Silicon        -> large-v3-turbo on Metal (~1.5s)
+--   modern Intel (4+ cores) -> small (large HANGS without Metal)
+--   ancient Intel (<=2 cores, e.g. 2012 MBA) -> tiny (~4s, still usable)
+local IS_ARM, CORES = false, 4
 do
   local p = io.popen("/usr/bin/uname -m")
   if p then IS_ARM = (p:read("*a") or ""):find("arm64") ~= nil; p:close() end
+  local q = io.popen("/usr/sbin/sysctl -n hw.physicalcpu")
+  if q then CORES = tonumber(q:read("*a")) or 4; q:close() end
 end
 local BREW = IS_ARM and "/opt/homebrew/bin" or "/usr/local/bin"
+local WMODEL = IS_ARM and "ggml-large-v3-turbo-q5_0.bin"
+            or (CORES <= 2 and "ggml-tiny-q5_1.bin" or "ggml-small-q5_1.bin")
 
 local C = {
   sox         = BREW .. "/sox",
@@ -43,14 +49,13 @@ local C = {
   -- Mac does the thinking.
   whisperHost = "127.0.0.1",
   serverBind  = "127.0.0.1",
-  model       = HOME .. "/vox/models/"
-                .. (IS_ARM and "ggml-large-v3-turbo-q5_0.bin"
-                            or "ggml-small-q5_1.bin"),
+  model       = HOME .. "/vox/models/" .. WMODEL,
   wav         = "/tmp/vox-recording.wav",
   wavNorm    = "/tmp/vox-norm.wav",
   language    = "en",                -- "en", "fr", or "auto" (auto costs ~+1s
                                      -- per dictation: extra detection pass)
-  threads     = IS_ARM and "8" or "4",
+  -- never oversubscribe the CPU (a 2-core MBA with 8 threads = thrash)
+  threads     = tostring(math.max(1, math.min(IS_ARM and 8 or 4, CORES))),
   soundsDir   = HOME .. "/vox/sounds/",
   soundTheme  = "classic",           -- "classic" or "sleek" (menubar toggle)
   soundVolume = 0.5,
