@@ -243,9 +243,12 @@ local function duckUp()
 end
 
 -- ---------------- HUD: cute alien + bars, bottom center ------
--- A little green alien lives in the pill: bobs, blinks, antenna wiggles.
--- Slides up with a bounce on entry, sinks away on exit.
-local HUD_W, HUD_H, BARS = 100, 28, 8   -- alien centered, 4 bars each side
+-- A little green alien lives in the pill: bobs, blinks, blushes, and reacts
+-- to your voice. The pill puffs in and out of a cloud of smoke.
+local PILL_W, PILL_H, BARS = 100, 28, 8
+local CV_W, CV_H = 150, 70            -- canvas is bigger than the pill so the
+local OX, OY = (CV_W - PILL_W) / 2, 30  -- smoke has room to billow
+local PUFFS = 7
 local hud = { canvas = nil, timer = nil, mode = "rec", phase = 0,
               visible = false, anim = nil, animT = 0,
               nextBlink = 30, blinkUntil = 0, baseX = 0, baseY = 0,
@@ -296,32 +299,57 @@ local function easeOutBack(t)   -- overshoot = the cute bounce
   return 1 + c3 * u * u * u + c1 * u * u
 end
 
+-- element indices: 1 pill · 2 head · 3/4 eyes · 5 smile · 6 antenna ·
+-- 7 antenna tip · 8..15 bars · 16/17 eye glints · 18/19 blush · 20.. smoke
 local function hudEnsure()
   if hud.canvas then return end
-  local c = hs.canvas.new({ x = 0, y = 0, w = HUD_W, h = HUD_H })
+  local c = hs.canvas.new({ x = 0, y = 0, w = CV_W, h = CV_H })
   c:level(hs.canvas.windowLevels.overlay)
   c:behavior({ "canJoinAllSpaces", "stationary" })
   c[1] = { type = "rectangle", action = "fill",              -- pill
            fillColor = { red = 0.04, green = 0.04, blue = 0.09, alpha = 0.6 },
-           roundedRectRadii = { xRadius = HUD_H / 2, yRadius = HUD_H / 2 } }
-  c[2] = { type = "oval", action = "fill", fillColor = ALIEN,        -- head
-           frame = { x = HUD_W / 2 - 7, y = 6, w = 14, h = 15 } }
+           roundedRectRadii = { xRadius = PILL_H / 2, yRadius = PILL_H / 2 },
+           frame = { x = OX, y = OY, w = PILL_W, h = PILL_H } }
+  c[2] = { type = "oval", action = "fill",                   -- head w/ shading
+           fillGradient = "radial",
+           fillGradientColors = {
+             { red = 0.72, green = 1.0,  blue = 0.88, alpha = 1 },
+             { red = 0.40, green = 0.90, blue = 0.66, alpha = 1 },
+           },
+           fillGradientCenter = { x = -0.35, y = -0.45 },
+           frame = { x = CV_W / 2 - 7, y = OY + 6, w = 14, h = 15 } }
   c[3] = { type = "oval", action = "fill", fillColor = EYES,         -- eye L
-           frame = { x = 15, y = 10, w = 3.4, h = 4.6 } }
+           frame = { x = 0, y = -10, w = 3.4, h = 4.6 } }
   c[4] = { type = "oval", action = "fill", fillColor = EYES,         -- eye R
-           frame = { x = 21.5, y = 10, w = 3.4, h = 4.6 } }
+           frame = { x = 0, y = -10, w = 3.4, h = 4.6 } }
   c[5] = { type = "arc", action = "stroke", strokeColor = EYES,      -- smile
-           strokeWidth = 1.1, center = { x = 20, y = 16 }, radius = 2.4,
-           startAngle = 135, endAngle = 225 }
+           strokeWidth = 1.1, center = { x = CV_W / 2, y = OY + 16 },
+           radius = 2.4, startAngle = 135, endAngle = 225 }
   c[6] = { type = "segments", action = "stroke", strokeColor = ALIEN, -- antenna
-           strokeWidth = 1.2, coordinates = { { x = 20, y = 6 }, { x = 20, y = 2.5 } } }
-  c[7] = { type = "oval", action = "fill", fillColor = ALIEN,        -- antenna tip
-           frame = { x = 18.6, y = 0.6, w = 3, h = 3 } }
+           strokeWidth = 1.2,
+           coordinates = { { x = CV_W / 2, y = OY + 6 }, { x = CV_W / 2, y = OY + 2.5 } } }
+  c[7] = { type = "oval", action = "fill", fillColor = ALIEN,        -- tip
+           frame = { x = CV_W / 2 - 1.5, y = OY + 0.6, w = 3, h = 3 } }
   for i = 1, BARS do
     c[i + 7] = { type = "rectangle", action = "fill",                -- bars
                  fillColor = { red = 0.35, green = 0.9, blue = 1.0, alpha = 0.95 },
                  roundedRectRadii = { xRadius = 1.5, yRadius = 1.5 },
-                 frame = { x = 0, y = HUD_H / 2 - 2, w = 3, h = 4 } }
+                 frame = { x = 0, y = -10, w = 3, h = 4 } }
+  end
+  for i = 16, 17 do                                                  -- glints
+    c[i] = { type = "oval", action = "fill",
+             fillColor = { red = 1, green = 1, blue = 1, alpha = 0.9 },
+             frame = { x = 0, y = -10, w = 1.5, h = 1.8 } }
+  end
+  for i = 18, 19 do                                                  -- blush
+    c[i] = { type = "oval", action = "fill",
+             fillColor = { red = 1.0, green = 0.55, blue = 0.65, alpha = 0.22 },
+             frame = { x = 0, y = -10, w = 3.6, h = 2.1 } }
+  end
+  for i = 0, PUFFS - 1 do                                            -- smoke
+    c[20 + i] = { type = "oval", action = "fill",
+                  fillColor = { red = 0.86, green = 0.93, blue = 1.0, alpha = 0 },
+                  frame = { x = -30, y = -30, w = 1, h = 1 } }
   end
   hud.canvas = c
 end
@@ -331,16 +359,19 @@ local function hudTick()
   if not c then return end
   hud.phase = hud.phase + 0.4
 
-  -- entrance / exit
-  local yOff, alpha = 0, 1
+  -- entrance / exit (pill motion) + smoke puffs
+  local yOff, alpha, puffT = 0, 1, nil
   if hud.anim == "in" then
     hud.animT = math.min(1, hud.animT + 0.14)
     yOff  = (1 - easeOutBack(hud.animT)) * 24
     alpha = math.min(1, hud.animT * 2.5)
+    puffT = hud.animT
     if hud.animT >= 1 then hud.anim = nil end
   elseif hud.anim == "out" then
-    hud.animT = math.min(1, hud.animT + 0.18)
-    yOff, alpha = hud.animT * hud.animT * 24, 1 - hud.animT
+    hud.animT = math.min(1, hud.animT + 0.16)
+    yOff, alpha = hud.animT * hud.animT * 20, 1 - hud.animT * 1.1
+    if alpha < 0 then alpha = 0 end
+    puffT = hud.animT
     if hud.animT >= 1 then
       hud.visible = false
       if hud.timer then hud.timer:stop(); hud.timer = nil end
@@ -348,8 +379,30 @@ local function hudTick()
       return
     end
   end
-  c:alpha(alpha)
-  c:frame({ x = hud.baseX, y = hud.baseY + yOff, w = HUD_W, h = HUD_H })
+  c:frame({ x = hud.baseX, y = hud.baseY + yOff, w = CV_W, h = CV_H })
+
+  -- smoke: blooms outward and fades as the pill arrives/leaves
+  for i = 0, PUFFS - 1 do
+    local el = c[20 + i]
+    if puffT then
+      local ang = (i / PUFFS) * 6.283 + 0.55
+      local spread = (16 + (i % 3) * 7) * (0.35 + puffT * 0.9)
+      local px = CV_W / 2 + math.cos(ang) * spread
+      local py = OY + PILL_H / 2 + math.sin(ang) * spread * 0.55 - puffT * 10
+      local r = 6 + puffT * 15 + (i % 3) * 3
+      el.frame = { x = px - r / 2, y = py - r / 2, w = r, h = r }
+      el.fillColor = { red = 0.86, green = 0.93, blue = 1.0,
+                       alpha = math.max(0, (1 - puffT) * 0.38) }
+    else
+      el.fillColor = { red = 0.86, green = 0.93, blue = 1.0, alpha = 0 }
+    end
+  end
+
+  -- pill + face fade together (elements 1..19 share the canvas alpha via
+  -- per-element handling being overkill; canvas alpha covers the smoke too,
+  -- so we fade the pill/face by alpha on the pill and rely on motion)
+  c:alpha(puffT and math.max(alpha, 0.35) or 1)
+  c[1].fillColor = { red = 0.04, green = 0.04, blue = 0.09, alpha = 0.6 * alpha }
 
   -- live voice level (smoothed) drives everything while listening
   if hud.mode == "rec" then
@@ -358,12 +411,11 @@ local function hudTick()
   local norm = math.min(1, hud.level / 0.12)
 
   -- alien: mood-driven face
-  local eyeW, eyeH, smileR, smileW = 3.4, 4.6, 2.4, 1.1
+  local eyeW, eyeH, smileR, smileW = 3.4, 4.8, 2.4, 1.1
   local bobAmp, bobSpd, antSway = 1.4, 0.45, 1.6
 
   if hud.mode == "rec" then
-    -- eyes widen when you get loud; bob syncs to your energy
-    eyeH   = 4.2 + norm * 2.2
+    eyeH   = 4.4 + norm * 2.2
     bobAmp = 1.4 + norm * 1.6
     if hud.phase >= hud.nextBlink then
       hud.blinkUntil = hud.phase + 1.3
@@ -386,11 +438,24 @@ local function hudTick()
   end
 
   local bob = math.sin(hud.phase * bobSpd) * bobAmp
-  local ax, ay = HUD_W / 2, 13.5 + bob
+  local ax, ay = CV_W / 2, OY + 13.5 + bob
   c[2].frame = { x = ax - 7, y = ay - 7.5, w = 14, h = 15 }
   local eyeCY = ay - 2.2
   c[3].frame = { x = ax - 1.6 - eyeW, y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
   c[4].frame = { x = ax + 1.6,        y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
+  -- sparkle glints track the eyes (hidden mid-blink / joy-squint)
+  local glintA = (eyeH > 2.4) and 0.9 or 0
+  c[16].fillColor = { red = 1, green = 1, blue = 1, alpha = glintA }
+  c[17].fillColor = { red = 1, green = 1, blue = 1, alpha = glintA }
+  c[16].frame = { x = ax - 1.6 - eyeW + eyeW * 0.52, y = eyeCY - eyeH / 2 + eyeH * 0.14, w = 1.5, h = 1.8 }
+  c[17].frame = { x = ax + 1.6 + eyeW * 0.52,        y = eyeCY - eyeH / 2 + eyeH * 0.14, w = 1.5, h = 1.8 }
+  -- blush cheeks, a touch stronger when he's excited or joyful
+  local blushA = 0.22 + ((hud.emote == "joy" or hud.emote == "excite")
+                         and hud.mode == "emote" and 0.16 or 0)
+  c[18].fillColor = { red = 1.0, green = 0.55, blue = 0.65, alpha = blushA }
+  c[19].fillColor = { red = 1.0, green = 0.55, blue = 0.65, alpha = blushA }
+  c[18].frame = { x = ax - 8.6, y = ay + 1.2, w = 3.6, h = 2.1 }
+  c[19].frame = { x = ax + 5.0, y = ay + 1.2, w = 3.6, h = 2.1 }
   c[5].center = { x = ax, y = ay + 2.2 }
   c[5].radius = smileR
   c[5].strokeWidth = smileW
@@ -410,8 +475,9 @@ local function hudTick()
     else                           -- thinking: wave radiating outward
       h = 5 + (math.sin(hud.phase - d * 0.8) + 1) * 4.5
     end
-    local x = (i <= 4) and (12 + (i - 1) * 7) or (HUD_W - 36 + (i - 5) * 7)
-    c[i + 7].frame = { x = x, y = (HUD_H - h) / 2, w = 3, h = h }
+    local x = (i <= 4) and (OX + 12 + (i - 1) * 7)
+                        or (OX + PILL_W - 36 + (i - 5) * 7)
+    c[i + 7].frame = { x = x, y = OY + (PILL_H - h) / 2, w = 3, h = h }
   end
 end
 
@@ -424,11 +490,12 @@ local function hudShow(mode)
   for i = 1, BARS do hud.canvas[i + 7].fillColor = col end
   if not hud.visible then
     local f = hs.screen.mainScreen():fullFrame()
-    hud.baseX = f.x + (f.w - HUD_W) / 2
-    hud.baseY = f.y + f.h - HUD_H - 42
+    hud.baseX = f.x + (f.w - CV_W) / 2
+    hud.baseY = f.y + f.h - CV_H - 28
     hud.visible, hud.anim, hud.animT = true, "in", 0
+    hud.emote = nil
     hud.canvas:alpha(0)
-    hud.canvas:frame({ x = hud.baseX, y = hud.baseY + 24, w = HUD_W, h = HUD_H })
+    hud.canvas:frame({ x = hud.baseX, y = hud.baseY + 24, w = CV_W, h = CV_H })
     hud.canvas:show()
   elseif hud.anim == "out" then    -- caught mid-exit: come back
     hud.anim, hud.animT = "in", 0
