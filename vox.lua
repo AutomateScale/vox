@@ -1201,8 +1201,16 @@ local function checkForUpdates(interactive)
   M.updTask = hs.task.new("/bin/sh", function(code, out)
     out = (out or ""):gsub("%s+$", "")
     if code == 0 and out:find("updated") then
-      hs.alert.show("Vox updated — reloading…", 2)
-      timers.updReload = hs.timer.doAfter(1.5, hs.reload)
+      -- never hot-reload mid-dictation: wait for idle, then apply
+      local function applyWhenIdle()
+        if state == "idle" then
+          hs.alert.show("Vox updated — reloading…", 2)
+          timers.updReload = hs.timer.doAfter(1.5, hs.reload)
+        else
+          timers.updWait = hs.timer.doAfter(20, applyWhenIdle)
+        end
+      end
+      applyWhenIdle()
     elseif code == 0 and out:find("current") then
       if interactive then hs.alert.show("Vox is up to date ✓", 2) end
     else
