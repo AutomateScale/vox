@@ -55,6 +55,7 @@ local C = {
   tapLockMax  = 0.35,                -- press shorter than this counts as a tap
   doubleTapWindow = 0.45,            -- two taps this close = hands-free lock
   minBytes    = 24000,               -- ignore recordings under ~0.7s
+  maxRecordSecs = 180,               -- auto-stop a forgotten locked recording
 
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
@@ -156,7 +157,44 @@ end
 local HUD_W, HUD_H, BARS = 100, 28, 8   -- alien centered, 4 bars each side
 local hud = { canvas = nil, timer = nil, mode = "rec", phase = 0,
               visible = false, anim = nil, animT = 0,
-              nextBlink = 30, blinkUntil = 0, baseX = 0, baseY = 0 }
+              nextBlink = 30, blinkUntil = 0, baseX = 0, baseY = 0,
+              level = 0, emote = nil, emoteUntil = 0 }
+
+-- live mic level: peek at the tail of the growing recording (16-bit PCM)
+local function micLevel()
+  local f = io.open(C.wav, "rb")
+  if not f then return 0 end
+  local size = f:seek("end")
+  local n = 3200                       -- last ~100ms of audio
+  if size < 44 + n then f:close(); return 0 end
+  f:seek("set", size - n)
+  local d = f:read(n)
+  f:close()
+  if not d then return 0 end
+  local peak = 0
+  for i = 1, #d - 1, 8 do
+    local lo, hi = d:byte(i, i + 1)
+    local v = lo + hi * 256
+    if v >= 32768 then v = v - 65536 end
+    if v < 0 then v = -v end
+    if v > peak then peak = v end
+  end
+  return peak / 32768
+end
+
+-- what mood did the speaker leave the alien in?
+local function detectEmotion(t)
+  local s = t:lower()
+  if s:find("haha") or s:find("%f[%a]lol%f[%A]") or s:find("lmao")
+     or s:find("funny") or s:find("joke") or s:find("hilarious") then
+    return "joy"
+  end
+  local _, excl = t:gsub("!", "")
+  if excl >= 2 then return "excite" end
+  if t:find("%?%s*$") then return "curious" end
+  if excl >= 1 then return "excite" end
+  return "done"
+end
 
 local ALIEN = { red = 0.45, green = 0.97, blue = 0.72, alpha = 1 }   -- mint green
 local EYES  = { red = 0.02, green = 0.06, blue = 0.12, alpha = 0.95 }
@@ -222,31 +260,63 @@ local function hudTick()
   c:alpha(alpha)
   c:frame({ x = hud.baseX, y = hud.baseY + yOff, w = HUD_W, h = HUD_H })
 
-  -- alien: gentle bob, occasional blink, antenna sway
-  local bob = math.sin(hud.phase * 0.45) * 1.4
+  -- live voice level (smoothed) drives everything while listening
+  if hud.mode == "rec" then
+    hud.level = hud.level * 0.55 + micLevel() * 0.45
+  end
+  local norm = math.min(1, hud.level / 0.12)
+
+  -- alien: mood-driven face
+  local eyeW, eyeH, smileR, smileW = 3.4, 4.6, 2.4, 1.1
+  local bobAmp, bobSpd, antSway = 1.4, 0.45, 1.6
+
+  if hud.mode == "rec" then
+    -- eyes widen when you get loud; bob syncs to your energy
+    eyeH   = 4.2 + norm * 2.2
+    bobAmp = 1.4 + norm * 1.6
+    if hud.phase >= hud.nextBlink then
+      hud.blinkUntil = hud.phase + 1.3
+      hud.nextBlink  = hud.phase + 16 + math.random() * 24
+    end
+    if hud.phase < hud.blinkUntil then eyeH = 1.1 end
+  elseif hud.mode == "emote" then
+    if hud.emote == "joy" then        -- laughing squint + big grin + bounce
+      eyeW, eyeH, smileR, smileW = 4.4, 1.5, 3.7, 1.6
+      bobAmp, bobSpd = 2.8, 1.15
+    elseif hud.emote == "excite" then -- big sparkly eyes, quick bounce
+      eyeW, eyeH = 4.6, 6.2
+      bobAmp, bobSpd = 2.2, 0.9
+    elseif hud.emote == "curious" then -- wide eyes, antenna swings wondering
+      eyeH, antSway = 5.6, 4.2
+    end
+    if hud.phase >= hud.emoteUntil and hud.anim ~= "out" then
+      hud.anim, hud.animT = "out", 0
+    end
+  end
+
+  local bob = math.sin(hud.phase * bobSpd) * bobAmp
   local ax, ay = HUD_W / 2, 13.5 + bob
   c[2].frame = { x = ax - 7, y = ay - 7.5, w = 14, h = 15 }
-  if hud.phase >= hud.nextBlink then
-    hud.blinkUntil = hud.phase + 1.3
-    hud.nextBlink  = hud.phase + 16 + math.random() * 24
-  end
-  local eyeH  = (hud.phase < hud.blinkUntil) and 1.1 or 4.6
   local eyeCY = ay - 2.2
-  c[3].frame = { x = ax - 5,   y = eyeCY - eyeH / 2, w = 3.4, h = eyeH }
-  c[4].frame = { x = ax + 1.6, y = eyeCY - eyeH / 2, w = 3.4, h = eyeH }
+  c[3].frame = { x = ax - 1.6 - eyeW, y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
+  c[4].frame = { x = ax + 1.6,        y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
   c[5].center = { x = ax, y = ay + 2.2 }
-  local tipX = ax + math.sin(hud.phase * 0.6) * 1.6
+  c[5].radius = smileR
+  c[5].strokeWidth = smileW
+  local tipX = ax + math.sin(hud.phase * 0.6) * antSway
   c[6].coordinates = { { x = ax, y = ay - 7.5 }, { x = tipX, y = ay - 11 } }
   c[7].frame = { x = tipX - 1.5, y = ay - 13.8, w = 3, h = 3 }
 
-  -- bars flank the alien symmetrically, tallest near the center
+  -- bars flank the alien; while listening YOUR VOICE sets the height
   for i = 1, BARS do
     local d = (i <= 4) and (5 - i) or (i - 4)   -- distance from alien: 1..4
     local h
-    if hud.mode == "rec" then      -- lively waveform while listening
-      h = 5 + math.abs(math.sin(hud.phase + d * 0.9)) * (13 - d * 2)
-            + math.random() * 2
-    else                           -- wave radiating out from the alien
+    if hud.mode == "rec" then
+      local wave = math.abs(math.sin(hud.phase + d * 0.9))
+      h = 4 + norm * (15 - d * 1.8) * (0.5 + wave * 0.5) + math.random() * 1.5
+    elseif hud.mode == "emote" then
+      h = 4 + math.abs(math.sin(hud.phase * 0.7 + d)) * 2.5
+    else                           -- thinking: wave radiating outward
       h = 5 + (math.sin(hud.phase - d * 0.8) + 1) * 4.5
     end
     local x = (i <= 4) and (12 + (i - 1) * 7) or (HUD_W - 36 + (i - 5) * 7)
@@ -282,6 +352,17 @@ local function hudHide()
     return
   end
   hud.anim, hud.animT = "out", 0   -- hudTick finishes the exit
+end
+
+-- brief post-transcript reaction: the alien responds to what you said
+local function hudEmote(kind)
+  if not (hud.visible and hud.canvas) then return end
+  hud.mode, hud.emote = "emote", kind or "done"
+  hud.emoteUntil = hud.phase + ((kind == "done") and 12 or 26)
+  local col = (kind == "joy")    and { red = 1.0,  green = 0.84, blue = 0.32, alpha = 0.95 }
+           or (kind == "excite") and { red = 1.0,  green = 0.5,  blue = 0.66, alpha = 0.95 }
+           or                        { red = 0.35, green = 0.9,  blue = 1.0,  alpha = 0.9 }
+  for i = 1, BARS do hud.canvas[i + 7].fillColor = col end
 end
 
 -- branded menubar icon: tiny alien silhouette with punched-out eyes.
@@ -327,6 +408,8 @@ end
 local function reset()
   state, locked, pendingTap = "idle", false, false
   duckUp()
+  if timers.maxRec then timers.maxRec:stop() end
+  os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
   setUI("idle")
 end
 
@@ -370,7 +453,13 @@ local function insertText(text)
     if prev then hs.pasteboard.setContents(prev) end
   end)
   play("done")
-  reset()
+  -- idle everything, but let the alien react to what you said first
+  state, locked, pendingTap = "idle", false, false
+  duckUp()
+  if timers.maxRec then timers.maxRec:stop() end
+  if menubar then menubar:setIcon(icons.idle, true) end
+  hudEmote(detectEmotion(text))
+  os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
 end
 
 -- ---------------- LLM cleanup --------------------------------
@@ -537,6 +626,15 @@ local function startRecording()
   duckDown()
   setUI("rec")
   play("start")
+  -- safety: a forgotten locked recording stops itself
+  timers.maxRec = hs.timer.doAfter(C.maxRecordSecs, function()
+    if state == "recording" then
+      hs.alert.show("Vox: auto-stopped after "
+        .. math.floor(C.maxRecordSecs / 60) .. " min", 3)
+      locked = false
+      stopRecording()
+    end
+  end)
   log("recording started (" .. context.app .. ")")
 end
 
@@ -550,6 +648,7 @@ end
 local function stopRecording()
   if state ~= "recording" then return end
   state = "processing"
+  if timers.maxRec then timers.maxRec:stop() end
   setUI("work")
   duckUp()                       -- music fades back while we transcribe
   play("stop")
@@ -613,7 +712,12 @@ local function checkForUpdates(interactive)
       log("update check failed: " .. out)
     end
   end, { "-c",
-    "cd \"$HOME/vox\" && /usr/bin/git fetch -q origin main && " ..
+    "cd \"$HOME/vox\" || exit 3; " ..
+    -- only ever update from the canonical repo (defense against remote swap)
+    "[ \"$(/usr/bin/git remote get-url origin)\" = " ..
+    "\"https://github.com/AutomateScaleInc/vox.git\" ] || " ..
+    "{ echo wrong-remote; exit 3; }; " ..
+    "/usr/bin/git fetch -q origin main && " ..
     "if [ \"$(/usr/bin/git rev-list --count HEAD..origin/main)\" = 0 ]; " ..
     "then echo current; " ..
     "else /usr/bin/git pull -q --ff-only origin main && echo updated; fi" })
