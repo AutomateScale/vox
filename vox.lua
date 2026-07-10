@@ -1051,7 +1051,13 @@ local function checkForUpdates(interactive)
     "/usr/bin/git fetch -q origin main && " ..
     "if [ \"$(/usr/bin/git rev-list --count HEAD..origin/main)\" = 0 ]; " ..
     "then echo current; " ..
-    "else /usr/bin/git pull -q --ff-only origin main && echo updated; fi" })
+    "else /usr/bin/git pull -q --ff-only origin main && echo updated || { " ..
+    -- upstream history rewritten: self-heal, preserving any local work
+    "  if [ -z \"$(/usr/bin/git status --porcelain)\" ]; then " ..
+    "    /usr/bin/git branch \"rescue-$(/bin/date +%s)\" >/dev/null 2>&1; " ..
+    "    /usr/bin/git reset --hard origin/main >/dev/null 2>&1 && echo updated; " ..
+    "  else echo diverged-dirty; fi; }; " ..
+    "fi" })
   M.updTask:start()
 end
 timers.updDaily = hs.timer.doEvery(6 * 3600, function() checkForUpdates(false) end)
