@@ -376,6 +376,9 @@ end
 -- ---------------- LLM cleanup --------------------------------
 local function cleanLLMOutput(s)
   s = s:gsub("^```[%w]*\n?", ""):gsub("\n?```%s*$", "")
+  -- models love appending meta-commentary; strip trailing "Note:" paragraphs
+  s = s:gsub("\n+%s*%(?[Nn]ote:.*$", "")
+  s = s:gsub("\n+%s*%(?[Tt]ranslation [Nn]ote.*$", "")
   s = s:gsub("^%s+", ""):gsub("%s+$", "")
   if s:sub(1, 1) == '"' and s:sub(-1) == '"' then s = s:sub(2, -2) end
   return s
@@ -406,7 +409,8 @@ local function llmPostProcess(raw)
       .. (context.title ~= "" and (" (window: \"" .. context.title .. "\")") or "")
       .. ". Match the formatting to that context.",
     "The app/window info is CONTEXT ONLY — never include it in the output, and never add a subject line, greeting, or signature the speaker did not say.",
-    "Return ONLY the cleaned text. No preamble, no quotes, no explanation.",
+    "Return ONLY the final text. No preamble, no quotes, no explanation,"
+      .. " and NEVER append a note or commentary after it.",
     "",
     "Raw dictation:",
     raw,
@@ -421,7 +425,9 @@ local function llmPostProcess(raw)
   })
 
   -- fallback: paste raw if Ollama is slow or down
-  timers.llmTimeout = hs.timer.doAfter(C.llmTimeout, function()
+  -- (translation earns extra headroom — a timeout would paste English)
+  local tmo = (C.translateTo ~= "off") and (C.llmTimeout + 10) or C.llmTimeout
+  timers.llmTimeout = hs.timer.doAfter(tmo, function()
     if not done and myId == reqId then
       done = true
       log("LLM timeout — pasting raw transcript")
