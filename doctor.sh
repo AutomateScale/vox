@@ -14,7 +14,18 @@ echo "[1] Dependencies"
 for b in sox whisper-cli whisper-server; do
   [ -x "$BREW/$b" ] && ok "$b" || bad "$b missing — run: bash ~/vox/install.sh"
 done
-[ -d /Applications/Hammerspoon.app ] && ok "Hammerspoon.app" || bad "Hammerspoon missing"
+if [ -d /Applications/Hammerspoon.app ]; then
+  if codesign --verify /Applications/Hammerspoon.app >/dev/null 2>&1; then
+    ok "Vox engine (Hammerspoon.app) — signature intact"
+  else
+    bad "Vox engine signature BROKEN — permissions will not stick."
+    info "Fix: brew reinstall --cask hammerspoon && bash ~/vox/install.sh"
+    info "(This happens when the app bundle gets renamed or its icon file replaced."
+    info " Vox brands the icon safely via metadata — never edit the .app itself.)"
+  fi
+else
+  bad "Vox engine (Hammerspoon.app) missing"
+fi
 pgrep -x Hammerspoon >/dev/null && ok "Hammerspoon running" || bad "Hammerspoon not running — open -a Hammerspoon"
 
 echo "[2] Whisper model + server"

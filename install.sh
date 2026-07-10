@@ -80,7 +80,7 @@ if [ ! -f "$REPO/sounds/classic/start.wav" ]; then
   sox -n -r 44100 "$REPO/sounds/classic/done.wav"  synth 0.05 sine 1250   fade h 0.005 0.05 0.03 gain -20
 fi
 
-echo "==> [5/6] Wiring Hammerspoon config + hs CLI..."
+echo "==> [5/6] Wiring the Vox engine config + hs CLI..."
 mkdir -p ~/.hammerspoon
 if ! grep -q 'require("vox")' ~/.hammerspoon/init.lua 2>/dev/null; then
   cat >> ~/.hammerspoon/init.lua <<EOF
@@ -94,6 +94,13 @@ fi
 HS_BIN="/Applications/Hammerspoon.app/Contents/Frameworks/hs/hs"
 [ -x "$HS_BIN" ] && ln -sf "$HS_BIN" "$BREW_PREFIX/bin/hs" 2>/dev/null || true
 
+# Heal a damaged engine first (a broken signature revokes the permission
+# grants and kills the hotkey — the classic "someone rebranded the bundle" bug)
+if ! codesign --verify /Applications/Hammerspoon.app >/dev/null 2>&1; then
+  echo "==> Engine app signature invalid — reinstalling the engine..."
+  brew reinstall --cask hammerspoon
+fi
+
 echo "==> [6/6] Applying Vox icon (safe: metadata only, never re-signs the app)..."
 if command -v swift >/dev/null 2>&1 && swift "$REPO/brand.swift" /Applications/Hammerspoon.app 2>/dev/null; then
   touch /Applications/Hammerspoon.app 2>/dev/null || true
@@ -103,7 +110,7 @@ else
   echo "    (icon step skipped — non-fatal; the menu-bar alien still shows)"
 fi
 
-echo "==> Launching Vox (Hammerspoon)..."
+echo "==> Launching Vox..."
 open -a Hammerspoon
 sleep 3
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
@@ -118,7 +125,8 @@ cat <<'EOF'
   ONE step macOS won't let a script do: grant ACCESSIBILITY
 ============================================================
 I opened System Settings > Privacy & Security > Accessibility.
-Enable **Hammerspoon** there. I'll detect it and relaunch Vox
+Enable **Hammerspoon** — that's Vox's engine (the alien icon).
+I'll detect it and relaunch Vox
 automatically — you do NOT need to relaunch by hand.
 EOF
 
