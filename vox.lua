@@ -47,8 +47,16 @@ local C = {
   llmCleanup  = false,
   translateTo = "off",                -- "off", "English", "French", "Spanish", "Dutch"
   ollamaUrl   = "http://localhost:11434/api/generate",
-  ollamaModel = "llama3.2:3b",
+  ollamaModel = "llama3.2:3b",       -- legacy fallback if the router finds nothing
   llmTimeout  = 10,                  -- secs before falling back to raw text
+
+  -- Adaptive brain: fast model for mechanical work (cleanup, quick replies),
+  -- smart model where quality IS the product (translation, content, complex
+  -- replies). Low-RAM Macs (<12GB) stay on fast automatically.
+  models = {
+    fast  = "llama3.2:3b",
+    smart = "qwen2.5:7b",
+  },
 
   holdKeycode = 61,                  -- 61 = Right Option. (Right Cmd = 54)
   holdKeyName = "Right Option",
@@ -188,6 +196,48 @@ local function fullVocabulary()
   local extra = buildLearnedVocab()
   if extra ~= "" then return C.vocabulary .. " " .. extra .. "." end
   return C.vocabulary
+end
+
+-- ---------------- adaptive brain router -----------------------
+-- Fast when we can be fast, concentrated when we need to be concentrated.
+local lowRam = false
+do
+  local p = io.popen("/usr/sbin/sysctl -n hw.memsize")
+  if p then
+    local v = tonumber(p:read("*a")) or 0
+    p:close()
+    lowRam = v > 0 and v < 12 * 1024 * 1024 * 1024
+  end
+end
+
+local availableModels = {}
+local function refreshModels()
+  hs.http.asyncGet(C.ollamaUrl:gsub("/api/generate", "/api/tags"), nil,
+    function(status, body)
+      if status ~= 200 then return end
+      local ok, d = pcall(hs.json.decode, body)
+      if ok and d and d.models then
+        availableModels = {}
+        for _, m in ipairs(d.models) do availableModels[m.name] = true end
+      end
+    end)
+end
+
+-- task: cleanup | translate | reply | expand · complex: judgement hint
+local function pickModel(task, complex)
+  local want
+  if lowRam then
+    want = C.models.fast                       -- 8GB Macs: never swap-thrash
+  elseif task == "translate" or task == "expand" then
+    want = C.models.smart                      -- quality IS the product
+  elseif task == "reply" then
+    want = complex and C.models.smart or C.models.fast
+  else
+    want = C.models.fast                       -- mechanical: speed wins
+  end
+  if availableModels[want] then return want end
+  if availableModels[C.models.fast] then return C.models.fast end
+  return C.ollamaModel
 end
 
 -- ---------------- sounds (subtle, synthesized) ---------------
@@ -638,15 +688,18 @@ local function cleanLLMOutput(s)
 end
 
 -- generic local-LLM generation (smart reply, expand) — pastes the result
-local function llmGenerate(prompt, label)
+local function llmGenerate(prompt, label, complex)
   reqId = reqId + 1
   local myId, done = reqId, false
+  local model = pickModel(label, complex)
+  log(label .. " using " .. model)
   local body = hs.json.encode({
-    model = C.ollamaModel, stream = false, prompt = prompt,
+    model = model, stream = false, prompt = prompt,
     keep_alive = "24h",
     options = { temperature = (label == "reply") and 0.4 or 0.6 },
   })
-  timers.llmTimeout = hs.timer.doAfter(C.llmTimeout + 20, function()
+  local tmo = C.llmTimeout + (model == C.models.smart and 40 or 20)
+  timers.llmTimeout = hs.timer.doAfter(tmo, function()
     if not done and myId == reqId then
       done = true
       hs.alert.show("Vox: " .. label .. " timed out", 3)
@@ -710,6 +763,9 @@ local function smartReply()
       reset()
       return
     end
+    -- long or question-dense screens deserve the concentrated model
+    local _, qs = screenText:gsub("%?", "")
+    local complex = #screenText > 1200 or qs >= 2
     llmGenerate(table.concat({
       "You are drafting a reply ON BEHALF of the user; they will send it as",
       "their own message. Below is OCR text from their screen (app: \""
@@ -721,7 +777,7 @@ local function smartReply()
       "",
       "Screen content:",
       screenText,
-    }, "\n"), "reply")
+    }, "\n"), "reply", complex)
   end, { "-c", cmd })
   M.replyTask:start()
 end
@@ -758,8 +814,9 @@ local function llmPostProcess(raw)
     raw,
   }, "\n")
 
+  local model = pickModel(C.translateTo ~= "off" and "translate" or "cleanup")
   local body = hs.json.encode({
-    model  = C.ollamaModel,
+    model  = model,
     stream = false,
     prompt = prompt,
     keep_alive = "24h",           -- keep model in RAM, no cold-start lag
@@ -767,8 +824,10 @@ local function llmPostProcess(raw)
   })
 
   -- fallback: paste raw if Ollama is slow or down
-  -- (translation earns extra headroom — a timeout would paste English)
-  local tmo = (C.translateTo ~= "off") and (C.llmTimeout + 10) or C.llmTimeout
+  -- (translation + the smart model earn extra headroom — timeout pastes English)
+  local tmo = C.llmTimeout
+      + (C.translateTo ~= "off" and 10 or 0)
+      + (model == C.models.smart and 15 or 0)
   timers.llmTimeout = hs.timer.doAfter(tmo, function()
     if not done and myId == reqId then
       done = true
@@ -1060,6 +1119,9 @@ menubar:setMenu(function()
         if recTask and recTask:isRunning() then recTask:terminate() end
         reset()
       end },
+    { title = "AI brain: " .. (lowRam and "fast only (low RAM)"
+        or (availableModels[C.models.smart] and "adaptive — fast + smart"
+        or "fast only (smart model not pulled)")), disabled = true },
     { title = "Learned vocabulary: " .. learnedCount() .. " words", disabled = true },
     { title = "Apply learned words now (restart engine)", fn = function()
         saveLearned()
@@ -1085,6 +1147,8 @@ end
 
 flagTap:start()
 ensureServer()
+refreshModels()
+timers.modelsRetry = hs.timer.doAfter(45, refreshModels)  -- ollama may boot slow
 
 -- macOS also disables event taps it thinks are stuck; watchdog revives ours
 -- (and picks the hotkey up automatically once Accessibility gets granted).

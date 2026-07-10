@@ -64,12 +64,19 @@ else
   fi
 fi
 
-echo "==> [3/6] Ollama cleanup model (OPTIONAL — dictation works without it)..."
+echo "==> [3/6] Ollama models (OPTIONAL — dictation works without them)..."
 brew services start ollama >/dev/null 2>&1 || true
 sleep 5
 if ! ollama pull llama3.2:3b; then
   echo "    ⚠️  Ollama pull failed (network?). Basic dictation still works; LLM cleanup /"
   echo "        translation stay off until you run:  ollama pull llama3.2:3b"
+fi
+# smart model for translation/content/complex replies — only on Macs with RAM to spare
+if [ "$(sysctl -n hw.memsize)" -ge 12884901888 ]; then
+  echo "    pulling the smart model (~4.7GB) for translation + content work..."
+  ollama pull qwen2.5:7b || echo "    (skipped — Vox stays on the fast model until you: ollama pull qwen2.5:7b)"
+else
+  echo "    <12GB RAM — staying on the fast model only (right call for this Mac)"
 fi
 
 echo "==> [4/6] Fallback UI sounds..."
