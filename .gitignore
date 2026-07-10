@@ -4,3 +4,4 @@ models/
 local.lua
 learned.json
 ocr-bin
+calibration.json

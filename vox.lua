@@ -264,6 +264,59 @@ local function pickModel(task, complex)
   return C.ollamaModel
 end
 
+-- ---------------- pipeline lock-in ----------------------------
+-- "If it works once, lock it in." Vox verifies its own transcription
+-- pipeline end-to-end (synthesized speech -> transcript), records the proven
+-- configuration in calibration.json, and when the locked path starts failing
+-- it walks the fallback chain by itself and locks in whatever works.
+local CALIB_PATH = HOME .. "/vox/calibration.json"
+local calib = {}
+do
+  local f = io.open(CALIB_PATH, "r")
+  if f then
+    local ok, d = pcall(hs.json.decode, f:read("*a"))
+    f:close()
+    if ok and type(d) == "table" then calib = d end
+  end
+end
+
+local function saveCalib()
+  local f = io.open(CALIB_PATH, "w")
+  if f then f:write(hs.json.encode(calib)); f:close() end
+end
+
+local currentRev = "unknown"
+do
+  local p = io.popen("cd \"$HOME/vox\" && /usr/bin/git rev-parse --short HEAD 2>/dev/null")
+  if p then currentRev = (p:read("*a") or ""):gsub("%s+", ""); p:close() end
+end
+
+-- what the user configured, before any self-healing overrides
+local configuredHost = C.whisperHost
+if calib.forceLocal and C.whisperHost ~= "127.0.0.1" then
+  log("calibration: remote brain was failing — running local until re-verified")
+  C.whisperHost = "127.0.0.1"
+end
+
+local function noteTranscribeSuccess(secs)
+  calib.mode = (C.whisperHost == "127.0.0.1") and "local" or ("remote " .. C.whisperHost)
+  calib.lastLatency = math.floor(secs * 10) / 10
+  calib.verifiedAt, calib.verifiedRev = os.time(), currentRev
+  calib.remoteFails = 0
+  saveCalib()
+end
+
+local function noteRemoteFail()
+  calib.remoteFails = (calib.remoteFails or 0) + 1
+  if calib.remoteFails >= 2 and not calib.forceLocal then
+    calib.forceLocal = true
+    C.whisperHost = "127.0.0.1"
+    hs.alert.show("Vox: remote brain failing — locked to local transcription."
+      .. " Menu: Verify pipeline to retry.", 4)
+  end
+  saveCalib()
+end
+
 -- ---------------- sounds (subtle, synthesized) ---------------
 local sounds = {}
 local function loadSounds()
@@ -969,8 +1022,10 @@ local function transcribe()
     local ok = (code == 0) and out and #out:gsub("%s", "") > 0
                and not out:find('"error"')
     if ok then
+      noteTranscribeSuccess(hs.timer.secondsSinceEpoch() - t0)
       handleTranscript(out, t0)
     elseif C.whisperHost ~= "127.0.0.1" then
+      noteRemoteFail()
       -- remote brain unreachable: fall back to the local model if we have one
       if hs.fs.attributes(C.model) then
         log("remote server unreachable — falling back to local whisper-cli")
@@ -1084,6 +1139,62 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
   return false
 end)
 
+-- ---------------- pipeline self-test --------------------------
+-- Synthesized speech through the REAL transcription path; pass = lock in.
+local selfTesting = false
+local function selfTest(interactive)
+  if selfTesting or state ~= "idle" then return end
+  selfTesting = true
+  local wav = "/tmp/vox-selftest.wav"
+  local cmd = string.format(
+    "/usr/bin/say -o /tmp/vox-selftest.aiff 'vox self test passed' && " ..
+    "%s /tmp/vox-selftest.aiff -r 16000 -c 1 -b 16 %s 2>/dev/null && " ..
+    "rm -f /tmp/vox-selftest.aiff && " ..
+    "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
+    "-F response_format=text -F language=en http://%s:%d/inference",
+    C.sox, wav, (CORES <= 2 and 120 or 30), wav, C.whisperHost, C.serverPort)
+  local t0 = hs.timer.secondsSinceEpoch()
+  M.selfTestTask = hs.task.new("/bin/sh", function(code, out)
+    selfTesting = false
+    os.remove(wav)
+    local secs = hs.timer.secondsSinceEpoch() - t0
+    local ok = (code == 0) and out
+               and out:lower():gsub("[%-%.]", " "):find("self%s+test") ~= nil
+    if ok then
+      noteTranscribeSuccess(secs)
+      log(string.format("pipeline self-test PASSED in %.1fs via %s",
+          secs, C.whisperHost))
+      if interactive then
+        hs.alert.show(string.format("Vox verified ✓ %.1fs (%s)", secs,
+          calib.mode), 3)
+      end
+    else
+      log("pipeline self-test FAILED via " .. C.whisperHost)
+      if C.whisperHost ~= "127.0.0.1" then
+        noteRemoteFail()               -- may lock to local
+        timers.selfRetry = hs.timer.doAfter(3, function() selfTest(interactive) end)
+      else
+        ensureServer()                 -- server may have died; heal + retry once
+        if not timers.selfHealed then
+          timers.selfHealed = hs.timer.doAfter(15, function()
+            timers.selfHealed = nil
+            selfTest(interactive)
+          end)
+        elseif interactive then
+          hs.alert.show("Vox: self-test failing — run: bash ~/vox/doctor.sh", 5)
+        end
+      end
+    end
+  end, { "-c", cmd })
+  M.selfTestTask:start()
+end
+
+-- verify automatically after every code update (rev change) — untouched
+-- installs stay silent
+if calib.verifiedRev ~= currentRev then
+  timers.selfTestBoot = hs.timer.doAfter(75, function() selfTest(false) end)
+end
+
 -- ---------------- self-update --------------------------------
 -- Fast-forward to origin/main; fleet-wide fixes reach every Mac unattended.
 local function checkForUpdates(interactive)
@@ -1170,6 +1281,15 @@ menubar:setMenu(function()
         { title = "Auto-detect (+1s)", checked = C.language == "auto",
           fn = function() C.language = "auto" end },
       } },
+    { title = "Pipeline: " .. (calib.mode or "unverified")
+        .. (calib.lastLatency and (" · " .. calib.lastLatency .. "s ✓") or ""),
+      disabled = true },
+    { title = "Verify pipeline now", fn = function()
+        calib.forceLocal = nil
+        C.whisperHost = configuredHost
+        saveCalib()
+        selfTest(true)
+      end },
     { title = "Check for updates now", fn = function() checkForUpdates(true) end },
     { title = "Run doctor (Terminal)", fn = function()
         hs.task.new("/usr/bin/open", nil,
@@ -1228,7 +1348,8 @@ timers.srvCheck = hs.timer.doAfter(5, ensureServer)
 -- the eventtap, menubar, canvas, or timers (classic Hammerspoon gotcha).
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
-            fix = applyCorrections, smartReply = smartReply }
+            fix = applyCorrections, smartReply = smartReply,
+            selfTest = selfTest }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
