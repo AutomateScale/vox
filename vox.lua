@@ -93,6 +93,10 @@ local C = {
   -- if it landed in the wrong window. Off = restore whatever you had copied.
   keepInClipboard = true,
 
+  -- When you dictate twice in a row into the same app, insert the missing
+  -- space between "...sentence." and "Next sentence" automatically.
+  autoSpace = true,
+
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
   duckAudio   = true,
@@ -737,7 +741,18 @@ local function captureContext()
 end
 
 -- ---------------- paste result -------------------------------
+local lastPasteTail, lastPasteApp = nil, nil
+
 local function insertText(text)
+  -- smart spacing: consecutive dictations into the same app shouldn't
+  -- produce "everything.Distribution" — bridge the gap ourselves
+  if C.autoSpace and lastPasteApp == context.app
+     and lastPasteTail and lastPasteTail:find("[%.!%?…;:,%)\"']")
+     and text:find("^[%w\"'%(%[]") then
+    text = " " .. text
+  end
+  lastPasteTail, lastPasteApp = text:sub(-1), context.app
+
   local prev = hs.pasteboard.getContents()
   hs.pasteboard.setContents(text)
   hs.eventtap.keyStroke({ "cmd" }, "v", 0)
