@@ -5,9 +5,20 @@
 set -e
 
 REPO="$HOME/vox"
-MODEL="$REPO/models/ggml-large-v3-turbo-q5_0.bin"
-MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
-MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+# Hardware-aware model: Apple Silicon flies with large-v3-turbo on the GPU;
+# Intel Macs get `small` (5x lighter — the large model crawls on old CPUs).
+if [ "$(uname -m)" = "arm64" ]; then
+  MODEL_FILE="ggml-large-v3-turbo-q5_0.bin"
+  MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+else
+  MODEL_FILE="ggml-small-q5_1.bin"
+  MODEL_SHA="ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
+  echo "==> Intel Mac detected — using the lighter Whisper model (~180MB)."
+  echo "    Tip: genuinely old Mac? Point it at a fast Mac instead — see"
+  echo "    'Remote transcription' in the README."
+fi
+MODEL="$REPO/models/$MODEL_FILE"
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_FILE"
 
 # --- Homebrew: find it, or say exactly how to get it -------------
 if ! command -v brew >/dev/null 2>&1; then
@@ -39,7 +50,7 @@ binstall whisper-cpp
 binstall sox
 binstall ollama
 
-echo "==> [2/6] Whisper model (~575MB) — download + checksum verify..."
+echo "==> [2/6] Whisper model ($MODEL_FILE) — download + checksum verify..."
 mkdir -p "$REPO/models"
 verify_model() { [ -f "$MODEL" ] && \
   [ "$(shasum -a 256 "$MODEL" 2>/dev/null | awk '{print $1}')" = "$MODEL_SHA" ]; }

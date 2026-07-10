@@ -21,17 +21,36 @@ end)
 
 -- ---------------- CONFIG (edit freely) ----------------------
 local HOME = os.getenv("HOME")
+
+-- hardware-aware defaults: Apple Silicon flies with the large model on Metal;
+-- Intel Macs get the 5x-lighter `small` model (the large one crawls there)
+local IS_ARM = false
+do
+  local p = io.popen("/usr/bin/uname -m")
+  if p then IS_ARM = (p:read("*a") or ""):find("arm64") ~= nil; p:close() end
+end
+local BREW = IS_ARM and "/opt/homebrew/bin" or "/usr/local/bin"
+
 local C = {
-  sox         = "/opt/homebrew/bin/sox",
-  whisper     = "/opt/homebrew/bin/whisper-cli",     -- fallback only
-  whisperSrv  = "/opt/homebrew/bin/whisper-server",  -- fast path
+  sox         = BREW .. "/sox",
+  whisper     = BREW .. "/whisper-cli",     -- fallback only
+  whisperSrv  = BREW .. "/whisper-server",  -- fast path
   serverPort  = 8090,
-  model       = HOME .. "/vox/models/ggml-large-v3-turbo-q5_0.bin",
+  -- whisperHost: where transcription happens. Keep 127.0.0.1 normally.
+  -- Old/slow Mac? Point it at a fast Mac running Vox on your LAN
+  -- (that Mac sets serverBind = "0.0.0.0" in ITS local.lua) and this
+  -- machine becomes a thin client — recording is cheap, the M-series
+  -- Mac does the thinking.
+  whisperHost = "127.0.0.1",
+  serverBind  = "127.0.0.1",
+  model       = HOME .. "/vox/models/"
+                .. (IS_ARM and "ggml-large-v3-turbo-q5_0.bin"
+                            or "ggml-small-q5_1.bin"),
   wav         = "/tmp/vox-recording.wav",
-  wavNorm     = "/tmp/vox-norm.wav",
+  wavNorm    = "/tmp/vox-norm.wav",
   language    = "en",                -- "en", "fr", or "auto" (auto costs ~+1s
                                      -- per dictation: extra detection pass)
-  threads     = "8",
+  threads     = IS_ARM and "8" or "4",
   soundsDir   = HOME .. "/vox/sounds/",
   soundTheme  = "classic",           -- "classic" or "sleek" (menubar toggle)
   soundVolume = 0.5,
@@ -633,16 +652,17 @@ local function serverRunning()
 end
 
 local function ensureServer()
+  if C.whisperHost ~= "127.0.0.1" then return end  -- thin client: server is remote
   if serverRunning() then return end
   M.serverTask = hs.task.new(C.whisperSrv, function(code)
     log("whisper-server exited (code " .. tostring(code) .. ")")
   end, {
-    "-m", C.model, "--host", "127.0.0.1", "--port", tostring(C.serverPort),
+    "-m", C.model, "--host", C.serverBind, "--port", tostring(C.serverPort),
     "-t", C.threads, "-l", C.language, "--prompt", fullVocabulary(),
     "--carry-initial-prompt",  -- keep vocabulary active past 30s of speech
   })
   M.serverTask:start()
-  log("whisper-server starting on port " .. C.serverPort)
+  log("whisper-server starting on " .. C.serverBind .. ":" .. C.serverPort)
 end
 
 -- ---------------- context capture ---------------------------
@@ -916,14 +936,19 @@ local function transcribe()
   local cmd = string.format(
     "%s %s %s highpass 80 norm -3 2>/dev/null || cp %s %s; " ..
     "/usr/bin/curl -s --max-time 30 -F file=@%s -F temperature=0.0 " ..
-    "-F response_format=text%s http://127.0.0.1:%d/inference",
-    C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, C.wavNorm, langArg, C.serverPort)
+    "-F response_format=text%s http://%s:%d/inference",
+    C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, C.wavNorm, langArg,
+    C.whisperHost, C.serverPort)
 
   M.sttTask = hs.task.new("/bin/sh", function(code, out, err)
     local ok = (code == 0) and out and #out:gsub("%s", "") > 0
                and not out:find('"error"')
     if ok then
       handleTranscript(out, t0)
+    elseif C.whisperHost ~= "127.0.0.1" then
+      hs.alert.show("Vox: transcription server " .. C.whisperHost
+        .. " unreachable — is the fast Mac awake?", 4)
+      reset()
     else
       log("server unavailable — falling back to whisper-cli and restarting server")
       ensureServer()

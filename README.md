@@ -161,3 +161,16 @@ Backs up your `local.lua` to `~/vox-local.lua.bak`, unwires Hammerspoon
 remove the Homebrew packages.
 
 Full copy-ready command reference: https://automatescale.com/vox-docs
+
+## Old or slow Macs
+
+Two options, automatic first:
+
+1. **Lighter model (automatic)** — Intel Macs get Whisper `small` (~180MB)
+   instead of the 575MB large model. Slower and slightly less accurate than
+   Apple Silicon, but usable.
+2. **Remote transcription (recommended for really old machines)** — let a fast
+   Mac on your LAN do the thinking. On the fast Mac's `local.lua`:
+   `serverBind = "0.0.0.0"`. On the old Mac's `local.lua`:
+   `whisperHost = "<fast Mac's LAN IP>"`. The old Mac records (cheap) and the
+   M-series Mac transcribes in ~1s. LAN-only — nothing leaves your network.

@@ -29,8 +29,13 @@ fi
 pgrep -x Hammerspoon >/dev/null && ok "Hammerspoon running" || bad "Hammerspoon not running — open -a Hammerspoon"
 
 echo "[2] Whisper model + server"
-MODEL=~/vox/models/ggml-large-v3-turbo-q5_0.bin
-MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+if [ "$(uname -m)" = "arm64" ]; then
+  MODEL=~/vox/models/ggml-large-v3-turbo-q5_0.bin
+  MODEL_SHA="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+else
+  MODEL=~/vox/models/ggml-small-q5_1.bin
+  MODEL_SHA="ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
+fi
 if [ ! -f "$MODEL" ]; then
   bad "model missing — run: bash ~/vox/install.sh"
 elif [ "$(shasum -a 256 "$MODEL" 2>/dev/null | awk '{print $1}')" = "$MODEL_SHA" ]; then
