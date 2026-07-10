@@ -22,5 +22,5 @@ jobs:
           luac5.4 -p local.example.lua && echo "OK local.example.lua"
       - name: No personal data in tracked files
         run: |
-          ! grep -rEi "ezra|huderf|ewing|liena" --include="*.lua" --include="*.sh" --include="*.md" . \
+          ! grep -rEiw "ezra|huderf|ewing|liena" --include="*.lua" --include="*.sh" --include="*.md" . \
             || (echo "PERSONAL DATA FOUND IN TRACKED FILES" && exit 1)

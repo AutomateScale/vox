@@ -62,7 +62,7 @@ local C = {
   duckLevel   = 0.35,                -- music drops to 35% of current volume
 
   -- Deterministic post-transcription fixes: zero latency, never paraphrases.
-  -- Matched case-insensitively; spaces also match hyphens ("anti-alienate").
+  -- Matched case-insensitively; spaces in keys also match hyphens.
   corrections = {
     ["super base"] = "Supabase",
     ["supa base"]  = "Supabase",
