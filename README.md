@@ -25,12 +25,23 @@ and sinks away.
 - **Music ducking** — playing audio fades to 35% while you dictate and ramps
   back the moment you release. Toggle in the menu.
 
-## Install on a new Mac
+## Install on a new Mac — one line
+
+```bash
+curl -fsSL https://automatescale.com/vox/install | bash
+```
+
+Bootstraps git/Homebrew if missing, clones or updates the repo, runs the full
+installer, auto-detects your Accessibility grant, and triggers the Microphone
+prompt. Safe to re-run anytime. Manual equivalent:
 
 ```bash
 git clone https://github.com/AutomateScaleInc/vox.git ~/vox
 cd ~/vox && bash install.sh
 ```
+
+Once installed, **Vox keeps itself updated** — it fast-forwards to the latest
+`main` on launch and every 6 hours (menu: "Check for updates now").
 
 (The Whisper model isn't in the repo — install.sh downloads it.)
 

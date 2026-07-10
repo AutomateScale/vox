@@ -592,6 +592,30 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
   return false
 end)
 
+-- ---------------- self-update --------------------------------
+-- Fast-forward to origin/main; fleet-wide fixes reach every Mac unattended.
+local function checkForUpdates(interactive)
+  M.updTask = hs.task.new("/bin/sh", function(code, out)
+    out = (out or ""):gsub("%s+$", "")
+    if code == 0 and out:find("updated") then
+      hs.alert.show("Vox updated — reloading…", 2)
+      timers.updReload = hs.timer.doAfter(1.5, hs.reload)
+    elseif code == 0 and out:find("current") then
+      if interactive then hs.alert.show("Vox is up to date ✓", 2) end
+    else
+      if interactive then hs.alert.show("Vox update check failed — see console", 3) end
+      log("update check failed: " .. out)
+    end
+  end, { "-c",
+    "cd \"$HOME/vox\" && /usr/bin/git fetch -q origin main && " ..
+    "if [ \"$(/usr/bin/git rev-list --count HEAD..origin/main)\" = 0 ]; " ..
+    "then echo current; " ..
+    "else /usr/bin/git pull -q --ff-only origin main && echo updated; fi" })
+  M.updTask:start()
+end
+timers.updDaily = hs.timer.doEvery(6 * 3600, function() checkForUpdates(false) end)
+timers.updBoot  = hs.timer.doAfter(90, function() checkForUpdates(false) end)
+
 -- ---------------- menubar ------------------------------------
 menubar = hs.menubar.new()
 menubar:setIcon(icons.idle, true)
@@ -640,6 +664,11 @@ menubar:setMenu(function()
         { title = "Auto-detect (+1s)", checked = C.language == "auto",
           fn = function() C.language = "auto" end },
       } },
+    { title = "Check for updates now", fn = function() checkForUpdates(true) end },
+    { title = "Run doctor (Terminal)", fn = function()
+        hs.task.new("/usr/bin/open", nil,
+          { "-b", "com.apple.Terminal", HOME .. "/vox/doctor.sh" }):start()
+      end },
     { title = "Open log console", fn = hs.openConsole },
     { title = "-" },
     { title = "Cancel current recording", fn = function()

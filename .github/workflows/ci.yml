@@ -1,0 +1,26 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.4
+      - name: Shell syntax
+        run: |
+          for f in install.sh uninstall.sh doctor.sh; do
+            bash -n "$f" && echo "OK $f"
+          done
+      - name: Lua syntax
+        run: |
+          luac5.4 -p vox.lua && echo "OK vox.lua"
+          luac5.4 -p local.example.lua && echo "OK local.example.lua"
+      - name: No personal data in tracked files
+        run: |
+          ! grep -rEi "ezra|huderf|ewing|liena" --include="*.lua" --include="*.sh" --include="*.md" . \
+            || (echo "PERSONAL DATA FOUND IN TRACKED FILES" && exit 1)

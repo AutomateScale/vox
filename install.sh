@@ -138,6 +138,13 @@ if [ "$granted" = 1 ]; then
   sleep 2
   open -a Hammerspoon
   sleep 3
+  # Trigger the one-time MICROPHONE prompt now, while a human is watching,
+  # instead of surprising them mid-first-dictation. Records 0.5s of nothing.
+  echo "==> Triggering the Microphone permission prompt (click Allow)..."
+  MIC_CMD="local t=hs.task.new(\"$BREW_PREFIX/bin/sox\",nil,{\"-q\",\"-d\",\"-c\",\"1\",\"-r\",\"16000\",\"/tmp/vox-micprompt.wav\",\"trim\",\"0\",\"0.5\"}); t:start()"
+  "$HS" -c "$MIC_CMD" >/dev/null 2>&1 || true
+  sleep 3
+  rm -f /tmp/vox-micprompt.wav
   echo "✅ Vox is armed. HOLD RIGHT OPTION (⌥) and speak. Release to paste."
 else
   cat <<'EOF'
