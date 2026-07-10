@@ -91,6 +91,9 @@ end
 local state   = "idle"               -- idle | recording | processing
 local locked  = false
 local pendingTap = false             -- first tap of a possible double-tap
+local lockAt  = 0                    -- when hands-free lock engaged
+local recMode = "dictate"            -- dictate | expand (shift+key)
+local recGen  = 0                    -- invalidates stale recorder callbacks
 local keyDownAt = 0
 local context = { app = "", title = "" }
 local recTask, menubar
@@ -634,6 +637,95 @@ local function cleanLLMOutput(s)
   return s
 end
 
+-- generic local-LLM generation (smart reply, expand) — pastes the result
+local function llmGenerate(prompt, label)
+  reqId = reqId + 1
+  local myId, done = reqId, false
+  local body = hs.json.encode({
+    model = C.ollamaModel, stream = false, prompt = prompt,
+    keep_alive = "24h",
+    options = { temperature = (label == "reply") and 0.4 or 0.6 },
+  })
+  timers.llmTimeout = hs.timer.doAfter(C.llmTimeout + 20, function()
+    if not done and myId == reqId then
+      done = true
+      hs.alert.show("Vox: " .. label .. " timed out", 3)
+      reset()
+    end
+  end)
+  hs.http.asyncPost(C.ollamaUrl, body,
+    { ["Content-Type"] = "application/json" },
+    function(status, respBody)
+      if done or myId ~= reqId then return end
+      done = true
+      if status == 200 then
+        local ok, parsed = pcall(hs.json.decode, respBody)
+        local out = ok and parsed and parsed.response and cleanLLMOutput(parsed.response)
+        if out and #out > 0 then insertText(out) return end
+      end
+      hs.alert.show("Vox: " .. label .. " failed — is Ollama running?", 3)
+      reset()
+    end)
+end
+
+local function expandPrompt(note)
+  return table.concat({
+    "Expand the following spoken note into polished written content, in the",
+    "speaker's own voice — clear, direct, punchy. Structure it well; 2-4 short",
+    "paragraphs unless the note implies otherwise. Do NOT invent facts they",
+    "didn't say; amplify, sharpen, and organize what they DID say.",
+    "They are writing in the app \"" .. context.app .. "\" — match that medium.",
+    "Output ONLY the content. No preamble, no notes.",
+    "",
+    "Spoken note:",
+    note,
+  }, "\n")
+end
+
+-- triple-tap: read the screen, draft the best reply at the cursor
+local function smartReply()
+  if state ~= "idle" then return end
+  state = "processing"
+  captureContext()
+  setUI("work")
+  play("start")
+  local win  = hs.window.focusedWindow()
+  local wid  = win and win:id()
+  local shot, ocrOut = "/tmp/vox-screen.png", "/tmp/vox-ocr.txt"
+  local ocrBin = HOME .. "/vox/ocr-bin"
+  local cmd = string.format(
+    "[ -x %s ] || /usr/bin/swiftc -O %s -o %s 2>/dev/null; " ..
+    "/usr/sbin/screencapture -x %s %s && %s %s > %s 2>/dev/null",
+    ocrBin, HOME .. "/vox/ocr.swift", ocrBin,
+    wid and ("-l " .. wid) or "-m", shot, ocrBin, shot, ocrOut)
+  M.replyTask = hs.task.new("/bin/sh", function()
+    local f = io.open(ocrOut, "r")
+    local screenText = f and f:read("*a") or ""
+    if f then f:close() end
+    os.remove(shot); os.remove(ocrOut)   -- privacy: no screen residue
+    screenText = screenText:sub(1, 4000)
+    if #screenText:gsub("%s", "") < 20 then
+      hs.alert.show("Vox: couldn't read the screen (grant Screen Recording"
+        .. " to Hammerspoon in Privacy & Security)", 4)
+      reset()
+      return
+    end
+    llmGenerate(table.concat({
+      "You are drafting a reply ON BEHALF of the user; they will send it as",
+      "their own message. Below is OCR text from their screen (app: \""
+        .. context.app .. "\") — it may contain UI noise; focus on the actual",
+      "conversation or message content, especially the most recent part.",
+      "Write the single best reply: match the tone and language of the",
+      "conversation, be natural and concise, sound human.",
+      "Output ONLY the reply text. No preamble, no quotes, no notes.",
+      "",
+      "Screen content:",
+      screenText,
+    }, "\n"), "reply")
+  end, { "-c", cmd })
+  M.replyTask:start()
+end
+
 local function llmPostProcess(raw)
   reqId = reqId + 1
   local myId = reqId
@@ -723,7 +815,14 @@ local function handleTranscript(raw, t0)
   log(string.format("whisper done in %.1fs: %s",
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
   if #text == 0 then reset() return end
-  if C.llmCleanup or C.translateTo ~= "off" then llmPostProcess(text) else insertText(text) end
+  if recMode == "expand" then
+    recMode = "dictate"
+    llmGenerate(expandPrompt(text), "expand")
+  elseif C.llmCleanup or C.translateTo ~= "off" then
+    llmPostProcess(text)
+  else
+    insertText(text)
+  end
 end
 
 -- slow path: only used if the server is down (also restarts it)
@@ -781,8 +880,11 @@ local function startRecording()
   state = "recording"
   captureContext()
   os.remove(C.wav)
+  recGen = recGen + 1
+  local myGen = recGen
   recTask = hs.task.new(C.sox, function(code, _, _)
-    if state == "processing" then transcribe() end
+    -- only transcribe if THIS recording ended intentionally (not cancelled)
+    if state == "processing" and myGen == recGen then transcribe() end
   end, { "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav })
   recTask:start()
   duckDown()
@@ -802,7 +904,8 @@ end
 
 local function cancelRecording()
   if state ~= "recording" then return end
-  state = "idle"                 -- recTask callback won't transcribe now
+  state = "idle"
+  recGen = recGen + 1            -- invalidates the recorder's exit callback
   if recTask and recTask:isRunning() then recTask:terminate() end
   reset()
 end
@@ -829,14 +932,21 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
   if pressed then
     if state == "recording" and locked then
       locked = false
-      stopRecording()            -- tap ends a locked recording
+      if (hs.timer.secondsSinceEpoch() - lockAt) < C.doubleTapWindow then
+        cancelRecording()        -- third rapid tap: smart-reply from screen
+        smartReply()
+      else
+        stopRecording()          -- tap ends a locked recording
+      end
     elseif state == "recording" and pendingTap then
       pendingTap = false         -- second tap of a double-tap: lock on
       if timers.tapWait then timers.tapWait:stop() end
       locked = true
+      lockAt = hs.timer.secondsSinceEpoch()
       setUI("lock")
     elseif state == "idle" then
       keyDownAt = hs.timer.secondsSinceEpoch()
+      recMode = e:getFlags().shift and "expand" or "dictate"
       startRecording()
     end
   else -- released
@@ -895,6 +1005,7 @@ menubar:setMenu(function()
   return {
     { title = "Vox — local dictation", disabled = true },
     { title = "Hold " .. C.holdKeyName .. " to talk · double-tap to lock", disabled = true },
+    { title = "Triple-tap: smart reply · Shift+key: expand to content", disabled = true },
     { title = "-" },
     { title = "Hold key", menu = {
         { title = "Right Option", checked = C.holdKeycode == 61,
@@ -991,7 +1102,7 @@ timers.srvCheck = hs.timer.doAfter(5, ensureServer)
 -- the eventtap, menubar, canvas, or timers (classic Hammerspoon gotcha).
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
-            fix = applyCorrections }
+            fix = applyCorrections, smartReply = smartReply }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)

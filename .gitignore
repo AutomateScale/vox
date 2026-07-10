@@ -3,3 +3,4 @@ models/
 .DS_Store
 local.lua
 learned.json
+ocr-bin

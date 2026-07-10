@@ -101,6 +101,13 @@ if ! codesign --verify /Applications/Hammerspoon.app >/dev/null 2>&1; then
   brew reinstall --cask hammerspoon
 fi
 
+echo "==> Compiling the screen-reader (for triple-tap smart replies)..."
+if command -v swiftc >/dev/null 2>&1 && [ ! -x "$REPO/ocr-bin" ]; then
+  swiftc -O "$REPO/ocr.swift" -o "$REPO/ocr-bin" 2>/dev/null \
+    && echo "    ocr-bin ready ✅" \
+    || echo "    (skipped — compiles itself on first triple-tap instead)"
+fi
+
 echo "==> [6/6] Applying Vox icon (safe: metadata only, never re-signs the app)..."
 if command -v swift >/dev/null 2>&1 && swift "$REPO/brand.swift" /Applications/Hammerspoon.app 2>/dev/null; then
   touch /Applications/Hammerspoon.app 2>/dev/null || true
