@@ -577,7 +577,10 @@ local function hudShow(mode)
   elseif hud.anim == "out" then    -- caught mid-exit: come back
     hud.anim, hud.animT = "in", 0
   end
-  if not hud.timer then hud.timer = hs.timer.doEvery(0.05, hudTick) end
+  -- weak hardware gets a calmer alien: 8fps instead of 20
+  if not hud.timer then
+    hud.timer = hs.timer.doEvery(CORES <= 2 and 0.12 or 0.05, hudTick)
+  end
 end
 
 local function hudHide()
@@ -714,6 +717,12 @@ end
 
 -- generic local-LLM generation (smart reply, expand) — pastes the result
 local function llmGenerate(prompt, label, complex)
+  if CORES <= 2 then
+    hs.alert.show("Vox: " .. label .. " needs a faster Mac — this one can't"
+      .. " run the local AI in reasonable time", 4)
+    reset()
+    return
+  end
   reqId = reqId + 1
   local myId, done = reqId, false
   local model = pickModel(label, complex)
@@ -899,6 +908,12 @@ local function handleTranscript(raw, t0)
   log(string.format("whisper done in %.1fs: %s",
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
   if #text == 0 then reset() return end
+  if CORES <= 2 and (recMode == "expand" or C.llmCleanup or C.translateTo ~= "off") then
+    recMode = "dictate"
+    log("ancient hardware: skipping LLM features, pasting raw transcript")
+    insertText(text)                 -- never lose the user's words
+    return
+  end
   if recMode == "expand" then
     recMode = "dictate"
     llmGenerate(expandPrompt(text), "expand")
@@ -935,14 +950,19 @@ local function transcribe()
   end
 
   local t0 = hs.timer.secondsSinceEpoch()
+  -- timeout scales with recording length AND machine speed: a 2-core Intel
+  -- gets ~4x realtime headroom, Apple Silicon barely needs 1x
+  local durSecs  = math.max(1, (attr.size - 44) / 32000)
+  local factor   = IS_ARM and 1.5 or (CORES <= 2 and 6 or 3)
+  local maxTime  = math.ceil(20 + durSecs * factor)
   -- clean + normalize quiet mics, then hit the persistent server
   local langArg = (C.language ~= "auto")
       and (" -F language=" .. C.language) or ""
   local cmd = string.format(
     "%s %s %s highpass 80 norm -3 2>/dev/null || cp %s %s; " ..
-    "/usr/bin/curl -s --max-time 30 -F file=@%s -F temperature=0.0 " ..
+    "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
     "-F response_format=text%s http://%s:%d/inference",
-    C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, C.wavNorm, langArg,
+    C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, maxTime, C.wavNorm, langArg,
     C.whisperHost, C.serverPort)
 
   M.sttTask = hs.task.new("/bin/sh", function(code, out, err)
@@ -951,9 +971,15 @@ local function transcribe()
     if ok then
       handleTranscript(out, t0)
     elseif C.whisperHost ~= "127.0.0.1" then
-      hs.alert.show("Vox: transcription server " .. C.whisperHost
-        .. " unreachable — is the fast Mac awake?", 4)
-      reset()
+      -- remote brain unreachable: fall back to the local model if we have one
+      if hs.fs.attributes(C.model) then
+        log("remote server unreachable — falling back to local whisper-cli")
+        transcribeCLI(t0)
+      else
+        hs.alert.show("Vox: transcription server " .. C.whisperHost
+          .. " unreachable — is the fast Mac awake?", 4)
+        reset()
+      end
     else
       log("server unavailable — falling back to whisper-cli and restarting server")
       ensureServer()
