@@ -38,6 +38,10 @@ if [ -f "$HOME/vox/local.lua" ]; then
   cp "$HOME/vox/local.lua" "$HOME/vox-local.lua.bak"
   echo "==> Personal vocabulary saved to ~/vox-local.lua.bak"
 fi
+if [ -f "$HOME/vox/learned.json" ]; then
+  cp "$HOME/vox/learned.json" "$HOME/vox-learned.json.bak"
+  echo "==> Learned vocabulary saved to ~/vox-learned.json.bak"
+fi
 
 echo "==> Removing ~/vox..."
 rm -rf "$HOME/vox"

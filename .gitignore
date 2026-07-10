@@ -2,3 +2,4 @@ models/
 *.log
 .DS_Store
 local.lua
+learned.json

@@ -57,6 +57,10 @@ local C = {
   minBytes    = 24000,               -- ignore recordings under ~0.7s
   maxRecordSecs = 180,               -- auto-stop a forgotten locked recording
 
+  -- Keep the transcript in the clipboard after pasting, so ⌘V re-pastes it
+  -- if it landed in the wrong window. Off = restore whatever you had copied.
+  keepInClipboard = true,
+
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
   duckAudio   = true,
@@ -95,6 +99,93 @@ local duck                           -- ducking state (defined below)
 local reqId   = 0                    -- guards against late LLM responses
 
 local function log(msg) print("[vox] " .. msg) end
+
+-- ---------------- learning vocabulary -------------------------
+-- Vox remembers the words you actually use (locally, in learned.json —
+-- word frequencies only, never full transcripts) and feeds the distinctive
+-- ones back into Whisper so recognition gets sharper the more you dictate.
+local LEARNED_PATH = HOME .. "/vox/learned.json"
+local learned = {}
+
+local function loadLearned()
+  local f = io.open(LEARNED_PATH, "r")
+  if not f then return end
+  local ok, data = pcall(hs.json.decode, f:read("*a"))
+  f:close()
+  if ok and type(data) == "table" then learned = data end
+end
+loadLearned()
+
+local function saveLearned()
+  -- prune one-offs if the store gets big
+  local n = 0
+  for _ in pairs(learned) do n = n + 1 end
+  if n > 2000 then
+    for k, e in pairs(learned) do
+      if e.n <= 1 then learned[k] = nil end
+    end
+  end
+  local f = io.open(LEARNED_PATH, "w")
+  if f then f:write(hs.json.encode(learned)); f:close() end
+end
+
+local function learnFrom(text)
+  for pos, w in text:gmatch("()([%a][%a'%-]+)") do
+    local lw = w:lower()
+    if #lw >= 4 then
+      local e = learned[lw] or { n = 0, cap = 0, form = w }
+      e.n = e.n + 1
+      local before = text:sub(math.max(1, pos - 2), pos - 1)
+      local atStart = (pos == 1) or before:find("[%.!%?]%s?$") ~= nil
+      if w:find("^%u") and not atStart then
+        e.cap = e.cap + 1
+        e.form = w                 -- remember the capitalized form
+      end
+      learned[lw] = e
+    end
+  end
+  if timers.learnSave then timers.learnSave:stop() end
+  timers.learnSave = hs.timer.doAfter(4, saveLearned)
+end
+
+local function learnedCount()
+  local n = 0
+  for _ in pairs(learned) do n = n + 1 end
+  return n
+end
+
+-- distinctive = mostly-capitalized mid-sentence (names/brands) or absent
+-- from the system dictionary (jargon) and used repeatedly
+local function buildLearnedVocab()
+  local dict = {}
+  local f = io.open("/usr/share/dict/words", "r")
+  if f then
+    for line in f:lines() do dict[line:lower()] = true end
+    f:close()
+  end
+  local cands = {}
+  for lw, e in pairs(learned) do
+    local proper  = e.cap >= 2 and (e.cap / e.n) > 0.5
+    local unusual = (not dict[lw]) and e.n >= 3
+    if proper or unusual then
+      cands[#cands + 1] = { form = e.form, score = e.n + e.cap * 2 }
+    end
+  end
+  table.sort(cands, function(a, b) return a.score > b.score end)
+  local parts, len = {}, 0
+  for _, cd in ipairs(cands) do
+    len = len + #cd.form + 2
+    if len > 350 then break end    -- whisper's prompt budget is finite
+    parts[#parts + 1] = cd.form
+  end
+  return table.concat(parts, ", ")
+end
+
+local function fullVocabulary()
+  local extra = buildLearnedVocab()
+  if extra ~= "" then return C.vocabulary .. " " .. extra .. "." end
+  return C.vocabulary
+end
 
 -- ---------------- sounds (subtle, synthesized) ---------------
 local sounds = {}
@@ -427,7 +518,7 @@ local function ensureServer()
     log("whisper-server exited (code " .. tostring(code) .. ")")
   end, {
     "-m", C.model, "--host", "127.0.0.1", "--port", tostring(C.serverPort),
-    "-t", C.threads, "-l", C.language, "--prompt", C.vocabulary,
+    "-t", C.threads, "-l", C.language, "--prompt", fullVocabulary(),
     "--carry-initial-prompt",  -- keep vocabulary active past 30s of speech
   })
   M.serverTask:start()
@@ -449,9 +540,12 @@ local function insertText(text)
   local prev = hs.pasteboard.getContents()
   hs.pasteboard.setContents(text)
   hs.eventtap.keyStroke({ "cmd" }, "v", 0)
-  timers.clipRestore = hs.timer.doAfter(0.8, function()
-    if prev then hs.pasteboard.setContents(prev) end
-  end)
+  if not C.keepInClipboard then
+    -- restore whatever the user had copied before dictating
+    timers.clipRestore = hs.timer.doAfter(0.8, function()
+      if prev then hs.pasteboard.setContents(prev) end
+    end)
+  end
   play("done")
   -- idle everything, but let the alien react to what you said first
   state, locked, pendingTap = "idle", false, false
@@ -558,6 +652,7 @@ local function handleTranscript(raw, t0)
   local text = raw:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
   text = text:gsub("%s*\n%s*", " ")            -- server returns wrapped lines
   text = applyCorrections(text)
+  learnFrom(text)                              -- vocabulary compounds over time
   log(string.format("whisper done in %.1fs: %s",
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
   if #text == 0 then reset() return end
@@ -576,7 +671,7 @@ local function transcribeCLI(t0)
     handleTranscript(out, t0)
   end, {
     "-m", C.model, "-f", C.wavNorm, "-nt", "-np",
-    "-l", C.language, "-t", C.threads, "--prompt", C.vocabulary,
+    "-l", C.language, "-t", C.threads, "--prompt", fullVocabulary(),
   })
   M.sttTask:start()
 end
@@ -744,6 +839,8 @@ menubar:setMenu(function()
         { title = "Left Command", checked = C.holdKeycode == 55,
           fn = function() C.holdKeycode = 55; C.holdKeyName = "Left Command"; hs.alert.show("Vox key: Left Command", 1) end },
       } },
+    { title = "Keep dictation in clipboard (⌘V re-paste)", checked = C.keepInClipboard,
+      fn = function() C.keepInClipboard = not C.keepInClipboard end },
     { title = "Duck music while recording", checked = C.duckAudio,
       fn = function() C.duckAudio = not C.duckAudio end },
     { title = "AI cleanup (slower, may reword)", checked = C.llmCleanup,
@@ -784,6 +881,13 @@ menubar:setMenu(function()
     { title = "Cancel current recording", fn = function()
         if recTask and recTask:isRunning() then recTask:terminate() end
         reset()
+      end },
+    { title = "Learned vocabulary: " .. learnedCount() .. " words", disabled = true },
+    { title = "Apply learned words now (restart engine)", fn = function()
+        saveLearned()
+        os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
+        timers.srvVocab = hs.timer.doAfter(1, ensureServer)
+        hs.alert.show("Vox: engine restarting with your learned vocabulary", 2)
       end },
     { title = "Restart whisper server", fn = function()
         os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
