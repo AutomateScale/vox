@@ -251,11 +251,17 @@ local function refreshModels()
     end)
 end
 
+-- is the LLM running on THIS machine (vs a fast Mac on the LAN)?
+local function ollamaIsLocal()
+  return C.ollamaUrl:find("//127%.0%.0%.1") ~= nil
+      or C.ollamaUrl:find("//localhost") ~= nil
+end
+
 -- task: cleanup | translate | reply | expand · complex: judgement hint
 local function pickModel(task, complex)
   local want
-  if lowRam then
-    want = C.models.fast                       -- 8GB Macs: never swap-thrash
+  if lowRam and ollamaIsLocal() then
+    want = C.models.fast     -- 8GB Macs never swap-thrash; remote brain = no cap
   elseif task == "translate" or task == "expand" then
     want = C.models.smart                      -- quality IS the product
   elseif task == "reply" then
@@ -785,9 +791,9 @@ end
 
 -- generic local-LLM generation (smart reply, expand) — pastes the result
 local function llmGenerate(prompt, label, complex)
-  if CORES <= 2 then
-    hs.alert.show("Vox: " .. label .. " needs a faster Mac — this one can't"
-      .. " run the local AI in reasonable time", 4)
+  if CORES <= 2 and ollamaIsLocal() then
+    hs.alert.show("Vox: " .. label .. " needs a brain — point ollamaUrl at a"
+      .. " fast Mac on your LAN (see local.example.lua)", 5)
     reset()
     return
   end
@@ -976,9 +982,10 @@ local function handleTranscript(raw, t0)
   log(string.format("whisper done in %.1fs: %s",
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
   if #text == 0 then reset() return end
-  if CORES <= 2 and (recMode == "expand" or C.llmCleanup or C.translateTo ~= "off") then
+  if CORES <= 2 and ollamaIsLocal()
+     and (recMode == "expand" or C.llmCleanup or C.translateTo ~= "off") then
     recMode = "dictate"
-    log("ancient hardware: skipping LLM features, pasting raw transcript")
+    log("ancient hardware + local LLM: skipping LLM features, pasting raw")
     insertText(text)                 -- never lose the user's words
     return
   end
