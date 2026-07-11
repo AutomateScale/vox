@@ -97,6 +97,12 @@ local C = {
   -- space between "...sentence." and "Next sentence" automatically.
   autoSpace = true,
 
+  -- Screen-aware dictation: while you talk, OCR the window you're dictating
+  -- into and feed the visible names/jargon to Whisper as spelling hints —
+  -- reply to someone and their name is spelled right on the first try.
+  -- (Needs the Screen Recording grant; skipped silently without it.)
+  screenContext = true,
+
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
   duckAudio   = true,
@@ -220,11 +226,16 @@ local function buildLearnedVocab()
   return table.concat(parts, ", ")
 end
 
+local vocabCache = nil
 local function fullVocabulary()
-  local extra = buildLearnedVocab()
-  if extra ~= "" then return C.vocabulary .. " " .. extra .. "." end
-  return C.vocabulary
+  if not vocabCache then
+    local extra = buildLearnedVocab()      -- reads the system dictionary once
+    vocabCache = (extra ~= "") and (C.vocabulary .. " " .. extra .. ".")
+                                or C.vocabulary
+  end
+  return vocabCache
 end
+local function invalidateVocab() vocabCache = nil end
 
 -- ---------------- adaptive brain router -----------------------
 -- Fast when we can be fast, concentrated when we need to be concentrated.
@@ -571,6 +582,9 @@ local function hudTick()
       bobAmp, bobSpd = 2.2, 0.9
     elseif hud.emote == "curious" then -- wide eyes, antenna swings wondering
       eyeH, antSway = 5.6, 4.2
+    elseif hud.emote == "dance" then   -- the keep-warm groove: subtle sway
+      bobAmp, bobSpd, antSway = 1.9, 0.95, 3.0
+      smileR = 3.0
     end
     if hud.phase >= hud.emoteUntil and hud.anim ~= "out" then
       hud.anim, hud.animT = "out", 0
@@ -578,7 +592,9 @@ local function hudTick()
   end
 
   local bob = math.sin(hud.phase * bobSpd) * bobAmp
-  local ax, ay = CV_W / 2, OY + 13.5 + bob
+  local sway = (hud.mode == "emote" and hud.emote == "dance")
+               and math.sin(hud.phase * 0.5) * 3.5 or 0
+  local ax, ay = CV_W / 2 + sway, OY + 13.5 + bob
   c[2].frame = { x = ax - 7, y = ay - 7.5, w = 14, h = 15 }
   local eyeCY = ay - 2.2
   c[3].frame = { x = ax - 1.6 - eyeW, y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
@@ -653,6 +669,26 @@ local function hudHide()
     return
   end
   hud.anim, hud.animT = "out", 0   -- hudTick finishes the exit
+end
+
+-- the keep-warm heartbeat: a quick, subtle groove at the bottom of the screen
+local function hudDance()
+  if hud.visible or state ~= "idle" then return end  -- never interrupt work
+  hudEnsure()
+  hud.mode, hud.emote = "emote", "dance"
+  hud.emoteUntil = hud.phase + 26
+  local col = { red = 0.45, green = 0.97, blue = 0.72, alpha = 0.7 }
+  for i = 1, BARS do hud.canvas[i + 7].fillColor = col end
+  local f = hs.screen.mainScreen():fullFrame()
+  hud.baseX = f.x + (f.w - CV_W) / 2
+  hud.baseY = f.y + f.h - CV_H - 28
+  hud.visible, hud.anim, hud.animT = true, "in", 0
+  hud.canvas:alpha(0)
+  hud.canvas:frame({ x = hud.baseX, y = hud.baseY + 24, w = CV_W, h = CV_H })
+  hud.canvas:show()
+  if not hud.timer then
+    hud.timer = hs.timer.doEvery(CORES <= 2 and 0.12 or 0.05, hudTick)
+  end
 end
 
 -- brief post-transcript reaction: the alien responds to what you said
@@ -1031,15 +1067,39 @@ local function transcribe()
   local durSecs  = math.max(1, (attr.size - 44) / 32000)
   local factor   = IS_ARM and 1.5 or (CORES <= 2 and 6 or 3)
   local maxTime  = math.ceil(20 + durSecs * factor)
+
+  -- vocabulary for THIS dictation: saved words + what's visible on screen
+  local promptStr = fullVocabulary()
+  local cf = io.open("/tmp/vox-ctx.txt", "r")
+  if cf then
+    local ctxText = cf:read("*a") or ""
+    cf:close()
+    os.remove("/tmp/vox-ctx.txt")            -- privacy: single use
+    local seen, words, len = {}, {}, 0
+    for raw in ctxText:gmatch("%u[%w'%-]+") do
+      local w = raw:gsub("[^%w%-']", "")
+      if #w >= 3 and not seen[w:lower()] then
+        seen[w:lower()] = true
+        len = len + #w + 2
+        if len > 140 then break end
+        words[#words + 1] = w
+      end
+    end
+    if #words > 0 then
+      promptStr = promptStr .. " " .. table.concat(words, ", ")
+    end
+  end
+  promptStr = promptStr:gsub('[\\"$`]', "")  -- shell-safe in double quotes
+
   -- clean + normalize quiet mics, then hit the persistent server
   local langArg = (C.language ~= "auto")
       and (" -F language=" .. C.language) or ""
   local cmd = string.format(
     "%s %s %s highpass 80 norm -3 2>/dev/null || cp %s %s; " ..
     "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
-    "-F response_format=text%s http://%s:%d/inference",
-    C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, maxTime, C.wavNorm, langArg,
-    C.whisperHost, C.serverPort)
+    "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
+    C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, maxTime, C.wavNorm,
+    promptStr, langArg, C.whisperHost, C.serverPort)
 
   M.sttTask = hs.task.new("/bin/sh", function(code, out, err)
     local ok = (code == 0) and out and #out:gsub("%s", "") > 0
@@ -1080,6 +1140,19 @@ local function startRecording()
     if state == "processing" and myGen == recGen then transcribe() end
   end, { "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav })
   recTask:start()
+  -- screen-aware dictation: OCR the target window WHILE recording (free time)
+  if C.screenContext and CORES > 2 then
+    local win = hs.window.focusedWindow()
+    local wid = win and win:id()
+    if wid then
+      local ocrBin = HOME .. "/vox/ocr-bin"
+      M.ctxTask = hs.task.new("/bin/sh", nil, { "-c", string.format(
+        "[ -x %s ] && /usr/sbin/screencapture -x -l %d /tmp/vox-ctx.png" ..
+        " 2>/dev/null && %s /tmp/vox-ctx.png > /tmp/vox-ctx.txt 2>/dev/null;" ..
+        " rm -f /tmp/vox-ctx.png", ocrBin, wid, ocrBin) })
+      M.ctxTask:start()
+    end
+  end
   duckDown()
   setUI("rec")
   play("start")
@@ -1352,6 +1425,7 @@ menubar:setMenu(function()
     { title = "Learned vocabulary: " .. learnedCount() .. " words", disabled = true },
     { title = "Apply learned words now (restart engine)", fn = function()
         saveLearned()
+        invalidateVocab()
         os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
         timers.srvVocab = hs.timer.doAfter(1, ensureServer)
         hs.alert.show("Vox: engine restarting with your learned vocabulary", 2)
@@ -1387,6 +1461,7 @@ local function warmUp()
     C.sox, C.serverPort)
   M.warmTask = hs.task.new("/bin/sh", nil, { "-c", cmd })
   M.warmTask:start()
+  hudDance()          -- heartbeat you can see: a subtle groove per ping
 end
 
 M.wakeWatcher = hs.caffeinate.watcher.new(function(ev)
@@ -1422,7 +1497,7 @@ timers.srvCheck = hs.timer.doAfter(5, ensureServer)
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
-            selfTest = selfTest }
+            selfTest = selfTest, dance = hudDance }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
