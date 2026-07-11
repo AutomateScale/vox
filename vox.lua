@@ -120,6 +120,12 @@ local C = {
   apiPort     = 8091,                -- localhost-only pulse API
   memoryWebhook = "",                -- optional: POST each memory to a URL
 
+  -- The ONLY thing Vox ever sends off this Mac is the update check (a git
+  -- fetch of code metadata from GitHub — never your audio, text, or memory).
+  -- Set false for a fully dark, zero-outbound machine (update manually with
+  -- git pull).
+  autoUpdate  = true,
+
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
   duckAudio   = true,
@@ -553,6 +559,11 @@ local function hudEnsure()
                   fillColor = { red = 0.86, green = 0.93, blue = 1.0, alpha = 0 },
                   frame = { x = -30, y = -30, w = 1, h = 1 } }
   end
+  for k = 0, 2 do                                                    -- thought dots
+    c[27 + k] = { type = "oval", action = "fill",
+                  fillColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = 0 },
+                  frame = { x = -10, y = -10, w = 2, h = 2 } }
+  end
   hud.canvas = c
 end
 
@@ -615,6 +626,7 @@ local function hudTick()
   -- alien: mood-driven face
   local eyeW, eyeH, smileR, smileW = 3.4, 4.8, 2.4, 1.1
   local bobAmp, bobSpd, antSway = 1.4, 0.45, 1.6
+  local eyeDart, orbit = 0, false
 
   if hud.mode == "rec" then
     eyeH   = 4.4 + norm * 2.2
@@ -624,6 +636,12 @@ local function hudTick()
       hud.nextBlink  = hud.phase + 16 + math.random() * 24
     end
     if hud.phase < hud.blinkUntil then eyeH = 1.1 end
+  elseif hud.mode == "work" then
+    -- THINKING looks nothing like listening: antenna spins like a radar,
+    -- eyes dart side to side, thought dots rise, bars do a KITT sweep
+    orbit   = true
+    eyeDart = math.sin(hud.phase * 0.35) * 1.4
+    bobAmp, bobSpd = 0.9, 0.65
   elseif hud.mode == "emote" then
     if hud.emote == "joy" then        -- laughing squint + big grin + bounce
       eyeW, eyeH, smileR, smileW = 4.4, 1.5, 3.7, 1.6
@@ -648,14 +666,15 @@ local function hudTick()
   local ax, ay = CV_W / 2 + sway, OY + 13.5 + bob
   c[2].frame = { x = ax - 7, y = ay - 7.5, w = 14, h = 15 }
   local eyeCY = ay - 2.2
-  c[3].frame = { x = ax - 1.6 - eyeW, y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
-  c[4].frame = { x = ax + 1.6,        y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
+  local ex = ax + eyeDart
+  c[3].frame = { x = ex - 1.6 - eyeW, y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
+  c[4].frame = { x = ex + 1.6,        y = eyeCY - eyeH / 2, w = eyeW, h = eyeH }
   -- sparkle glints track the eyes (hidden mid-blink / joy-squint)
   local glintA = (eyeH > 2.4) and 0.9 or 0
   c[16].fillColor = { red = 1, green = 1, blue = 1, alpha = glintA }
   c[17].fillColor = { red = 1, green = 1, blue = 1, alpha = glintA }
-  c[16].frame = { x = ax - 1.6 - eyeW + eyeW * 0.52, y = eyeCY - eyeH / 2 + eyeH * 0.14, w = 1.5, h = 1.8 }
-  c[17].frame = { x = ax + 1.6 + eyeW * 0.52,        y = eyeCY - eyeH / 2 + eyeH * 0.14, w = 1.5, h = 1.8 }
+  c[16].frame = { x = ex - 1.6 - eyeW + eyeW * 0.52, y = eyeCY - eyeH / 2 + eyeH * 0.14, w = 1.5, h = 1.8 }
+  c[17].frame = { x = ex + 1.6 + eyeW * 0.52,        y = eyeCY - eyeH / 2 + eyeH * 0.14, w = 1.5, h = 1.8 }
   -- blush cheeks, a touch stronger when he's excited or joyful
   local blushA = 0.22 + ((hud.emote == "joy" or hud.emote == "excite")
                          and hud.mode == "emote" and 0.16 or 0)
@@ -666,9 +685,29 @@ local function hudTick()
   c[5].center = { x = ax, y = ay + 2.2 }
   c[5].radius = smileR
   c[5].strokeWidth = smileW
-  local tipX = ax + math.sin(hud.phase * 0.6) * antSway
-  c[6].coordinates = { { x = ax, y = ay - 7.5 }, { x = tipX, y = ay - 11 } }
-  c[7].frame = { x = tipX - 1.5, y = ay - 13.8, w = 3, h = 3 }
+  local tipX, tipY
+  if orbit then                        -- radar-spinner antenna while thinking
+    tipX = ax + math.cos(hud.phase * 1.1) * 4.6
+    tipY = ay - 11.5 + math.sin(hud.phase * 1.1) * 2.4
+  else
+    tipX = ax + math.sin(hud.phase * 0.6) * antSway
+    tipY = ay - 11
+  end
+  c[6].coordinates = { { x = ax, y = ay - 7.5 }, { x = tipX, y = tipY + 1 } }
+  c[7].frame = { x = tipX - 1.5, y = tipY - 2.8, w = 3, h = 3 }
+  -- thought dots: "..." rising above his head while he works
+  for k = 0, 2 do
+    local el = c[27 + k]
+    if hud.mode == "work" then
+      local a = math.max(0, math.sin(hud.phase * 0.8 - k * 1.1))
+      local rr = 1.7 + k * 0.7
+      el.fillColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = a * 0.85 }
+      el.frame = { x = ax + 7.5 + k * 4.2 - rr / 2,
+                   y = ay - 10.5 - k * 3.4 - rr / 2, w = rr, h = rr }
+    else
+      el.fillColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = 0 }
+    end
+  end
 
   -- bars flank the alien; while listening YOUR VOICE sets the height
   for i = 1, BARS do
@@ -679,8 +718,9 @@ local function hudTick()
       h = 4 + norm * (15 - d * 1.8) * (0.5 + wave * 0.5) + math.random() * 1.5
     elseif hud.mode == "emote" then
       h = 4 + math.abs(math.sin(hud.phase * 0.7 + d)) * 2.5
-    else                           -- thinking: wave radiating outward
-      h = 5 + (math.sin(hud.phase - d * 0.8) + 1) * 4.5
+    else                           -- thinking: KITT sweep = clearly BUSY
+      local pos = ((math.sin(hud.phase * 0.55) + 1) / 2) * (BARS - 1) + 1
+      h = 4 + 13 * math.max(0, 1 - math.abs(i - pos) * 0.55)
     end
     local x = (i <= 4) and (OX + 12 + (i - 1) * 7)
                         or (OX + PILL_W - 36 + (i - 5) * 7)
@@ -1444,8 +1484,10 @@ local function checkForUpdates(interactive)
     "fi" })
   M.updTask:start()
 end
-timers.updDaily = hs.timer.doEvery(6 * 3600, function() checkForUpdates(false) end)
-timers.updBoot  = hs.timer.doAfter(90, function() checkForUpdates(false) end)
+if C.autoUpdate then
+  timers.updDaily = hs.timer.doEvery(6 * 3600, function() checkForUpdates(false) end)
+  timers.updBoot  = hs.timer.doAfter(90, function() checkForUpdates(false) end)
+end
 
 -- ---------------- menubar ------------------------------------
 menubar = hs.menubar.new()
