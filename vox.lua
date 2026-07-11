@@ -103,6 +103,17 @@ local C = {
   -- (Needs the Screen Recording grant; skipped silently without it.)
   screenContext = true,
 
+  -- The alien's brain: every dictation is remembered in ~/vox/memory/
+  -- (human-readable journal + instant full-text recall). LOCAL ONLY.
+  -- memoryRAG feeds relevant memories into expand/smart-reply prompts.
+  -- Export/import the whole brain between Macs:  python3 ~/vox/mem.py export
+  memory      = true,
+  memoryRAG   = true,
+  fillerFilter = true,               -- strip "uh"/"um" etc. from transcripts
+  apiEnable   = true,
+  apiPort     = 8091,                -- localhost-only pulse API
+  memoryWebhook = "",                -- optional: POST each memory to a URL
+
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
   duckAudio   = true,
@@ -236,6 +247,40 @@ local function fullVocabulary()
   return vocabCache
 end
 local function invalidateVocab() vocabCache = nil end
+
+-- ---------------- the alien's brain ---------------------------
+-- Full transcripts flow into ~/vox/memory/ via mem.py: a human-readable
+-- monthly journal plus a SQLite full-text index for instant recall.
+local nextMemMode = "dictate"          -- tag set by generators before paste
+
+local function rememberText(text, mode)
+  if not C.memory or #text < 2 then return end
+  M.memTask = hs.task.new("/usr/bin/python3", nil,
+    { HOME .. "/vox/mem.py", "add", "--text", text,
+      "--app", context.app or "", "--mode", mode or "dictate" })
+  M.memTask:start()
+  if C.memoryWebhook ~= "" then       -- optional pulse to n8n/anything
+    pcall(hs.http.asyncPost, C.memoryWebhook,
+      hs.json.encode({ ts = os.time(), app = context.app, mode = mode,
+                       text = text }),
+      { ["Content-Type"] = "application/json" }, function() end)
+  end
+end
+
+local function memoryLookup(query, n, cb)
+  if not (C.memory and C.memoryRAG) then cb("") return end
+  M.memQTask = hs.task.new("/usr/bin/python3", function(code, out)
+    local parts = {}
+    for line in (out or ""):gmatch("[^\n]+") do
+      local ok, e = pcall(hs.json.decode, line)
+      if ok and e and e.text then
+        parts[#parts + 1] = "- " .. e.text:sub(1, 300)
+      end
+    end
+    cb(#parts > 0 and table.concat(parts, "\n") or "")
+  end, { HOME .. "/vox/mem.py", "search", query, "-n", tostring(n or 3) })
+  M.memQTask:start()
+end
 
 -- ---------------- adaptive brain router -----------------------
 -- Fast when we can be fast, concentrated when we need to be concentrated.
@@ -806,6 +851,8 @@ local function insertText(text)
     end)
   end
   play("done")
+  rememberText(text, nextMemMode)         -- the alien remembers
+  nextMemMode = "dictate"
   -- idle everything, but let the alien react to what you said first
   state, locked, pendingTap = "idle", false, false
   duckUp()
@@ -859,20 +906,27 @@ local function llmGenerate(prompt, label, complex)
       if status == 200 then
         local ok, parsed = pcall(hs.json.decode, respBody)
         local out = ok and parsed and parsed.response and cleanLLMOutput(parsed.response)
-        if out and #out > 0 then insertText(out) return end
+        if out and #out > 0 then
+          nextMemMode = label
+          insertText(out)
+          return
+        end
       end
       hs.alert.show("Vox: " .. label .. " failed — is Ollama running?", 3)
       reset()
     end)
 end
 
-local function expandPrompt(note)
+local function expandPrompt(note, mem)
   return table.concat({
     "Expand the following spoken note into polished written content, in the",
     "speaker's own voice — clear, direct, punchy. Structure it well; 2-4 short",
     "paragraphs unless the note implies otherwise. Do NOT invent facts they",
     "didn't say; amplify, sharpen, and organize what they DID say.",
     "They are writing in the app \"" .. context.app .. "\" — match that medium.",
+    (mem and mem ~= "" and
+      ("Possibly relevant notes from the user's own local memory (use only"
+       .. " if genuinely helpful):\n" .. mem) or ""),
     "Output ONLY the content. No preamble, no notes.",
     "",
     "Spoken note:",
@@ -911,18 +965,24 @@ local function smartReply()
     -- long or question-dense screens deserve the concentrated model
     local _, qs = screenText:gsub("%?", "")
     local complex = #screenText > 1200 or qs >= 2
-    llmGenerate(table.concat({
-      "You are drafting a reply ON BEHALF of the user; they will send it as",
-      "their own message. Below is OCR text from their screen (app: \""
-        .. context.app .. "\") — it may contain UI noise; focus on the actual",
-      "conversation or message content, especially the most recent part.",
-      "Write the single best reply: match the tone and language of the",
-      "conversation, be natural and concise, sound human.",
-      "Output ONLY the reply text. No preamble, no quotes, no notes.",
-      "",
-      "Screen content:",
-      screenText,
-    }, "\n"), "reply", complex)
+    -- the alien consults its memory about what's on screen before replying
+    memoryLookup(screenText:sub(-350):gsub("[^%w%s%-']", ""), 3, function(mem)
+      llmGenerate(table.concat({
+        "You are drafting a reply ON BEHALF of the user; they will send it as",
+        "their own message. Below is OCR text from their screen (app: \""
+          .. context.app .. "\") — it may contain UI noise; focus on the actual",
+        "conversation or message content, especially the most recent part.",
+        "Write the single best reply: match the tone and language of the",
+        "conversation, be natural and concise, sound human.",
+        (mem ~= "" and
+          ("The user's own local memory has possibly relevant notes (use only"
+           .. " if genuinely helpful):\n" .. mem) or ""),
+        "Output ONLY the reply text. No preamble, no quotes, no notes.",
+        "",
+        "Screen content:",
+        screenText,
+      }, "\n"), "reply", complex)
+    end)
   end, { "-c", cmd })
   M.replyTask:start()
 end
@@ -1011,10 +1071,32 @@ local function applyCorrections(text)
   return text
 end
 
+-- deterministic filler removal: "uh"/"um" and friends vanish, punctuation
+-- and capitalization get repaired. Conservative list — real words are safe.
+local FILLERS = { "uh", "uhh", "uhhh", "um", "umm", "ummm", "uhm", "erm", "ehm" }
+local function cleanFillers(text)
+  if not C.fillerFilter then return text end
+  for _, f in ipairs(FILLERS) do
+    local pat = f:gsub("%a", function(ch)
+      return "[" .. ch:lower() .. ch:upper() .. "]"
+    end)
+    text = text:gsub("%f[%w]" .. pat .. "%f[%W][,%.;]?%s*", "")
+  end
+  text = text:gsub("^%s*[,%.;]%s*", "")        -- orphaned leading punctuation
+  text = text:gsub("%s+([,%.;!%?])", "%1")     -- space before punctuation
+  text = text:gsub(",%s*,", ",")               -- doubled commas
+  text = text:gsub("%s%s+", " ")
+  text = text:gsub("^%s+", ""):gsub("%s+$", "")
+  text = text:gsub("^(%l)", string.upper)      -- repair sentence starts
+  text = text:gsub("([%.!%?]%s+)(%l)", function(a, b) return a .. b:upper() end)
+  return text
+end
+
 local function handleTranscript(raw, t0)
   local text = raw:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
   text = text:gsub("%s*\n%s*", " ")            -- server returns wrapped lines
   text = applyCorrections(text)
+  text = cleanFillers(text)
   learnFrom(text)                              -- vocabulary compounds over time
   log(string.format("whisper done in %.1fs: %s",
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
@@ -1095,7 +1177,10 @@ local function transcribe()
   local langArg = (C.language ~= "auto")
       and (" -F language=" .. C.language) or ""
   local cmd = string.format(
-    "%s %s %s highpass 80 norm -3 2>/dev/null || cp %s %s; " ..
+    -- trailing-silence trim (reverse/silence/reverse) kills Whisper's
+    -- phantom "Yeah." hallucination on the breath after key-release
+    "%s %s %s highpass 80 norm -3 reverse silence 1 0.15 1.5%% reverse" ..
+    " 2>/dev/null || cp %s %s; " ..
     "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
     "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
     C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, maxTime, C.wavNorm,
@@ -1422,6 +1507,15 @@ menubar:setMenu(function()
     { title = "AI brain: " .. (lowRam and "fast only (low RAM)"
         or (availableModels[C.models.smart] and "adaptive — fast + smart"
         or "fast only (smart model not pulled)")), disabled = true },
+    { title = "Remember dictations (local memory)", checked = C.memory,
+      fn = function() C.memory = not C.memory end },
+    { title = "Export brain (to Desktop)", fn = function()
+        M.expTask = hs.task.new("/usr/bin/python3", function(code)
+          hs.alert.show(code == 0 and "🧠 Brain exported to Desktop ✓"
+                                   or "Export failed", 3)
+        end, { HOME .. "/vox/mem.py", "export" })
+        M.expTask:start()
+      end },
     { title = "Learned vocabulary: " .. learnedCount() .. " words", disabled = true },
     { title = "Apply learned words now (restart engine)", fn = function()
         saveLearned()
@@ -1473,6 +1567,49 @@ M.wakeWatcher = hs.caffeinate.watcher.new(function(ev)
 end)
 M.wakeWatcher:start()
 timers.warmLoop = hs.timer.doEvery(900, warmUp)
+
+-- ---------------- local pulse API -----------------------------
+-- localhost-only: agents on THIS machine can read the alien's mind.
+--   GET  /status     pipeline + calibration + memory stats
+--   GET  /search?q=  recall from memory (JSON lines)
+--   GET  /recent     latest memories
+--   POST /ingest     request body -> memory
+if C.apiEnable then
+  local function runMem(args)
+    local p = io.popen("/usr/bin/python3 " .. HOME .. "/vox/mem.py " .. args)
+    if not p then return "" end
+    local out = p:read("*a") or ""
+    p:close()
+    return out
+  end
+  M.api = hs.httpserver.new(false, false)
+  M.api:setInterface("localhost")
+  M.api:setPort(C.apiPort)
+  M.api:setCallback(function(method, path, headers, body)
+    local JSON = { ["Content-Type"] = "application/json" }
+    if path:find("^/status") then
+      return hs.json.encode({
+        state = state, pipeline = calib.mode, latency = calib.lastLatency,
+        rev = currentRev, learnedWords = learnedCount(),
+        memory = runMem("stats"):gsub("%s+$", ""),
+      }), 200, JSON
+    elseif path:find("^/search") then
+      local q = (path:match("[?&]q=([^&]*)") or ""):gsub("+", " ")
+        :gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+        :gsub("[^%w%s%-']", "")
+      return runMem('search "' .. q .. '" -n 5'), 200, JSON
+    elseif path:find("^/recent") then
+      return runMem("recent"), 200, JSON
+    elseif method == "POST" and path:find("^/ingest") and body and #body > 1 then
+      rememberText(body:sub(1, 8000), "api")
+      return '{"ok":true}', 200, JSON
+    end
+    return '{"error":"unknown route"}', 404, JSON
+  end)
+  if pcall(function() M.api:start() end) then
+    log("pulse API on http://127.0.0.1:" .. C.apiPort)
+  end
+end
 timers.warmBoot = hs.timer.doAfter(10, warmUp)
 
 flagTap:start()
@@ -1497,7 +1634,7 @@ timers.srvCheck = hs.timer.doAfter(5, ensureServer)
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
-            selfTest = selfTest, dance = hudDance }
+            selfTest = selfTest, dance = hudDance, fillers = cleanFillers }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
