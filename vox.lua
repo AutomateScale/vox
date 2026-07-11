@@ -689,16 +689,26 @@ local function hudTick()
   c[5].center = { x = ax, y = ay + 2.2 }
   c[5].radius = smileR
   c[5].strokeWidth = smileW
+  -- antenna: radar-spin while thinking, victory twirl when the text lands
+  local twirl = hud.mode == "emote"
+                and (hud.phase - (hud.emoteStart or -99)) < 5
   local tipX, tipY
-  if orbit then                        -- radar-spinner antenna while thinking
-    tipX = ax + math.cos(hud.phase * 1.1) * 4.6
-    tipY = ay - 11.5 + math.sin(hud.phase * 1.1) * 2.4
+  if orbit or twirl then
+    local spd = twirl and 2.4 or 1.1
+    tipX = ax + math.cos(hud.phase * spd) * (twirl and 5.4 or 4.6)
+    tipY = ay - 11.5 + math.sin(hud.phase * spd) * (twirl and 3.0 or 2.4)
   else
     tipX = ax + math.sin(hud.phase * 0.6) * antSway
     tipY = ay - 11
   end
   c[6].coordinates = { { x = ax, y = ay - 7.5 }, { x = tipX, y = tipY + 1 } }
-  c[7].frame = { x = tipX - 1.5, y = tipY - 2.8, w = 3, h = 3 }
+  if twirl then                        -- tip flares white during the twirl
+    c[7].fillColor = { red = 1, green = 1, blue = 1, alpha = 0.95 }
+    c[7].frame = { x = tipX - 2, y = tipY - 3.3, w = 4, h = 4 }
+  else
+    c[7].fillColor = ALIEN
+    c[7].frame = { x = tipX - 1.5, y = tipY - 2.8, w = 3, h = 3 }
+  end
   -- thought dots: "..." rising above his head while he works
   for k = 0, 2 do
     local el = c[27 + k]
@@ -790,6 +800,7 @@ end
 local function hudEmote(kind)
   if not (hud.visible and hud.canvas) then return end
   hud.mode, hud.emote = "emote", kind or "done"
+  hud.emoteStart = hud.phase
   hud.emoteUntil = hud.phase + ((kind == "done") and 12 or 26)
   local col = (kind == "joy")    and { red = 1.0,  green = 0.84, blue = 0.32, alpha = 0.95 }
            or (kind == "excite") and { red = 1.0,  green = 0.5,  blue = 0.66, alpha = 0.95 }
@@ -1150,6 +1161,27 @@ local function cleanFillers(text)
   return text
 end
 
+-- Whisper sometimes loops one sentence over and over on unclear audio
+-- ("I'm going to use the same thing..." x8). Keep at most 2 consecutive
+-- identical sentences; collapse the rest.
+local function collapseRepeats(text)
+  local parts = {}
+  for s in text:gmatch("[^%.!%?]+[%.!%?]?%s*") do parts[#parts + 1] = s end
+  local out, lastNorm, count = {}, nil, 0
+  for _, s in ipairs(parts) do
+    local norm = s:lower():gsub("[%p%s]+", " ")
+                  :gsub("^%s+", ""):gsub("%s+$", "")
+    if norm ~= "" and norm == lastNorm then
+      count = count + 1
+      if count < 2 then out[#out + 1] = s end
+    else
+      lastNorm, count = norm, 0
+      out[#out + 1] = s
+    end
+  end
+  return table.concat(out)
+end
+
 -- spoken commands: deterministic, punctuation-gated so normal speech
 -- ("the new line of products") is never mangled
 local function applyVoiceCommands(text)
@@ -1170,6 +1202,7 @@ local function handleTranscript(raw, t0)
   text = text:gsub("%s*\n%s*", " ")            -- server returns wrapped lines
   text = applyCorrections(text)
   text = cleanFillers(text)
+  text = collapseRepeats(text)
   local undo
   text, undo = applyVoiceCommands(text)
   if undo then
@@ -1762,7 +1795,7 @@ end)
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
-            commands = applyVoiceCommands,
+            commands = applyVoiceCommands, collapse = collapseRepeats,
             selfTest = selfTest, dance = hudDance, fillers = cleanFillers }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
