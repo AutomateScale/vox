@@ -25,6 +25,16 @@ and sinks away.
 - **Music ducking** — playing audio fades to 35% while you dictate and ramps
   back the moment you release. Toggle in the menu.
 
+## Using Claude Code or Cursor?
+
+Just tell your AI coding assistant:
+
+```
+install Vox from automatescale.com/vox
+```
+
+It runs the install and walks you through the permissions.
+
 ## Install on a new Mac — one line
 
 ```bash
