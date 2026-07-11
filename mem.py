@@ -303,10 +303,17 @@ def weave():
 
 
 def html_to_text(body):
-    body = re.sub(r"(?is)<(script|style|nav|footer|head)[^>]*>.*?</\1>", " ", body)
-    body = re.sub(r"(?s)<[^>]+>", " ", body)
+    body = re.sub(r"(?is)<(script|style|nav|footer|head|header|aside|form|button)"
+                  r"[^>]*>.*?</\1>", " ", body)
+    body = re.sub(r"(?s)<[^>]+>", "\n", body)
     body = html.unescape(body)
-    return re.sub(r"[ \t]{2,}", " ", re.sub(r"\n{2,}", "\n", body)).strip()
+    # drop chrome fragments: short unpunctuated lines are nav labels/buttons
+    keep = []
+    for ln in body.split("\n"):
+        ln = re.sub(r"\s{2,}", " ", ln).strip()
+        if ln and (len(ln.split()) > 4 or ln[-1:] in ".!?:"):
+            keep.append(ln)
+    return "\n".join(keep)
 
 
 def ingest(path):
@@ -327,6 +334,18 @@ def ingest(path):
                 add(ch, app=os.path.basename(p), mode="ingest")
                 count += 1
     print(json.dumps({"ingested_chunks": count, "files": len(paths)}))
+
+
+def forget(mode):
+    """Remove every memory of a given mode (e.g. a bad ingest), then retag."""
+    c = con()
+    rows = [rid for (rid,) in c.execute(
+        "SELECT rowid FROM mem_v3 WHERE mode = ?", (mode,))]
+    for rid in rows:
+        c.execute("DELETE FROM tags WHERE mem_rowid = ?", (rid,))
+        c.execute("DELETE FROM mem_v3 WHERE rowid = ?", (rid,))
+    c.commit()
+    print(json.dumps({"forgot": len(rows), "mode": mode}))
 
 
 def retag():
@@ -472,7 +491,7 @@ if __name__ == "__main__":
     ap.add_argument("cmd", choices=["add", "search", "recent", "entities",
                                     "topic", "related", "wiki", "weave",
                                     "ingest", "retag", "stats", "export",
-                                    "import"])
+                                    "import", "forget"])
     ap.add_argument("arg", nargs="?", default="")
     ap.add_argument("--text", default="")
     ap.add_argument("--app", default="")
@@ -492,4 +511,5 @@ if __name__ == "__main__":
      "retag": retag,
      "stats": stats,
      "export": export,
-     "import": lambda: do_import(a.arg)}[a.cmd]()
+     "import": lambda: do_import(a.arg),
+     "forget": lambda: forget(a.arg)}[a.cmd]()
