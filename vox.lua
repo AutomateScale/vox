@@ -1565,6 +1565,17 @@ menubar:setMenu(function()
         or "fast only (smart model not pulled)")), disabled = true },
     { title = "Remember dictations (local memory)", checked = C.memory,
       fn = function() C.memory = not C.memory end },
+    { title = "Open memory wiki 👽", fn = function()
+        M.weaveTask = hs.task.new("/usr/bin/python3", function(code, out)
+          local ok, res = pcall(hs.json.decode, out or "")
+          if code == 0 and ok and res and res.wiki then
+            hs.task.new("/usr/bin/open", nil, { res.wiki }):start()
+          else
+            hs.alert.show("Wiki build failed — see console", 3)
+          end
+        end, { HOME .. "/vox/mem.py", "weave" })
+        M.weaveTask:start()
+      end },
     { title = "Export brain (to Desktop)", fn = function()
         M.expTask = hs.task.new("/usr/bin/python3", function(code)
           hs.alert.show(code == 0 and "🧠 Brain exported to Desktop ✓"
@@ -1656,6 +1667,14 @@ if C.apiEnable then
       return runMem('search "' .. q .. '" -n 5'), 200, JSON
     elseif path:find("^/recent") then
       return runMem("recent"), 200, JSON
+    elseif path:find("^/entities") then
+      return runMem("entities -n 40"), 200, JSON
+    elseif path:find("^/wiki") then
+      local e = (path:match("[?&]e=([^&]*)") or ""):gsub("+", " ")
+        :gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+        :gsub("[^%w%s%-']", "")
+      return runMem('wiki "' .. e .. '"'), 200,
+             { ["Content-Type"] = "text/plain" }
     elseif method == "POST" and path:find("^/ingest") and body and #body > 1 then
       rememberText(body:sub(1, 8000), "api")
       return '{"ok":true}', 200, JSON
