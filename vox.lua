@@ -69,6 +69,12 @@ local C = {
   -- punctuates well, and the LLM adds 1.5-3s and sometimes paraphrases.
   -- Toggle from the menubar when you want context-aware rewriting.
   llmCleanup  = false,
+  -- Opt-in escape hatch for ancient-hardware users who explicitly WANT the
+  -- local LLM to run even on <=2-core CPUs where it'll take 15-60s per pass.
+  -- Off by default — Vox's normal behavior on such Macs is to refuse smart-
+  -- reply / expand / cleanup so it doesn't feel broken. Set true in local.lua
+  -- if you've picked a small model (e.g. llama3.2:1b) and can wait.
+  forceLocalLLM = false,
   translateTo = "off",                -- "off", "English", "French", "Spanish", "Dutch"
   ollamaUrl   = "http://localhost:11434/api/generate",
   ollamaModel = "llama3.2:3b",       -- legacy fallback if the router finds nothing
@@ -868,6 +874,13 @@ local function cleanLLMOutput(s)
   -- models love appending meta-commentary; strip trailing "Note:" paragraphs
   s = s:gsub("\n+%s*%(?[Nn]ote:.*$", "")
   s = s:gsub("\n+%s*%(?[Tt]ranslation [Nn]ote.*$", "")
+  -- Strip trailing horizontal-rule separators (---, ***, ===, ___) and any
+  -- orphan quote/apostrophe/backtick chars models leave hanging. Three
+  -- passes because the model sometimes stacks them, e.g. [...text." ---- '"]
+  for _ = 1, 3 do
+    s = s:gsub("[%s\n]*[%-=*_]+%s*$", "")
+    s = s:gsub("[%s\n'\"`\u{2018}\u{2019}\u{201C}\u{201D}]+$", "")
+  end
   s = s:gsub("^%s+", ""):gsub("%s+$", "")
   if s:sub(1, 1) == '"' and s:sub(-1) == '"' then s = s:sub(2, -2) end
   return s
@@ -875,9 +888,10 @@ end
 
 -- generic local-LLM generation (smart reply, expand) — pastes the result
 local function llmGenerate(prompt, label, complex)
-  if CORES <= 2 and ollamaIsLocal() then
+  if CORES <= 2 and ollamaIsLocal() and not C.forceLocalLLM then
     hs.alert.show("Vox: " .. label .. " needs a brain — point ollamaUrl at a"
-      .. " fast Mac on your LAN (see local.example.lua)", 5)
+      .. " fast Mac on your LAN (see local.example.lua), or set"
+      .. " forceLocalLLM=true and use a tiny model like llama3.2:1b", 5)
     reset()
     return
   end
@@ -1101,7 +1115,7 @@ local function handleTranscript(raw, t0)
   log(string.format("whisper done in %.1fs: %s",
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
   if #text == 0 then reset() return end
-  if CORES <= 2 and ollamaIsLocal()
+  if CORES <= 2 and ollamaIsLocal() and not C.forceLocalLLM
      and (recMode == "expand" or C.llmCleanup or C.translateTo ~= "off") then
     recMode = "dictate"
     log("ancient hardware + local LLM: skipping LLM features, pasting raw")
@@ -1628,6 +1642,28 @@ end)
 -- belt and braces: re-check a few seconds after load in case the first
 -- spawn attempt raced with config reload
 timers.srvCheck = hs.timer.doAfter(5, ensureServer)
+
+-- Stuck-state watchdog (Relic): if we're in "recording" or "processing" way
+-- beyond any legitimate flow (LLM callback died silently, timer misfired,
+-- forceLocalLLM taking too long on ancient hardware), force reset so the
+-- alien pill hides itself and the next hotkey press works.
+local stuckSince = { recording = 0, processing = 0 }
+timers.stateWatchdog = hs.timer.doEvery(5, function()
+  local now = hs.timer.secondsSinceEpoch()
+  if state == "recording" or state == "processing" then
+    if stuckSince[state] == 0 then stuckSince[state] = now end
+    local limit = (state == "recording") and (C.maxRecordSecs + 15) or 240
+    if now - stuckSince[state] > limit then
+      log("state watchdog: forcing reset (stuck in " .. state .. ")")
+      state, locked, pendingTap = "idle", false, false
+      if recTask and recTask:isRunning() then recTask:terminate() end
+      reset()
+      stuckSince.recording, stuckSince.processing = 0, 0
+    end
+  else
+    stuckSince.recording, stuckSince.processing = 0, 0
+  end
+end)
 
 -- Anchor everything in the module table so Lua GC never collects
 -- the eventtap, menubar, canvas, or timers (classic Hammerspoon gotcha).
