@@ -710,6 +710,7 @@ local function reset()
   state, locked, pendingTap = "idle", false, false
   duckUp()
   if timers.maxRec then timers.maxRec:stop() end
+  if timers.stuckKey then timers.stuckKey:stop() end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
   setUI("idle")
 end
@@ -1091,6 +1092,19 @@ local function startRecording()
       stopRecording()
     end
   end)
+  -- sticky-key watchdog: macOS sometimes drops the key-release event; if the
+  -- key is no longer physically held, stop instead of recording forever
+  timers.stuckKey = hs.timer.doEvery(1.0, function()
+    if state == "recording" and not locked and not pendingTap then
+      local mods = hs.eventtap.checkKeyboardModifiers()
+      local held = ((C.holdKeycode == 61 or C.holdKeycode == 58) and mods.alt)
+                or ((C.holdKeycode == 54 or C.holdKeycode == 55) and mods.cmd)
+      if not held and (hs.timer.secondsSinceEpoch() - keyDownAt) > 1.2 then
+        log("missed key-release detected — stopping recording")
+        stopRecording()
+      end
+    end
+  end)
   log("recording started (" .. context.app .. ")")
 end
 
@@ -1106,6 +1120,7 @@ local function stopRecording()
   if state ~= "recording" then return end
   state = "processing"
   if timers.maxRec then timers.maxRec:stop() end
+  if timers.stuckKey then timers.stuckKey:stop() end
   setUI("work")
   duckUp()                       -- music fades back while we transcribe
   play("stop")
@@ -1356,6 +1371,34 @@ if not hs.accessibilityState() then
     .. " > Accessibility > enable \"Hammerspoon\" (Vox's engine), then relaunch"
     .. " — hotkey works right after", 8)
 end
+
+-- ---------------- keep-warm ----------------------------------
+-- After idle, macOS pages the model out of RAM and the first dictation pays
+-- a reload tax. A 0.3s silent inference every 15 min keeps it hot, and we
+-- warm immediately on wake/unlock — the moments that predict "about to talk".
+local function warmUp()
+  if C.whisperHost ~= "127.0.0.1" then return end
+  local cmd = string.format(
+    "[ -f /tmp/vox-warm.wav ] || %s -n -r 16000 -c 1 -b 16 /tmp/vox-warm.wav" ..
+    " trim 0.0 0.3 2>/dev/null; " ..
+    "/usr/bin/curl -s --max-time 90 -F file=@/tmp/vox-warm.wav " ..
+    "-F temperature=0.0 -F response_format=text -F language=en " ..
+    "http://127.0.0.1:%d/inference >/dev/null 2>&1",
+    C.sox, C.serverPort)
+  M.warmTask = hs.task.new("/bin/sh", nil, { "-c", cmd })
+  M.warmTask:start()
+end
+
+M.wakeWatcher = hs.caffeinate.watcher.new(function(ev)
+  if ev == hs.caffeinate.watcher.systemDidWake
+     or ev == hs.caffeinate.watcher.screensDidUnlock then
+    ensureServer()                      -- server may have died during sleep
+    timers.warmWake = hs.timer.doAfter(4, warmUp)
+  end
+end)
+M.wakeWatcher:start()
+timers.warmLoop = hs.timer.doEvery(900, warmUp)
+timers.warmBoot = hs.timer.doAfter(10, warmUp)
 
 flagTap:start()
 ensureServer()
