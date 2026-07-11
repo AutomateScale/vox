@@ -1687,6 +1687,9 @@ if C.apiEnable then
 end
 timers.warmBoot = hs.timer.doAfter(10, warmUp)
 
+-- survive reboots: Vox re-arms itself at every login, no human needed
+pcall(hs.autoLaunch, true)
+
 flagTap:start()
 ensureServer()
 refreshModels()
