@@ -109,6 +109,10 @@ local C = {
   -- (Needs the Screen Recording grant; skipped silently without it.)
   screenContext = true,
 
+  -- Voice commands: say "scratch that" to undo the last dictation;
+  -- say "new paragraph." / "new line." (as their own clause) for breaks.
+  voiceCommands = true,
+
   -- The alien's brain: every dictation is remembered in ~/vox/memory/
   -- (human-readable journal + instant full-text recall). LOCAL ONLY.
   -- memoryRAG feeds relevant memories into expand/smart-reply prompts.
@@ -1146,11 +1150,35 @@ local function cleanFillers(text)
   return text
 end
 
+-- spoken commands: deterministic, punctuation-gated so normal speech
+-- ("the new line of products") is never mangled
+local function applyVoiceCommands(text)
+  if not C.voiceCommands then return text, false end
+  local bare = text:lower():gsub("^%s+", ""):gsub("[%p%s]+$", "")
+  if bare == "scratch that" or bare == "undo that" or bare == "delete that" then
+    return "", true
+  end
+  text = text:gsub("%s*[Nn]ew [Pp]aragraph[%.,:]%s*", "\n\n")
+  text = text:gsub("%s*[Nn]ew [Pp]aragraph%s*$", "\n\n")
+  text = text:gsub("%s*[Nn]ew [Ll]ine[%.,:]%s*", "\n")
+  text = text:gsub("%s*[Nn]ew [Ll]ine%s*$", "\n")
+  return text, false
+end
+
 local function handleTranscript(raw, t0)
   local text = raw:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
   text = text:gsub("%s*\n%s*", " ")            -- server returns wrapped lines
   text = applyCorrections(text)
   text = cleanFillers(text)
+  local undo
+  text, undo = applyVoiceCommands(text)
+  if undo then
+    hs.eventtap.keyStroke({ "cmd" }, "z", 0)   -- undo the last paste
+    play("done")
+    hs.alert.show("↩︎ scratched", 1)
+    reset()
+    return
+  end
   learnFrom(text)                              -- vocabulary compounds over time
   log(string.format("whisper done in %.1fs: %s",
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
@@ -1734,6 +1762,7 @@ end)
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
+            commands = applyVoiceCommands,
             selfTest = selfTest, dance = hudDance, fillers = cleanFillers }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
