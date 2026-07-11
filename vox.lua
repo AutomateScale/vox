@@ -1889,6 +1889,32 @@ menubar:setMenu(function()
         or "fast only (smart model not pulled)")), disabled = true },
     { title = "Remember dictations (local memory)", checked = C.memory,
       fn = function() C.memory = not C.memory end },
+    { title = "Recent dictations", menu = (function()
+        if not C.memory then
+          return { { title = "(memory is off)", disabled = true } }
+        end
+        local items = {}
+        local p = io.popen("/usr/bin/python3 " .. HOME
+                           .. "/vox/mem.py recent -n 8 2>/dev/null")
+        if p then
+          for line in (p:read("*a") or ""):gmatch("[^\n]+") do
+            local ok, e = pcall(hs.json.decode, line)
+            if ok and e and e.text and e.mode ~= "ingest" and e.mode ~= "grab" then
+              local label = e.text:gsub("%s+", " "):sub(1, 58)
+              if #e.text > 58 then label = label .. "…" end
+              items[#items + 1] = { title = label, fn = function()
+                hs.pasteboard.setContents(e.text)
+                hs.eventtap.keyStroke({ "cmd" }, "v", 0)
+              end }
+            end
+          end
+          p:close()
+        end
+        if #items == 0 then
+          items[1] = { title = "(nothing yet — dictate something)", disabled = true }
+        end
+        return items
+      end)() },
     { title = "Open memory wiki 👽", fn = function()
         M.weaveTask = hs.task.new("/usr/bin/python3", function(code, out)
           local ok, res = pcall(hs.json.decode, out or "")
