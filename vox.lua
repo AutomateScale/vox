@@ -390,7 +390,7 @@ local function pickModel(task, complex)
   local want
   if lowRam and ollamaIsLocal() then
     want = C.models.fast     -- 8GB Macs never swap-thrash; remote brain = no cap
-  elseif task == "translate" or task == "expand" then
+  elseif task == "translate" or task == "expand" or task == "answer" then
     want = C.models.smart                      -- quality IS the product
   elseif task == "reply" then
     want = complex and C.models.smart or C.models.fast
@@ -1135,7 +1135,7 @@ local function cleanLLMOutput(s)
 end
 
 -- generic local-LLM generation (smart reply, expand) — pastes the result
-local function llmGenerate(prompt, label, complex)
+local function llmGenerate(prompt, label, complex, deliver)
   if CORES <= 2 and ollamaIsLocal() and not C.forceLocalLLM then
     hs.alert.show("Vox: " .. label .. " needs a brain — point ollamaUrl at a"
       .. " fast Mac on your LAN (see local.example.lua), or set"
@@ -1169,8 +1169,12 @@ local function llmGenerate(prompt, label, complex)
         local ok, parsed = pcall(hs.json.decode, respBody)
         local out = ok and parsed and parsed.response and cleanLLMOutput(parsed.response)
         if out and #out > 0 then
-          nextMemMode = label
-          insertText(out)
+          if deliver then
+            deliver(out)
+          else
+            nextMemMode = label
+            insertText(out)
+          end
           return
         end
       end
@@ -1208,6 +1212,37 @@ local function expandPrompt(note, mem)
     "Spoken note:",
     note,
   }, "\n")
+end
+
+-- "Hey Vox, ..." — ask the alien; it answers from its own memory
+local function askPrompt(q, mem)
+  return table.concat({
+    "Answer the user's question in 1-3 concise sentences, speaking directly",
+    "to them. Their own local notes are the primary source of truth.",
+    "IMPORTANT: the user is the person in 'About the user'. People named in",
+    "the notes (clients, doctors, contacts) are OTHER people — never confuse",
+    "them with the user.",
+    (identityNotes() ~= "" and ("About the user:\n" .. identityNotes()) or ""),
+    (mem ~= "" and ("Their local memory notes:\n" .. mem) or ""),
+    "If the notes don't fully answer it, say what IS known and name the gap.",
+    "Output ONLY the answer. No preamble.",
+    "",
+    "Question:",
+    q,
+  }, "\n")
+end
+
+local function answerDeliver(question)
+  return function(answer)
+    hs.pasteboard.setContents(answer)          -- ⌘V pastes it if wanted
+    hs.alert.show("👽 " .. answer:sub(1, 400), 9)
+    rememberText("Q: " .. question .. " — A: " .. answer, "answer")
+    play("done")
+    state, locked, pendingTap = "idle", false, false
+    duckUp()
+    if menubar then menubar:setIcon(icons.idle, true) end
+    hudEmote("excite")
+  end
 end
 
 -- triple-tap: read the screen, draft the best reply at the cursor
@@ -1432,6 +1467,18 @@ local function handleTranscript(raw, t0)
     log("ancient hardware + local LLM: skipping LLM features, pasting raw")
     insertText(text)                 -- never lose the user's words
     return
+  end
+  local ql = text:lower()
+  local qs = ql:match("^hey,?%s*vox[,!%.%s]+()") or ql:match("^hey,?%s*alien[,!%.%s]+()")
+  if qs then
+    local question = text:sub(qs)
+    if #question > 3 then
+      memoryLookup(question, 5, function(mem)
+        llmGenerate(askPrompt(question, mem), "answer", true,
+                    answerDeliver(question))
+      end)
+      return
+    end
   end
   if recMode == "expand" then
     recMode = "dictate"
@@ -1816,6 +1863,7 @@ menubar:setMenu(function()
     { title = "Vox — local dictation", disabled = true },
     { title = "Hold " .. C.holdKeyName .. " to talk · double-tap to lock", disabled = true },
     { title = "Triple-tap: smart reply · Shift+key: expand to content", disabled = true },
+    { title = "\"Hey Vox, …\" = ask your memory a question", disabled = true },
     { title = "-" },
     { title = "Hold key", menu = {
         { title = "Right Option", checked = C.holdKeycode == 61,
@@ -2087,6 +2135,7 @@ M.mini = mini
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
             commands = applyVoiceCommands, collapse = collapseRepeats,
+            handle = handleTranscript,
             selfTest = selfTest, dance = hudDance, fillers = cleanFillers }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
