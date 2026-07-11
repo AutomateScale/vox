@@ -146,13 +146,30 @@ local C = {
 
 -- Personal overrides: ~/vox/local.lua (gitignored) returns a table that is
 -- merged over the config above. Keep private vocabulary/corrections there.
+-- Every override is TYPE-CHECKED against the default — a typo in local.lua
+-- (duckLevel = "high") falls back to the default instead of crashing later.
 do
+  local defaults = {}
+  for k, v in pairs(C) do defaults[k] = v end
   local f = loadfile(HOME .. "/vox/local.lua")
   if f then
     local ok, o = pcall(f)
     if ok and type(o) == "table" then
       for k, v in pairs(o) do C[k] = v end
     end
+  end
+  local bad = {}
+  for k, dv in pairs(defaults) do
+    if C[k] ~= nil and type(C[k]) ~= type(dv) then
+      bad[#bad + 1] = k
+      C[k] = dv
+    end
+  end
+  if #bad > 0 then
+    hs.timer.doAfter(3, function()
+      hs.alert.show("Vox: ignored bad local.lua value(s): "
+        .. table.concat(bad, ", "), 5)
+    end)
   end
 end
 -- ------------------------------------------------------------
@@ -171,6 +188,19 @@ local duck                           -- ducking state (defined below)
 local reqId   = 0                    -- guards against late LLM responses
 
 local function log(msg) print("[vox] " .. msg) end
+
+-- repeating timers must never die from one bad frame: pcall each tick,
+-- log the first error per name, keep ticking
+local tickErrs = {}
+local function safeTick(name, fn)
+  return function(...)
+    local ok, err = pcall(fn, ...)
+    if not ok and not tickErrs[name] then
+      tickErrs[name] = true
+      log("ERROR in " .. name .. " (suppressing repeats): " .. tostring(err))
+    end
+  end
+end
 
 -- ---------------- learning vocabulary -------------------------
 -- Vox remembers the words you actually use (locally, in learned.json —
@@ -618,7 +648,7 @@ local function hudTick()
   -- pill + face fade together (elements 1..19 share the canvas alpha via
   -- per-element handling being overkill; canvas alpha covers the smoke too,
   -- so we fade the pill/face by alpha on the pill and rely on motion)
-  c:alpha(puffT and math.max(alpha, 0.35) or 1)
+  c:alpha(puffT and alpha or 1)
   c[1].fillColor = { red = 0.04, green = 0.04, blue = 0.09, alpha = 0.6 * alpha }
 
   -- live voice level (smoothed) drives everything while listening
@@ -763,7 +793,8 @@ local function hudShow(mode)
   end
   -- weak hardware gets a calmer alien: 8fps instead of 20
   if not hud.timer then
-    hud.timer = hs.timer.doEvery(CORES <= 2 and 0.12 or 0.05, hudTick)
+    hud.timer = hs.timer.doEvery(CORES <= 2 and 0.12 or 0.05,
+                                 safeTick("hudTick", hudTick))
   end
 end
 
@@ -792,7 +823,8 @@ local function hudDance()
   hud.canvas:frame({ x = hud.baseX, y = hud.baseY + 24, w = CV_W, h = CV_H })
   hud.canvas:show()
   if not hud.timer then
-    hud.timer = hs.timer.doEvery(CORES <= 2 and 0.12 or 0.05, hudTick)
+    hud.timer = hs.timer.doEvery(CORES <= 2 and 0.12 or 0.05,
+                                 safeTick("hudTick", hudTick))
   end
 end
 
@@ -906,9 +938,12 @@ local function insertText(text)
   hs.pasteboard.setContents(text)
   hs.eventtap.keyStroke({ "cmd" }, "v", 0)
   if not C.keepInClipboard then
-    -- restore whatever the user had copied before dictating
+    -- restore what the user had copied — but only if the clipboard still
+    -- holds OUR text (never stomp something they copied in the meantime)
     timers.clipRestore = hs.timer.doAfter(0.8, function()
-      if prev then hs.pasteboard.setContents(prev) end
+      if prev and hs.pasteboard.getContents() == text then
+        hs.pasteboard.setContents(prev)
+      end
     end)
   end
   play("done")
