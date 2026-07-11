@@ -302,8 +302,15 @@ def weave():
                       "entities": len(ents), "total_entities": total}))
 
 
+def html_to_text(body):
+    body = re.sub(r"(?is)<(script|style|nav|footer|head)[^>]*>.*?</\1>", " ", body)
+    body = re.sub(r"(?s)<[^>]+>", " ", body)
+    body = html.unescape(body)
+    return re.sub(r"[ \t]{2,}", " ", re.sub(r"\n{2,}", "\n", body)).strip()
+
+
 def ingest(path):
-    paths = ([p for ext in ("*.txt", "*.md")
+    paths = ([p for ext in ("*.txt", "*.md", "*.html")
               for p in glob.glob(os.path.join(path, "**", ext), recursive=True)]
              if os.path.isdir(path) else [path])
     count = 0
@@ -312,6 +319,8 @@ def ingest(path):
             body = open(p, encoding="utf-8", errors="ignore").read()
         except OSError:
             continue
+        if p.endswith(".html"):
+            body = html_to_text(body)
         for i in range(0, max(len(body), 1), 1000):
             ch = body[i:i + 1200]
             if ch.strip():
@@ -377,7 +386,8 @@ def export():
     with tarfile.open(out, "w:gz") as t:
         if os.path.isdir(MEM):
             t.add(MEM, arcname="memory", filter=keep)
-        for extra in ("~/vox/learned.json", "~/vox/local.lua"):
+        for extra in ("~/vox/learned.json", "~/vox/local.lua",
+                      "~/vox/identity.md"):
             p = os.path.expanduser(extra)
             if os.path.exists(p):
                 t.add(p, arcname=os.path.basename(p))

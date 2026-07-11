@@ -109,6 +109,10 @@ local C = {
   -- (Needs the Screen Recording grant; skipped silently without it.)
   screenContext = true,
 
+  -- Tiny idle alien: a minimal, mostly-still cutie at the bottom edge when
+  -- Vox is idle. Click him to start/stop a hands-free dictation.
+  miniAlien = true,
+
   -- Voice commands: say "scratch that" to undo the last dictation;
   -- say "new paragraph." / "new line." (as their own clause) for breaks.
   voiceCommands = true,
@@ -283,12 +287,34 @@ local function buildLearnedVocab()
   return table.concat(parts, ", ")
 end
 
+-- the brain teaches the ears: the memory's top proper-noun entities
+-- (people, brands, places you actually talk about) join Whisper's vocabulary
+local function brainVocab()
+  local p = io.popen("/usr/bin/python3 " .. HOME
+                     .. "/vox/mem.py entities -n 25 2>/dev/null")
+  if not p then return "" end
+  local out = p:read("*a") or ""
+  p:close()
+  local parts, len = {}, 0
+  for line in out:gmatch("[^\n]+") do
+    local ok, e = pcall(hs.json.decode, line)
+    if ok and e and e.entity and e.entity:find("%u") then  -- proper nouns only
+      len = len + #e.entity + 2
+      if len > 220 then break end
+      parts[#parts + 1] = e.entity
+    end
+  end
+  return table.concat(parts, ", ")
+end
+
 local vocabCache = nil
 local function fullVocabulary()
   if not vocabCache then
     local extra = buildLearnedVocab()      -- reads the system dictionary once
-    vocabCache = (extra ~= "") and (C.vocabulary .. " " .. extra .. ".")
-                                or C.vocabulary
+    local brains = brainVocab()
+    vocabCache = C.vocabulary
+      .. (extra ~= "" and (" " .. extra .. ".") or "")
+      .. (brains ~= "" and (" " .. brains .. ".") or "")
   end
   return vocabCache
 end
@@ -541,6 +567,110 @@ local function easeOutBack(t)   -- overshoot = the cute bounce
   return 1 + c3 * u * u * u + c1 * u * u
 end
 
+-- ---------------- idle mini-alien -----------------------------
+-- When Vox is idle, a tiny alien rests at the bottom edge with two little
+-- buttons: C = speak-to-content, P = absorb the screen into memory.
+-- Click the alien himself for hands-free dictation.
+local mini = { canvas = nil, timer = nil, phase = 0,
+               nextBlink = 20, blinkUntil = 0, act = {} }
+local MW, MH, MOFF = 74, 30, 24        -- canvas w/h, alien x-offset
+
+local function miniEnsure()
+  if mini.canvas then return end
+  local c = hs.canvas.new({ x = 0, y = 0, w = MW, h = MH })
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behavior({ "canJoinAllSpaces", "stationary" })
+  c:clickActivating(false)             -- clicks don't steal app focus
+  c[1] = { type = "oval", action = "fill", fillGradient = "radial",
+           fillGradientColors = {
+             { red = 0.72, green = 1.0,  blue = 0.88, alpha = 1 },
+             { red = 0.40, green = 0.90, blue = 0.66, alpha = 1 } },
+           fillGradientCenter = { x = -0.35, y = -0.45 },
+           frame = { x = MOFF + 6, y = 12, w = 14, h = 15 } }
+  c[2] = { type = "oval", action = "fill", fillColor = EYES,
+           frame = { x = MOFF + 9, y = 16.5, w = 3, h = 4 } }
+  c[3] = { type = "oval", action = "fill", fillColor = EYES,
+           frame = { x = MOFF + 14, y = 16.5, w = 3, h = 4 } }
+  c[4] = { type = "arc", action = "stroke", strokeColor = EYES,
+           strokeWidth = 1, center = { x = MOFF + 13, y = 22 }, radius = 2.2,
+           startAngle = 135, endAngle = 225 }
+  c[5] = { type = "segments", action = "stroke", strokeColor = ALIEN,
+           strokeWidth = 1.2,
+           coordinates = { { x = MOFF + 13, y = 12 }, { x = MOFF + 13, y = 8 } } }
+  c[6] = { type = "oval", action = "fill", fillColor = ALIEN,
+           frame = { x = MOFF + 11.6, y = 5.4, w = 2.8, h = 2.8 } }
+  c[7] = { type = "oval", action = "fill",
+           fillColor = { red = 1, green = 1, blue = 1, alpha = 0.85 },
+           frame = { x = MOFF + 10.7, y = 17.2, w = 1.2, h = 1.4 } }
+  c[8] = { type = "oval", action = "fill",
+           fillColor = { red = 1, green = 1, blue = 1, alpha = 0.85 },
+           frame = { x = MOFF + 15.7, y = 17.2, w = 1.2, h = 1.4 } }
+  -- C button (content) and P button (absorb screen)
+  local btnBg = { red = 0.10, green = 0.12, blue = 0.20, alpha = 0.85 }
+  c[9]  = { type = "oval", action = "fill", fillColor = btnBg,
+            frame = { x = 2, y = 12, w = 17, h = 17 } }
+  c[10] = { type = "text", text = "C", textSize = 10,
+            textColor = { red = 0.45, green = 0.97, blue = 0.72, alpha = 1 },
+            textAlignment = "center", frame = { x = 2, y = 14.5, w = 17, h = 13 } }
+  c[11] = { type = "oval", action = "fill", fillColor = btnBg,
+            frame = { x = MW - 19, y = 12, w = 17, h = 17 } }
+  c[12] = { type = "text", text = "P", textSize = 10,
+            textColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = 1 },
+            textAlignment = "center", frame = { x = MW - 19, y = 14.5, w = 17, h = 13 } }
+  c:alpha(0.55)
+  c:canvasMouseEvents(true, false, false, false)
+  c:mouseCallback(function(_, event, _, x, y)
+    if event ~= "mouseDown" then return end
+    if x <= 22 and mini.act.content then mini.act.content()
+    elseif x >= MW - 22 and mini.act.grab then mini.act.grab()
+    elseif mini.act.talk then mini.act.talk() end
+  end)
+  mini.canvas = c
+end
+
+local function miniTick()
+  local c = mini.canvas
+  if not c then return end
+  mini.phase = mini.phase + 1
+  local bob = math.sin(mini.phase * 0.12) * 0.8
+  if mini.phase >= mini.nextBlink then
+    mini.blinkUntil = mini.phase + 1
+    mini.nextBlink = mini.phase + 24 + math.random(48)
+  end
+  local eh = (mini.phase < mini.blinkUntil) and 0.8 or 4
+  local ey = 18.5 - eh / 2 + bob
+  c[1].frame = { x = MOFF + 6, y = 12 + bob, w = 14, h = 15 }
+  c[2].frame = { x = MOFF + 9,  y = ey, w = 3, h = eh }
+  c[3].frame = { x = MOFF + 14, y = ey, w = 3, h = eh }
+  c[4].center = { x = MOFF + 13, y = 22 + bob }
+  local sway = math.sin(mini.phase * 0.08) * 1.2
+  c[5].coordinates = { { x = MOFF + 13, y = 12 + bob },
+                       { x = MOFF + 13 + sway, y = 8 + bob } }
+  c[6].frame = { x = MOFF + 11.6 + sway, y = 5.4 + bob, w = 2.8, h = 2.8 }
+  local ga = eh > 2 and 0.85 or 0
+  c[7].fillColor = { red = 1, green = 1, blue = 1, alpha = ga }
+  c[8].fillColor = { red = 1, green = 1, blue = 1, alpha = ga }
+  c[7].frame = { x = MOFF + 10.7, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
+  c[8].frame = { x = MOFF + 15.7, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
+end
+
+local function miniShow()
+  if not C.miniAlien or hud.visible then return end
+  miniEnsure()
+  local f = hs.screen.mainScreen():fullFrame()
+  mini.canvas:frame({ x = f.x + (f.w - MW) / 2, y = f.y + f.h - 34,
+                      w = MW, h = MH })
+  mini.canvas:show()
+  if not mini.timer then
+    mini.timer = hs.timer.doEvery(0.25, safeTick("miniTick", miniTick))
+  end
+end
+
+local function miniHide()
+  if mini.timer then mini.timer:stop(); mini.timer = nil end
+  if mini.canvas then mini.canvas:hide() end
+end
+
 -- element indices: 1 pill · 2 head · 3/4 eyes · 5 smile · 6 antenna ·
 -- 7 antenna tip · 8..15 bars · 16/17 eye glints · 18/19 blush · 20.. smoke
 local function hudEnsure()
@@ -598,6 +728,11 @@ local function hudEnsure()
                   fillColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = 0 },
                   frame = { x = -10, y = -10, w = 2, h = 2 } }
   end
+  for k = 0, 2 do                                                    -- comet trail
+    c[30 + k] = { type = "oval", action = "fill",
+                  fillColor = { red = 0.8, green = 0.6, blue = 1.0, alpha = 0 },
+                  frame = { x = -10, y = -10, w = 2, h = 2 } }
+  end
   hud.canvas = c
 end
 
@@ -623,6 +758,7 @@ local function hudTick()
       hud.visible = false
       if hud.timer then hud.timer:stop(); hud.timer = nil end
       c:hide()
+      miniShow()               -- the tiny idle alien takes back the stage
       return
     end
   end
@@ -632,14 +768,16 @@ local function hudTick()
   for i = 0, PUFFS - 1 do
     local el = c[20 + i]
     if puffT then
+      -- staggered per-puff timing makes the poof feel alive
+      local pt = math.max(0, math.min(1, puffT * 1.2 - i * 0.045))
       local ang = (i / PUFFS) * 6.283 + 0.55
-      local spread = (16 + (i % 3) * 7) * (0.35 + puffT * 0.9)
+      local spread = (18 + (i % 3) * 8) * (0.3 + pt * 1.0)
       local px = CV_W / 2 + math.cos(ang) * spread
-      local py = OY + PILL_H / 2 + math.sin(ang) * spread * 0.55 - puffT * 10
-      local r = 6 + puffT * 15 + (i % 3) * 3
+      local py = OY + PILL_H / 2 + math.sin(ang) * spread * 0.55 - pt * 13
+      local r = 7 + pt * 20 + (i % 3) * 3
       el.frame = { x = px - r / 2, y = py - r / 2, w = r, h = r }
-      el.fillColor = { red = 0.86, green = 0.93, blue = 1.0,
-                       alpha = math.max(0, (1 - puffT) * 0.38) }
+      el.fillColor = { red = 0.87, green = 0.94, blue = 1.0,
+                       alpha = math.max(0, (1 - pt) * 0.5) }
     else
       el.fillColor = { red = 0.86, green = 0.93, blue = 1.0, alpha = 0 }
     end
@@ -649,7 +787,25 @@ local function hudTick()
   -- per-element handling being overkill; canvas alpha covers the smoke too,
   -- so we fade the pill/face by alpha on the pill and rely on motion)
   c:alpha(puffT and alpha or 1)
-  c[1].fillColor = { red = 0.04, green = 0.04, blue = 0.09, alpha = 0.6 * alpha }
+  local working = (hud.mode == "work")
+  local breathe = working and (0.08 + math.sin(hud.phase * 0.9) * 0.07) or 0
+  c[1].fillColor = { red = 0.04 + breathe * 0.6, green = 0.04,
+                     blue = 0.09 + breathe, alpha = (0.6 + breathe) * alpha }
+  -- comet with fading tail orbits the pill while the alien works
+  for k = 0, 2 do
+    local el = c[30 + k]
+    if working then
+      local a = hud.phase * 1.25 - k * 0.38
+      local px = OX + PILL_W / 2 + math.cos(a) * (PILL_W / 2 + 7)
+      local py = OY + PILL_H / 2 + math.sin(a) * (PILL_H / 2 + 6)
+      local rr = 3.6 - k * 0.9
+      el.frame = { x = px - rr / 2, y = py - rr / 2, w = rr, h = rr }
+      el.fillColor = { red = 0.8, green = 0.62, blue = 1.0,
+                       alpha = (0.95 - k * 0.3) * alpha }
+    else
+      el.fillColor = { red = 0.8, green = 0.62, blue = 1.0, alpha = 0 }
+    end
+  end
 
   -- live voice level (smoothed) drives everything while listening
   if hud.mode == "rec" then
@@ -773,6 +929,7 @@ local function hudTick()
 end
 
 local function hudShow(mode)
+  miniHide()
   hudEnsure()
   hud.mode = mode
   local col = (mode == "rec")
@@ -810,6 +967,7 @@ end
 -- the keep-warm heartbeat: a quick, subtle groove at the bottom of the screen
 local function hudDance()
   if hud.visible or state ~= "idle" then return end  -- never interrupt work
+  miniHide()
   hudEnsure()
   hud.mode, hud.emote = "emote", "dance"
   hud.emoteUntil = hud.phase + 26
@@ -1021,6 +1179,17 @@ local function llmGenerate(prompt, label, complex)
     end)
 end
 
+-- the alien knows who it speaks for: ~/vox/identity.md (local, untracked)
+-- is injected into reply/expand prompts so output sounds like YOU and knows
+-- your history. Edit it anytime; read fresh on every use.
+local function identityNotes()
+  local f = io.open(HOME .. "/vox/identity.md", "r")
+  if not f then return "" end
+  local s = f:read("*a") or ""
+  f:close()
+  return s:sub(1, 900)
+end
+
 local function expandPrompt(note, mem)
   return table.concat({
     "Expand the following spoken note into polished written content, in the",
@@ -1028,6 +1197,9 @@ local function expandPrompt(note, mem)
     "paragraphs unless the note implies otherwise. Do NOT invent facts they",
     "didn't say; amplify, sharpen, and organize what they DID say.",
     "They are writing in the app \"" .. context.app .. "\" — match that medium.",
+    (identityNotes() ~= "" and
+      ("About the writer (their own identity notes):\n" .. identityNotes())
+      or ""),
     (mem and mem ~= "" and
       ("Possibly relevant notes from the user's own local memory (use only"
        .. " if genuinely helpful):\n" .. mem) or ""),
@@ -1078,6 +1250,9 @@ local function smartReply()
         "conversation or message content, especially the most recent part.",
         "Write the single best reply: match the tone and language of the",
         "conversation, be natural and concise, sound human.",
+        (identityNotes() ~= "" and
+          ("You are replying AS this person — their own identity notes:\n"
+           .. identityNotes()) or ""),
         (mem ~= "" and
           ("The user's own local memory has possibly relevant notes (use only"
            .. " if genuinely helpful):\n" .. mem) or ""),
@@ -1439,6 +1614,54 @@ local function stopRecording()
   end
 end
 
+-- the mini alien's three powers
+local function miniStart(mode)
+  if state == "idle" then
+    keyDownAt = hs.timer.secondsSinceEpoch()
+    recMode = mode
+    startRecording()
+    locked = true
+    lockAt = hs.timer.secondsSinceEpoch()
+    setUI("lock")
+  elseif state == "recording" and locked then
+    locked = false
+    stopRecording()
+  end
+end
+mini.act.talk    = function() miniStart("dictate") end
+mini.act.content = function()
+  if state == "idle" then hs.alert.show("🎨 content mode — speak, click to finish", 2) end
+  miniStart("expand")
+end
+mini.act.grab = function()
+  local win = hs.window.focusedWindow()
+  local wid = win and win:id()
+  local app = hs.application.frontmostApplication()
+  local appName = app and app:name() or "screen"
+  local ocrBin = HOME .. "/vox/ocr-bin"
+  hs.alert.show("📸 absorbing screen…", 1)
+  M.grabTask = hs.task.new("/bin/sh", function()
+    local f = io.open("/tmp/vox-grab.txt", "r")
+    local txt = f and f:read("*a") or ""
+    if f then f:close() end
+    os.remove("/tmp/vox-grab.txt")
+    txt = txt:sub(1, 6000)
+    if #txt:gsub("%s", "") < 20 then
+      hs.alert.show("Vox: nothing readable (Screen Recording granted?)", 3)
+      return
+    end
+    context.app = appName
+    rememberText(txt, "grab")
+    hs.alert.show("🧠 absorbed into memory ✓", 2)
+  end, { "-c", string.format(
+    "[ -x %s ] || /usr/bin/swiftc -O %s -o %s 2>/dev/null; " ..
+    "/usr/sbin/screencapture -x %s /tmp/vox-grab.png && %s /tmp/vox-grab.png" ..
+    " > /tmp/vox-grab.txt 2>/dev/null; rm -f /tmp/vox-grab.png",
+    ocrBin, HOME .. "/vox/ocr.swift", ocrBin,
+    wid and ("-l " .. wid) or "-m", ocrBin) })
+  M.grabTask:start()
+end
+
 -- ---------------- hotkey: hold-to-talk + tap-to-lock ---------
 local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
   if e:getKeyCode() ~= C.holdKeycode then return false end
@@ -1604,6 +1827,11 @@ menubar:setMenu(function()
         { title = "Left Command", checked = C.holdKeycode == 55,
           fn = function() C.holdKeycode = 55; C.holdKeyName = "Left Command"; hs.alert.show("Vox key: Left Command", 1) end },
       } },
+    { title = "Tiny idle alien (click him to dictate)", checked = C.miniAlien,
+      fn = function()
+        C.miniAlien = not C.miniAlien
+        if C.miniAlien then miniShow() else miniHide() end
+      end },
     { title = "Keep dictation in clipboard (⌘V re-paste)", checked = C.keepInClipboard,
       fn = function() C.keepInClipboard = not C.keepInClipboard end },
     { title = "Duck music while recording", checked = C.duckAudio,
@@ -1730,6 +1958,7 @@ M.wakeWatcher = hs.caffeinate.watcher.new(function(ev)
 end)
 M.wakeWatcher:start()
 timers.warmLoop = hs.timer.doEvery(900, warmUp)
+timers.miniBoot = hs.timer.doAfter(2, miniShow)
 
 -- ---------------- local pulse API -----------------------------
 -- localhost-only: agents on THIS machine can read the alien's mind.
@@ -1828,6 +2057,7 @@ end)
 -- Anchor everything in the module table so Lua GC never collects
 -- the eventtap, menubar, canvas, or timers (classic Hammerspoon gotcha).
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
+M.mini = mini
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
             commands = applyVoiceCommands, collapse = collapseRepeats,
