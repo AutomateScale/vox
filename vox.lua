@@ -1808,7 +1808,7 @@ local function selfTest(interactive)
       -- server has degraded — refresh it and re-verify (found empirically:
       -- ~12h-old servers drift 1s -> 9s; a restart fully restores them)
       if C.whisperHost == "127.0.0.1" and calib.bestLatency
-         and secs > math.max(6, calib.bestLatency * 4) and not M.refreshing then
+         and secs > math.max(4.5, calib.bestLatency * 2) and not M.refreshing then
         M.refreshing = true
         log(string.format("engine slow (%.1fs vs best %.1fs) — refreshing",
             secs, calib.bestLatency))
