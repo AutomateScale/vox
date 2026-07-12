@@ -104,7 +104,36 @@ else
   info "nothing, grant it: System Settings > Privacy & Security > Accessibility > Hammerspoon."
 fi
 
-echo "[6] Default audio input device"
+echo "[6] The alien's brain (memory + knowledge graph)"
+if [ -f ~/vox/memory/vox-memory.db ]; then
+  STATS=$(/usr/bin/python3 ~/vox/mem.py stats 2>/dev/null)
+  echo "     $STATS"
+  case "$STATS" in
+    *'"entries": 0'*) info "brain is empty — dictate, or absorb screens with the P button";;
+    *entries*)        ok "brain healthy";;
+    *)                bad "brain unreadable — check: python3 ~/vox/mem.py stats";;
+  esac
+else
+  info "no brain yet — it forms on your first dictation"
+fi
+[ -f ~/vox/identity.md ] && ok "identity notes present (replies sound like you)"   || info "no ~/vox/identity.md — smart replies won't know who you are (optional)"
+
+echo "[7] Pulse API (localhost)"
+API=$(curl -s --max-time 3 http://127.0.0.1:8091/status 2>/dev/null)
+case "$API" in
+  *pipeline*) ok "API answering on :8091";;
+  *)          info "API not answering (fine if Vox just started; check apiEnable)";;
+esac
+
+echo "[8] Screen reader (triple-tap replies + P button)"
+if [ -x ~/vox/ocr-bin ]; then ok "ocr-bin compiled"
+elif command -v swiftc >/dev/null 2>&1; then
+  info "ocr-bin not built yet — compiles itself on first use"
+else
+  info "no Swift toolchain — screen features unavailable until Xcode CLT installed"
+fi
+
+echo "[9] Default audio input device"
 system_profiler SPAudioDataType 2>/dev/null | awk '/Input Source|Default Input Device/{print "     " $0}' | head -6
 
 rm -rf "$T"
