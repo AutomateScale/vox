@@ -439,6 +439,9 @@ end
 local function noteTranscribeSuccess(secs)
   calib.mode = (C.whisperHost == "127.0.0.1") and "local" or ("remote " .. C.whisperHost)
   calib.lastLatency = math.floor(secs * 10) / 10
+  if not calib.bestLatency or calib.lastLatency < calib.bestLatency then
+    calib.bestLatency = calib.lastLatency
+  end
   calib.verifiedAt, calib.verifiedRev = os.time(), currentRev
   calib.remoteFails = 0
   saveCalib()
@@ -1801,6 +1804,21 @@ local function selfTest(interactive)
       noteTranscribeSuccess(secs)
       log(string.format("pipeline self-test PASSED in %.1fs via %s",
           secs, C.whisperHost))
+      -- engine decay: a pass far slower than our best means the long-running
+      -- server has degraded — refresh it and re-verify (found empirically:
+      -- ~12h-old servers drift 1s -> 9s; a restart fully restores them)
+      if C.whisperHost == "127.0.0.1" and calib.bestLatency
+         and secs > math.max(6, calib.bestLatency * 4) and not M.refreshing then
+        M.refreshing = true
+        log(string.format("engine slow (%.1fs vs best %.1fs) — refreshing",
+            secs, calib.bestLatency))
+        os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
+        timers.refresh1 = hs.timer.doAfter(2, ensureServer)
+        timers.refresh2 = hs.timer.doAfter(30, function()
+          M.refreshing = false
+          selfTest(false)
+        end)
+      end
       if interactive then
         hs.alert.show(string.format("Vox verified ✓ %.1fs (%s)", secs,
           calib.mode), 3)
@@ -2055,6 +2073,15 @@ end)
 M.wakeWatcher:start()
 timers.warmLoop = hs.timer.doEvery(900, warmUp)
 timers.miniBoot = hs.timer.doAfter(2, miniShow)
+-- long-running whisper-server drifts slow; a scheduled idle refresh keeps
+-- the 1.5s dictation feel permanent
+timers.engineRefresh = hs.timer.doEvery(12 * 3600, function()
+  if state == "idle" and C.whisperHost == "127.0.0.1" then
+    log("scheduled engine refresh")
+    os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
+    timers.engineRe2 = hs.timer.doAfter(2, ensureServer)
+  end
+end)
 
 -- ---------------- local pulse API -----------------------------
 -- localhost-only: agents on THIS machine can read the alien's mind.
