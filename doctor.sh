@@ -118,11 +118,24 @@ else
 fi
 [ -f ~/vox/identity.md ] && ok "identity notes present (replies sound like you)"   || info "no ~/vox/identity.md — smart replies won't know who you are (optional)"
 
-echo "[7] Pulse API (localhost)"
+echo "[7] Pulse API (localhost) + auth guard"
 API=$(curl -s --max-time 3 http://127.0.0.1:8091/status 2>/dev/null)
 case "$API" in
-  *pipeline*) ok "API answering on :8091";;
-  *)          info "API not answering (fine if Vox just started; check apiEnable)";;
+  *pipeline*)
+    ok "API answering on :8091"
+    # security regression check: a forged-Host request must be rejected
+    FORGED=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+              -H "Host: evil.example" http://127.0.0.1:8091/status 2>/dev/null)
+    XSITE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 \
+              -H "Origin: https://evil.example" http://127.0.0.1:8091/recent 2>/dev/null)
+    if [ "$FORGED" = "403" ] && [ "$XSITE" = "403" ]; then
+      ok "API auth guard active (forged-Host + cross-site both blocked)"
+    else
+      bad "API AUTH GUARD MISSING — a web page could read your memory!"
+      info "forged-Host=$FORGED xsite=$XSITE (both must be 403). Update Vox:"
+      info "cd ~/vox && git pull --ff-only && killall Hammerspoon; open -a Hammerspoon"
+    fi;;
+  *) info "API not answering (fine if Vox just started; check apiEnable)";;
 esac
 
 echo "[8] Screen reader (triple-tap replies + P button)"
