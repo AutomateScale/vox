@@ -637,21 +637,43 @@ local function miniTick()
     mini.blinkUntil = mini.phase + 1
     mini.nextBlink = mini.phase + 24 + math.random(48)
   end
+  -- rare personality bits: a glance around, an antenna twitch, a tiny hop
+  if not mini.nextBit then
+    mini.nextBit = mini.phase + 240 + math.random(720)   -- first in 1-4 min
+  end
+  if mini.phase >= mini.nextBit then
+    mini.bit = ({ "look", "twitch", "hop" })[math.random(3)]
+    mini.bitStart, mini.bitUntil = mini.phase, mini.phase + 10
+    mini.nextBit = mini.phase + 480 + math.random(960)   -- next in 2-6 min
+  end
+  local inBit = mini.bit and mini.phase < mini.bitUntil
+  local lookX = 0
+  local swayAmp = 1.2
+  if inBit then
+    local t = (mini.phase - mini.bitStart) / 10
+    if mini.bit == "look" then
+      lookX = math.sin(t * math.pi * 2) * 1.7           -- glance left, right
+    elseif mini.bit == "twitch" then
+      swayAmp = 3.4                                      -- excited antenna
+    elseif mini.bit == "hop" then
+      bob = bob - math.sin(t * math.pi) * 3.2            -- one happy hop
+    end
+  end
   local eh = (mini.phase < mini.blinkUntil) and 0.8 or 4
   local ey = 18.5 - eh / 2 + bob
   c[1].frame = { x = MOFF + 6, y = 12 + bob, w = 14, h = 15 }
-  c[2].frame = { x = MOFF + 9,  y = ey, w = 3, h = eh }
-  c[3].frame = { x = MOFF + 14, y = ey, w = 3, h = eh }
+  c[2].frame = { x = MOFF + 9 + lookX,  y = ey, w = 3, h = eh }
+  c[3].frame = { x = MOFF + 14 + lookX, y = ey, w = 3, h = eh }
   c[4].center = { x = MOFF + 13, y = 22 + bob }
-  local sway = math.sin(mini.phase * 0.08) * 1.2
+  local sway = math.sin(mini.phase * (swayAmp > 2 and 0.5 or 0.08)) * swayAmp
   c[5].coordinates = { { x = MOFF + 13, y = 12 + bob },
                        { x = MOFF + 13 + sway, y = 8 + bob } }
   c[6].frame = { x = MOFF + 11.6 + sway, y = 5.4 + bob, w = 2.8, h = 2.8 }
   local ga = eh > 2 and 0.85 or 0
   c[7].fillColor = { red = 1, green = 1, blue = 1, alpha = ga }
   c[8].fillColor = { red = 1, green = 1, blue = 1, alpha = ga }
-  c[7].frame = { x = MOFF + 10.7, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
-  c[8].frame = { x = MOFF + 15.7, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
+  c[7].frame = { x = MOFF + 10.7 + lookX, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
+  c[8].frame = { x = MOFF + 15.7 + lookX, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
 end
 
 local function miniShow()
