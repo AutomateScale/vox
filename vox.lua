@@ -2075,7 +2075,12 @@ timers.warmLoop = hs.timer.doEvery(900, warmUp)
 timers.miniBoot = hs.timer.doAfter(2, miniShow)
 -- long-running whisper-server drifts slow; a scheduled idle refresh keeps
 -- the 1.5s dictation feel permanent
-timers.engineRefresh = hs.timer.doEvery(12 * 3600, function()
+-- decay recurs every ~2h in practice — periodic self-test carries the
+-- auto-refresh machinery, so slowness is caught before a human feels it
+timers.selfTestLoop = hs.timer.doEvery(2 * 3600 + 300, function()
+  if state == "idle" then selfTest(false) end
+end)
+timers.engineRefresh = hs.timer.doEvery(4 * 3600, function()
   if state == "idle" and C.whisperHost == "127.0.0.1" then
     log("scheduled engine refresh")
     os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
