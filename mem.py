@@ -59,20 +59,75 @@ come comes said says tell told make makes made need needs want wants
 that this with from into onto upon will shall then than them""".split())
 
 
+# App/window chrome that OCR screen-grabs drag in as fake "entities" — these
+# are UI furniture, never things you actually talk about. Kept out of the brain.
+UICHROME = set("""Inbox Compose Sent Draft Drafts Starred Snoozed Spam Trash
+Labels Label More Archive Reply Forward Search Settings Setting Menu Home Login
+Logout Signin Signout Bookmarks Bookmark Chat Meet Mail Gmail Calendar Contacts
+Contact Notifications Notification New Edit Delete Cancel Save Submit Send Next
+Back Close Open View Share Download Upload Copy Paste Cut Undo Redo Today
+Yesterday Tomorrow Online Offline Loading Untitled All None Yes Ok Okay Team
+Teams Review Reviews Funnel Dashboard Profile Account Accounts Help Support
+About Terms Privacy Toolbar Sidebar Header Footer Button Click Tap Scroll Page
+Tab Tabs Window Panel Filter Sort Refresh Reload Update Continue Skip Done
+Start Stop Active Inactive Unread Read Deleted Signin Signup Enabled Disabled
+Purchases Social Updates Forums Promotions Important Compose Message Messages""".split())
+
+
+def _entity_ok(e):
+    """Reject OCR noise: multi-line blobs, chrome words, stray fragments."""
+    if "\n" in e or "\t" in e:
+        return False                       # multi-line = a scraped UI column
+    e = e.strip()
+    if len(e) < 2 or e.isdigit():
+        return False
+    words = e.split()
+    if any(w in STOP or w in UICHROME for w in words):
+        return False
+    return True
+
+
 def extract_entities(text):
     """Names, brands, distinctive terms — deterministic, no LLM."""
     found = {}
-    for m in re.finditer(r"\b([A-Z][\w'&-]+(?:\s+[A-Z][\w'&-]+)+)\b", text):
+    # multiword Title Case — spaces/tabs only, so it never welds together
+    # separate lines of a scraped menu ("Mail\nChat\nMeet") into one "entity"
+    for m in re.finditer(r"\b([A-Z][\w'&-]+(?:[ \t]+[A-Z][\w'&-]+)+)\b", text):
         e = m.group(1)
-        if not any(w in STOP for w in e.split()):
+        if _entity_ok(e):
             found[e.lower()] = e
     for m in re.finditer(r"\b([A-Za-z]+[a-z][A-Z][\w-]*|[a-z]\d[a-z\d]*)\b", text):
-        found[m.group(1).lower()] = m.group(1)
+        e = m.group(1)
+        if _entity_ok(e):
+            found[e.lower()] = e
     for m in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z][\w'-]{2,})\b", text):
         e = m.group(1)
-        if e not in STOP and e.lower() not in found:
+        if e.lower() not in found and _entity_ok(e):
             found[e.lower()] = e
     return found
+
+
+def categorize(key, display):
+    """Bucket an entity so the wiki can group it — structural signals only,
+    deterministic, no LLM. (A dictionary check was tried and rejected: too many
+    real names — Mark, Chad, Archon — are also common words, so it buried them.)
+    name = Title-Case names/places/terms · brand = camelCase/alnum products ·
+    acronym = CRM/API/SaaS · concept = emergent lowercase phrases · other."""
+    d = display.strip()
+    if key == d.lower() and d == d.lower():
+        return "concept"                   # lowercase emergent phrase/bigram
+    if " " not in d and len(d) >= 16 and re.search(r"[a-z]", d) \
+            and re.search(r"[A-Z]", d):
+        return "other"                     # long random id/hash, not a topic
+    if re.fullmatch(r"[A-Z]{2,6}", d) or re.fullmatch(r"[A-Za-z]{0,3}[A-Z]{2,}", d):
+        return "acronym"                   # CRM, API, GHL, SaaS
+    if len(d) <= 24 and (re.search(r"[a-z][A-Z]", d)
+                         or re.search(r"[A-Za-z][0-9]", d)):
+        return "brand"                     # FreelanceKing, PrinterOn, n8n
+    words = d.split()
+    if words and all(re.fullmatch(r"[A-Z][a-z'’.\-]+", w) for w in words):
+        return "name"                      # Title Case: names, places, terms
+    return "other"
 
 
 def extract_bigrams(text):
@@ -167,9 +222,33 @@ def _insert(c, text, app, mode, ts):
     return rowid
 
 
+def clean_ocr(text):
+    """Screen-OCR arrives as a vertical wall of UI furniture — menu items,
+    unread counters, truncated edge labels ("Busine", "• Nationa", "68"),
+    nav links. That is the word-salad that pollutes the brain AND misleads the
+    smart-reply. Keep only lines that read like real content: a full sentence
+    (3+ words ending in .?!) or a substantial phrase (5+ word-tokens), and
+    mostly letters. Everything else is chrome. Empty result => nothing to keep."""
+    good = []
+    for ln in text.splitlines():
+        s = ln.strip(" \t•·—-–*|>©=()×#").strip()
+        if len(s) < 10:
+            continue
+        letters = sum(c.isalpha() for c in s)
+        if letters < len(s) * 0.6:                 # mostly symbols/numbers/urls
+            continue
+        words = re.findall(r"[A-Za-z]{2,}", s)
+        sentence = re.search(r"[.!?][\"')]?$", s) is not None
+        if (sentence and len(words) >= 3) or len(words) >= 5:
+            good.append(s)
+    return " ".join(good).strip()
+
+
 def add(text, app="", mode="dictate", ts=None, journal=True):
     text = (text or "").strip()
-    if not text:
+    if mode == "grab":                 # screen-absorb: strip UI salad first
+        text = clean_ocr(text)
+    if not text or len(text) < 2:
         return
     ts = ts or time.time()
     c = con()
@@ -212,12 +291,19 @@ def recent(n=10):
                            (n,)).fetchall())
 
 
-def entities_cmd(n=30):
+def entities_cmd(n=30, sort="mentions", cat=""):
+    order = {"mentions": "n DESC, last_ts DESC",
+             "recent":   "last_ts DESC, n DESC",
+             "name":     "display COLLATE NOCASE ASC"}.get(sort,
+             "n DESC, last_ts DESC")
     for key, disp, cnt, last in con().execute(
             "SELECT key, display, n, last_ts FROM entities "
-            "ORDER BY n DESC, last_ts DESC LIMIT ?", (n,)):
+            "ORDER BY " + order + " LIMIT ?", (n,)):
+        c = categorize(key, disp)
+        if cat and c != cat:
+            continue
         print(json.dumps({"entity": disp, "key": key, "mentions": cnt,
-                          "last": last}))
+                          "last": last, "category": c}))
 
 
 def _topic_rows(c, entity, n):
@@ -267,6 +353,31 @@ def slug(k):
     return re.sub(r"[^\w-]", "-", k)
 
 
+STYLE = ("<style>body{font-family:-apple-system,system-ui;max-width:820px;"
+         "margin:40px auto;background:#0b0e14;color:#dde3ee;padding:0 20px}"
+         "a{color:#7ee0c0;text-decoration:none}a:hover{text-decoration:underline}"
+         "h1{color:#7ee0c0}h3{color:#9fb0c8;margin:26px 0 6px;font-size:13px;"
+         "text-transform:uppercase;letter-spacing:.08em}"
+         ".m{border-left:3px solid #34d399;padding:8px 14px;margin:10px 0;"
+         "background:#11151f;border-radius:6px}.meta{color:#8a93a6;font-size:12px}"
+         ".tag{display:inline-block;background:#1a2030;padding:4px 11px;"
+         "border-radius:12px;margin:3px;font-size:13px}.tag .c{color:#8a93a6;"
+         "font-size:11px;margin-left:2px}"
+         "#bar{position:sticky;top:0;background:#0b0e14;padding:12px 0;"
+         "border-bottom:1px solid #1a2030;margin-bottom:8px}"
+         "#q{background:#11151f;border:1px solid #26304a;color:#dde3ee;"
+         "border-radius:8px;padding:8px 12px;width:60%;font-size:14px}"
+         ".sb{background:#1a2030;border:0;color:#9fb0c8;border-radius:8px;"
+         "padding:8px 12px;margin-left:6px;font-size:13px;cursor:pointer}"
+         ".sb.on{background:#34d399;color:#08130d}"
+         "section.empty{display:none}h3.empty{display:none}</style>")
+
+# category -> heading (also fixes section order in the wiki)
+CATS = [("name", "🧑 Names & Terms"), ("brand", "🏷️ Brands & Products"),
+        ("concept", "💡 Concepts"), ("acronym", "🔤 Acronyms"),
+        ("other", "🗂️ Other")]
+
+
 def weave():
     c = con()
     out = os.path.join(MEM, "wiki")
@@ -275,21 +386,68 @@ def weave():
     ents = c.execute("SELECT key, display, n, last_ts FROM entities "
                      "ORDER BY n DESC LIMIT ?", (WEAVE_CAP,)).fetchall()
     total = c.execute("SELECT count(*) FROM entities").fetchone()[0]
-    style = ("<style>body{font-family:-apple-system;max-width:760px;margin:40px auto;"
-             "background:#0b0e14;color:#dde3ee;padding:0 20px}a{color:#7ee0c0}"
-             "h1{color:#7ee0c0}.m{border-left:3px solid #34d399;padding:8px 14px;"
-             "margin:10px 0;background:#11151f;border-radius:6px}.meta{color:#8a93a6;"
-             "font-size:12px}.tag{display:inline-block;background:#1a2030;padding:3px 10px;"
-             "border-radius:12px;margin:3px;font-size:13px}</style>")
-    idx = [style, "<h1>👽 Vox brain</h1><p class=meta>%d of %d entities · woven %s</p>"
-           % (len(ents), total, time.strftime("%Y-%m-%d %H:%M"))]
+
+    buckets = {cat: [] for cat, _ in CATS}
+    for key, disp, cnt, last in ents:
+        buckets.get(categorize(key, disp), buckets["other"]).append(
+            (key, disp, cnt, last))
+
+    idx = [STYLE,
+           "<h1>👽 Vox brain</h1>",
+           "<p class=meta>%d of %d entities · woven %s</p>"
+           % (len(ents), total, time.strftime("%Y-%m-%d %H:%M")),
+           '<div id=bar>',
+           '<input id=q placeholder="filter entities…" '
+           'oninput="flt()" autocomplete=off>',
+           '<button class="sb on" id=s-mentions onclick="srt(\'mentions\')">'
+           'most-mentioned</button>',
+           '<button class="sb" id=s-name onclick="srt(\'name\')">A–Z</button>',
+           '<button class="sb" id=s-recent onclick="srt(\'recent\')">recent'
+           '</button></div>']
+
+    for cat, heading in CATS:
+        rows = buckets[cat]
+        idx.append('<h3 data-sec="%s">%s <span class=meta>(%d)</span></h3>'
+                   % (cat, heading, len(rows)))
+        idx.append('<section data-sec="%s">' % cat)
+        for key, disp, cnt, last in rows:
+            idx.append('<span class=tag data-n="%d" data-t="%d" data-name="%s">'
+                       '<a href="e-%s.html">%s</a>'
+                       '<span class=c>·%d</span></span>'
+                       % (cnt, int(last or 0), html.escape(disp.lower()),
+                          slug(key), html.escape(disp), cnt))
+        idx.append('</section>')
+
+    idx.append("""<script>
+function flt(){var q=document.getElementById('q').value.toLowerCase();
+document.querySelectorAll('.tag').forEach(function(t){
+t.style.display=t.dataset.name.indexOf(q)>-1?'':'none';});
+document.querySelectorAll('section').forEach(function(s){
+var vis=[].some.call(s.querySelectorAll('.tag'),function(t){
+return t.style.display!=='none';});
+s.classList.toggle('empty',!vis);
+var h=document.querySelector('h3[data-sec="'+s.dataset.sec+'"]');
+if(h)h.classList.toggle('empty',!vis);});}
+function srt(k){['mentions','name','recent'].forEach(function(x){
+document.getElementById('s-'+x).classList.toggle('on',x===k);});
+document.querySelectorAll('section').forEach(function(s){
+var t=[].slice.call(s.querySelectorAll('.tag'));
+t.sort(function(a,b){
+if(k==='name')return a.dataset.name<b.dataset.name?-1:1;
+if(k==='recent')return b.dataset.t-a.dataset.t;
+return b.dataset.n-a.dataset.n;});
+t.forEach(function(x){s.appendChild(x);});});}
+</script>""")
+
     for key, disp, cnt, _ in ents:
-        idx.append('<span class=tag><a href="e-%s.html">%s</a> ·%d</span>'
-                   % (slug(key), html.escape(disp), cnt))
-        page = [style, '<p><a href="index.html">← brain</a></p><h1>%s</h1>'
-                % html.escape(disp), "<h3>Linked</h3>"]
+        page = [STYLE, '<p><a href="index.html">← brain</a></p><h1>%s</h1>'
+                % html.escape(disp),
+                '<p class=meta>%s · %d mention%s</p>'
+                % (categorize(key, disp), cnt, "" if cnt == 1 else "s"),
+                "<h3>Linked</h3>"]
         for d2, k2, shared in _related_rows(c, key, 15):
-            page.append('<span class=tag><a href="e-%s.html">%s</a> ·%d</span>'
+            page.append('<span class=tag><a href="e-%s.html">%s</a>'
+                        '<span class=c>·%d</span></span>'
                         % (slug(k2), html.escape(d2), shared))
         page.append("<h3>Mentions</h3>")
         for text, app, mode, ts in _topic_rows(c, key, 50):
@@ -345,11 +503,12 @@ def forget(mode):
         c.execute("DELETE FROM tags WHERE mem_rowid = ?", (rid,))
         c.execute("DELETE FROM mem_v3 WHERE rowid = ?", (rid,))
     c.commit()
+    _retag(c)
     print(json.dumps({"forgot": len(rows), "mode": mode}))
 
 
-def retag():
-    c = con()
+def _retag(c):
+    """Rebuild tags/entities/concepts from the current mem_v3 rows."""
     rows = c.execute("SELECT rowid, text, ts FROM mem_v3").fetchall()
     c.execute("DELETE FROM tags")
     c.execute("DELETE FROM entities")
@@ -368,8 +527,41 @@ def retag():
             if bg in concepts:
                 _tag_row(c, rowid, bg, bg, int(ts or 0))
     c.commit()
-    print(json.dumps({"retagged": len(rows),
-                      "concepts": len(concepts)}))
+    return len(rows), len(concepts)
+
+
+def retag():
+    n, concepts = _retag(con())
+    print(json.dumps({"retagged": n, "concepts": concepts}))
+
+
+def prune():
+    """Clean up screen-grab entries retroactively: strip the UI salad in place,
+    keeping whatever real content each one had. Entries that were ALL salad
+    (nothing survives cleaning) are deleted. Then rebuild the entity graph so
+    the wiki reflects reality. New grabs are already cleaned on the way in."""
+    c = con()
+    removed, rewritten = 0, 0
+    for rowid, text, mode in c.execute(
+            "SELECT rowid, text, mode FROM mem_v3").fetchall():
+        if mode not in ("grab", "api"):
+            continue
+        cleaned = clean_ocr(text)
+        if len(cleaned) < 15:                      # pure salad — drop it
+            c.execute("DELETE FROM mem_v3 WHERE rowid = ?", (rowid,))
+            c.execute("DELETE FROM tags WHERE mem_rowid = ?", (rowid,))
+            removed += 1
+        elif cleaned != text:                      # had real content — keep clean
+            c.execute("UPDATE mem_v3 SET text = ? WHERE rowid = ?",
+                      (cleaned, rowid))
+            rewritten += 1
+    c.commit()
+    _retag(c)
+    kept = c.execute("SELECT count(*) FROM mem_v3").fetchone()[0]
+    print(json.dumps({"salad_deleted": removed, "cleaned_in_place": rewritten,
+                      "entries_kept": kept,
+                      "entities": c.execute(
+                          "SELECT count(*) FROM entities").fetchone()[0]}))
 
 
 def stats():
@@ -490,25 +682,29 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["add", "search", "recent", "entities",
                                     "topic", "related", "wiki", "weave",
-                                    "ingest", "retag", "stats", "export",
-                                    "import", "forget"])
+                                    "ingest", "retag", "prune", "stats",
+                                    "export", "import", "forget"])
     ap.add_argument("arg", nargs="?", default="")
     ap.add_argument("--text", default="")
     ap.add_argument("--app", default="")
     ap.add_argument("--mode", default="dictate")
+    ap.add_argument("--sort", default="mentions",
+                    choices=["mentions", "recent", "name"])
+    ap.add_argument("--cat", default="")
     ap.add_argument("-n", type=int, default=0)
     a = ap.parse_args()
     n = a.n
     {"add": lambda: add(a.text or sys.stdin.read(), a.app, a.mode),
      "search": lambda: search(a.arg, n or 5),
      "recent": lambda: recent(n or 10),
-     "entities": lambda: entities_cmd(n or 30),
+     "entities": lambda: entities_cmd(n or 30, a.sort, a.cat),
      "topic": lambda: topic(a.arg, n or 10),
      "related": lambda: related(a.arg, n or 12),
      "wiki": lambda: wiki(a.arg),
      "weave": weave,
      "ingest": lambda: ingest(os.path.expanduser(a.arg)),
      "retag": retag,
+     "prune": prune,
      "stats": stats,
      "export": export,
      "import": lambda: do_import(a.arg),

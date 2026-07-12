@@ -22,6 +22,18 @@ end)
 -- ---------------- CONFIG (edit freely) ----------------------
 local HOME = os.getenv("HOME")
 
+-- Private scratch dir (0700) instead of world-readable /tmp. Recordings,
+-- screenshots and OCR text are the most sensitive things Vox touches — they
+-- must never sit in shared /tmp (mode 1777) where another local account can
+-- read them in the moment before deletion. TMPDIR is already a per-user 0700
+-- dir on macOS; we still make our own subdir and lock it down for the /tmp
+-- fallback case. Every /tmp/vox-* path in this file routes through TMP.
+local TMP = (os.getenv("TMPDIR") or "/tmp"):gsub("/+$", "")
+            .. "/vox-" .. (os.getenv("USER") or "user")
+os.execute("/bin/mkdir -p '" .. TMP .. "' 2>/dev/null; "
+           .. "/bin/chmod 700 '" .. TMP .. "' 2>/dev/null")
+local function tmp(name) return TMP .. "/" .. name end
+
 -- hardware-aware defaults (tiers validated on real fleet hardware):
 --   Apple Silicon        -> large-v3-turbo on Metal (~1.5s)
 --   modern Intel (4+ cores) -> small (large HANGS without Metal)
@@ -50,8 +62,8 @@ local C = {
   whisperHost = "127.0.0.1",
   serverBind  = "127.0.0.1",
   model       = HOME .. "/vox/models/" .. WMODEL,
-  wav         = "/tmp/vox-recording.wav",
-  wavNorm    = "/tmp/vox-norm.wav",
+  wav         = tmp("recording.wav"),
+  wavNorm    = tmp("norm.wav"),
   language    = "en",                -- "en", "fr", or "auto" (auto costs ~+1s
                                      -- per dictation: extra detection pass)
   -- never oversubscribe the CPU (a 2-core MBA with 8 threads = thrash)
@@ -1270,16 +1282,56 @@ local function answerDeliver(question)
   end
 end
 
+-- Screen OCR is a vertical wall of UI chrome — menus, unread counters, nav
+-- links, truncated edge labels. Fed raw to the LLM it produces vague, off-
+-- target replies. Shed the slop: keep only lines that read like real content
+-- (a sentence, or a substantial 5+ word phrase) and are mostly letters.
+-- Mirrors mem.py clean_ocr so memory and replies see the same clean signal.
+local function cleanScreenText(raw)
+  local good = {}
+  for ln in (raw .. "\n"):gmatch("(.-)\n") do
+    local s = ln:gsub("^[%s%p]+", ""):gsub("[%s|]+$", "")
+    if #s >= 10 then
+      local _, letters = s:gsub("%a", "")
+      local wc = 0
+      for _ in s:gmatch("%a%a+") do wc = wc + 1 end
+      local sentence = s:find("[%.%?!][\"'%)]?$") ~= nil
+      if letters >= #s * 0.6 and ((sentence and wc >= 3) or wc >= 5) then
+        good[#good + 1] = s
+      end
+    end
+  end
+  return (table.concat(good, " "):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- The user's actual selection is the truest signal of "what they're looking
+-- at / want a reply to". Read it via the accessibility API (no clipboard
+-- clobber). Best-effort — any failure just falls back to cleaned screen OCR.
+local function selectedText()
+  local ok, sel = pcall(function()
+    local ax = require("hs.axuielement")
+    local sys = ax.systemWideElement()
+    local focused = sys and sys:attributeValue("AXFocusedUIElement")
+    return focused and focused:attributeValue("AXSelectedText")
+  end)
+  if ok and type(sel) == "string" then
+    local t = sel:gsub("^%s+", ""):gsub("%s+$", "")
+    if #t >= 3 then return t:sub(1, 4000) end
+  end
+  return nil
+end
+
 -- triple-tap: read the screen, draft the best reply at the cursor
 local function smartReply()
   if state ~= "idle" then return end
   state = "processing"
   captureContext()
+  local sel = selectedText()           -- grab the selection NOW, before focus moves
   setUI("work")
   play("start")
   local win  = hs.window.focusedWindow()
   local wid  = win and win:id()
-  local shot, ocrOut = "/tmp/vox-screen.png", "/tmp/vox-ocr.txt"
+  local shot, ocrOut = tmp("screen.png"), tmp("ocr.txt")
   local ocrBin = HOME .. "/vox/ocr-bin"
   local cmd = string.format(
     "[ -x %s ] || /usr/bin/swiftc -O %s -o %s 2>/dev/null; " ..
@@ -1288,28 +1340,37 @@ local function smartReply()
     wid and ("-l " .. wid) or "-m", shot, ocrBin, shot, ocrOut)
   M.replyTask = hs.task.new("/bin/sh", function()
     local f = io.open(ocrOut, "r")
-    local screenText = f and f:read("*a") or ""
+    local rawScreen = f and f:read("*a") or ""
     if f then f:close() end
     os.remove(shot); os.remove(ocrOut)   -- privacy: no screen residue
-    screenText = screenText:sub(1, 4000)
-    if #screenText:gsub("%s", "") < 20 then
+    -- shed the slop immediately; keep raw only as a thin fallback
+    local screenText = cleanScreenText(rawScreen:sub(1, 8000))
+    if #screenText:gsub("%s", "") < 40 then screenText = rawScreen:sub(1, 3000) end
+    -- with no selection AND no readable screen, there's nothing to reply to
+    if not sel and #screenText:gsub("%s", "") < 20 then
       hs.alert.show("Vox: couldn't read the screen (grant Screen Recording"
         .. " to Hammerspoon in Privacy & Security)", 4)
       reset()
       return
     end
-    -- long or question-dense screens deserve the concentrated model
-    local _, qs = screenText:gsub("%?", "")
-    local complex = #screenText > 1200 or qs >= 2
-    -- the alien consults its memory about what's on screen before replying
-    memoryLookup(screenText:sub(-350):gsub("[^%w%s%-']", ""), 3, function(mem)
+    -- the key context is the selection if present, else the cleaned screen
+    local focus = sel or screenText
+    local _, qs = focus:gsub("%?", "")
+    local complex = #focus > 1200 or qs >= 2
+    -- the alien consults its memory about the key context before replying
+    memoryLookup(focus:sub(-350):gsub("[^%w%s%-']", ""), 3, function(mem)
       llmGenerate(table.concat({
         "You are drafting a reply ON BEHALF of the user; they will send it as",
-        "their own message. Below is OCR text from their screen (app: \""
-          .. context.app .. "\") — it may contain UI noise; focus on the actual",
-        "conversation or message content, especially the most recent part.",
-        "Write the single best reply: match the tone and language of the",
-        "conversation, be natural and concise, sound human.",
+        "their own message. Reply to the KEY MESSAGE below — be specific to it,",
+        "match its tone and language, stay natural and concise, sound human.",
+        "Do not respond to UI labels, menus, or navigation — only the real",
+        "message/conversation.",
+        (sel and ("The user SELECTED this exact text — reply to THIS"
+          .. " specifically:\n" .. sel) or
+          ("Cleaned message/conversation from their screen (app: \""
+           .. context.app .. "\"), most recent part matters most:\n" .. screenText)),
+        (sel and screenText ~= "" and ("Surrounding screen context (secondary,"
+          .. " use only if it helps):\n" .. screenText:sub(1, 1500)) or ""),
         (identityNotes() ~= "" and
           ("You are replying AS this person — their own identity notes:\n"
            .. identityNotes()) or ""),
@@ -1317,9 +1378,6 @@ local function smartReply()
           ("The user's own local memory has possibly relevant notes (use only"
            .. " if genuinely helpful):\n" .. mem) or ""),
         "Output ONLY the reply text. No preamble, no quotes, no notes.",
-        "",
-        "Screen content:",
-        screenText,
       }, "\n"), "reply", complex)
     end)
   end, { "-c", cmd })
@@ -1549,11 +1607,11 @@ local function transcribe()
 
   -- vocabulary for THIS dictation: saved words + what's visible on screen
   local promptStr = fullVocabulary()
-  local cf = io.open("/tmp/vox-ctx.txt", "r")
+  local cf = io.open(tmp("ctx.txt"), "r")
   if cf then
     local ctxText = cf:read("*a") or ""
     cf:close()
-    os.remove("/tmp/vox-ctx.txt")            -- privacy: single use
+    os.remove(tmp("ctx.txt"))                -- privacy: single use
     local seen, words, len = {}, {}, 0
     for raw in ctxText:gmatch("%u[%w'%-]+") do
       local w = raw:gsub("[^%w%-']", "")
@@ -1628,10 +1686,11 @@ local function startRecording()
     local wid = win and win:id()
     if wid then
       local ocrBin = HOME .. "/vox/ocr-bin"
+      local ctxPng, ctxTxt = tmp("ctx.png"), tmp("ctx.txt")
       M.ctxTask = hs.task.new("/bin/sh", nil, { "-c", string.format(
-        "[ -x %s ] && /usr/sbin/screencapture -x -l %d /tmp/vox-ctx.png" ..
-        " 2>/dev/null && %s /tmp/vox-ctx.png > /tmp/vox-ctx.txt 2>/dev/null;" ..
-        " rm -f /tmp/vox-ctx.png", ocrBin, wid, ocrBin) })
+        "[ -x %s ] && /usr/sbin/screencapture -x -l %d %s" ..
+        " 2>/dev/null && %s %s > %s 2>/dev/null;" ..
+        " rm -f %s", ocrBin, wid, ctxPng, ocrBin, ctxPng, ctxTxt, ctxPng) })
       M.ctxTask:start()
     end
   end
@@ -1712,11 +1771,12 @@ mini.act.grab = function()
   local appName = app and app:name() or "screen"
   local ocrBin = HOME .. "/vox/ocr-bin"
   hs.alert.show("📸 absorbing screen…", 1)
+  local grabPng, grabTxt = tmp("grab.png"), tmp("grab.txt")
   M.grabTask = hs.task.new("/bin/sh", function()
-    local f = io.open("/tmp/vox-grab.txt", "r")
+    local f = io.open(grabTxt, "r")
     local txt = f and f:read("*a") or ""
     if f then f:close() end
-    os.remove("/tmp/vox-grab.txt")
+    os.remove(grabTxt)
     txt = txt:sub(1, 6000)
     if #txt:gsub("%s", "") < 20 then
       hs.alert.show("Vox: nothing readable (Screen Recording granted?)", 3)
@@ -1727,10 +1787,10 @@ mini.act.grab = function()
     hs.alert.show("🧠 absorbed into memory ✓", 2)
   end, { "-c", string.format(
     "[ -x %s ] || /usr/bin/swiftc -O %s -o %s 2>/dev/null; " ..
-    "/usr/sbin/screencapture -x %s /tmp/vox-grab.png && %s /tmp/vox-grab.png" ..
-    " > /tmp/vox-grab.txt 2>/dev/null; rm -f /tmp/vox-grab.png",
+    "/usr/sbin/screencapture -x %s %s && %s %s" ..
+    " > %s 2>/dev/null; rm -f %s",
     ocrBin, HOME .. "/vox/ocr.swift", ocrBin,
-    wid and ("-l " .. wid) or "-m", ocrBin) })
+    wid and ("-l " .. wid) or "-m", grabPng, ocrBin, grabPng, grabTxt, grabPng) })
   M.grabTask:start()
 end
 
@@ -1785,14 +1845,16 @@ local selfTesting = false
 local function selfTest(interactive)
   if selfTesting or state ~= "idle" then return end
   selfTesting = true
-  local wav = "/tmp/vox-selftest.wav"
+  local wav = tmp("selftest.wav")
+  local aiff = tmp("selftest.aiff")
   local cmd = string.format(
-    "/usr/bin/say -o /tmp/vox-selftest.aiff 'vox self test passed' && " ..
-    "%s /tmp/vox-selftest.aiff -r 16000 -c 1 -b 16 %s 2>/dev/null && " ..
-    "rm -f /tmp/vox-selftest.aiff && " ..
+    "/usr/bin/say -o %s 'vox self test passed' && " ..
+    "%s %s -r 16000 -c 1 -b 16 %s 2>/dev/null && " ..
+    "rm -f %s && " ..
     "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
     "-F response_format=text -F language=en http://%s:%d/inference",
-    C.sox, wav, (CORES <= 2 and 120 or 30), wav, C.whisperHost, C.serverPort)
+    aiff, C.sox, aiff, wav, aiff, (CORES <= 2 and 120 or 30), wav,
+    C.whisperHost, C.serverPort)
   local t0 = hs.timer.secondsSinceEpoch()
   M.selfTestTask = hs.task.new("/bin/sh", function(code, out)
     selfTesting = false
@@ -2051,13 +2113,14 @@ end
 -- warm immediately on wake/unlock — the moments that predict "about to talk".
 local function warmUp()
   if C.whisperHost ~= "127.0.0.1" then return end
+  local warmWav = tmp("warm.wav")
   local cmd = string.format(
-    "[ -f /tmp/vox-warm.wav ] || %s -n -r 16000 -c 1 -b 16 /tmp/vox-warm.wav" ..
+    "[ -f %s ] || %s -n -r 16000 -c 1 -b 16 %s" ..
     " trim 0.0 0.3 2>/dev/null; " ..
-    "/usr/bin/curl -s --max-time 90 -F file=@/tmp/vox-warm.wav " ..
+    "/usr/bin/curl -s --max-time 90 -F file=@%s " ..
     "-F temperature=0.0 -F response_format=text -F language=en " ..
     "http://127.0.0.1:%d/inference >/dev/null 2>&1",
-    C.sox, C.serverPort)
+    warmWav, C.sox, warmWav, warmWav, C.serverPort)
   M.warmTask = hs.task.new("/bin/sh", nil, { "-c", cmd })
   M.warmTask:start()
   hudDance()          -- heartbeat you can see: a subtle groove per ping
@@ -2107,6 +2170,24 @@ if C.apiEnable then
   M.api:setPort(C.apiPort)
   M.api:setCallback(function(method, path, headers, body)
     local JSON = { ["Content-Type"] = "application/json" }
+    -- Localhost binding is NOT a security boundary: any web page you visit can
+    -- reach 127.0.0.1 from your browser. Two guards keep the alien's mind (your
+    -- private dictation memory) sealed to real local agents only:
+    --   1. Host must be loopback — defeats DNS-rebinding (an attacker page at
+    --      evil.com -> 127.0.0.1 still sends "Host: evil.com").
+    --   2. Reject any Origin/Referer — browsers stamp those on cross-site
+    --      fetch/XHR/form POST; curl and native agents don't. So a page can't
+    --      read /search·/recent·/entities or poison memory via /ingest.
+    local h = {}
+    if type(headers) == "table" then
+      for k, v in pairs(headers) do h[tostring(k):lower()] = v end
+    end
+    local host = tostring(h.host or ""):gsub("%s", "")
+    local hostOK = host == "" or host:match("^localhost:?%d*$")
+      or host:match("^127%.0%.0%.1:?%d*$") or host:match("^%[?::1%]?:?%d*$")
+    if not hostOK or h.origin or h.referer then
+      return '{"error":"forbidden"}', 403, JSON
+    end
     if path:find("^/status") then
       return hs.json.encode({
         state = state, pipeline = calib.mode, latency = calib.lastLatency,
