@@ -16,7 +16,16 @@ he bobs, blinks, and his antenna sways while waveform bars dance on both
 sides of him (cyan = listening, violet = thinking). The pill bounces in
 and sinks away.
 
-- **Hold Right Option (⌥)** — push-to-talk. Release = transcribe + paste.
+- **Hold Right Option (⌥)** — push-to-talk. Release = transcribe + paste (~1.5s).
+- **Triple-tap** — smart reply: reads the window on screen, drafts the response.
+- **Shift + hold** — expand mode: speak a rough idea, get polished content.
+- **"Hey Vox, …"** — ask a question; the alien answers from its local memory.
+- **Voice commands** — "scratch that" undoes; "new paragraph." / "new line." break.
+- **Tiny idle alien** — click = dictate hands-free, C = speak-to-content,
+  P = absorb the screen into your knowledge base.
+- **The brain** — every dictation remembered locally, auto-linked into a
+  browsable wiki, feeding Whisper's vocabulary and all AI features.
+  Export/merge between Macs: `python3 ~/vox/mem.py export`.
 - **Double-tap Right Option** — locks recording hands-free. Tap once more to stop.
   (A single stray tap is discarded quietly.)
 - **Menu bar alien** — white = idle, coral = recording, violet = transcribing.
