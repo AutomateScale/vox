@@ -1321,7 +1321,21 @@ local function selectedText()
   return nil
 end
 
--- triple-tap: read the screen, draft the best reply at the cursor
+-- Read ONLY the one window the user is working in — never the whole display.
+-- A full-screen grab (-m) sweeps in notification banners, other apps, and the
+-- wallpaper, which then leak into the reply. Fall through the frontmost app's
+-- focused/main window; return nil if we truly can't isolate one (the caller
+-- then declines rather than grabbing the whole screen).
+local function targetWindowId()
+  local win = hs.window.focusedWindow()
+  if not win then
+    local app = hs.application.frontmostApplication()
+    win = app and (app:focusedWindow() or app:mainWindow())
+  end
+  return win and win:id()
+end
+
+-- triple-tap: read the ACTIVE window, draft the best reply at the cursor
 local function smartReply()
   if state ~= "idle" then return end
   state = "processing"
@@ -1329,15 +1343,17 @@ local function smartReply()
   local sel = selectedText()           -- grab the selection NOW, before focus moves
   setUI("work")
   play("start")
-  local win  = hs.window.focusedWindow()
-  local wid  = win and win:id()
+  local wid  = targetWindowId()
   local shot, ocrOut = tmp("screen.png"), tmp("ocr.txt")
   local ocrBin = HOME .. "/vox/ocr-bin"
-  local cmd = string.format(
+  -- capture ONLY the target window (-l <id> excludes overlaid notifications).
+  -- No window to isolate? Read nothing rather than grabbing the whole screen —
+  -- the reply then rests on the selection, or we tell the user to click in.
+  local cmd = wid and string.format(
     "[ -x %s ] || /usr/bin/swiftc -O %s -o %s 2>/dev/null; " ..
-    "/usr/sbin/screencapture -x %s %s && %s %s > %s 2>/dev/null",
-    ocrBin, HOME .. "/vox/ocr.swift", ocrBin,
-    wid and ("-l " .. wid) or "-m", shot, ocrBin, shot, ocrOut)
+    "/usr/sbin/screencapture -x -l %d %s && %s %s > %s 2>/dev/null",
+    ocrBin, HOME .. "/vox/ocr.swift", ocrBin, wid, shot, ocrBin, shot, ocrOut)
+    or "true"
   M.replyTask = hs.task.new("/bin/sh", function()
     local f = io.open(ocrOut, "r")
     local rawScreen = f and f:read("*a") or ""
@@ -1346,10 +1362,11 @@ local function smartReply()
     -- shed the slop immediately; keep raw only as a thin fallback
     local screenText = cleanScreenText(rawScreen:sub(1, 8000))
     if #screenText:gsub("%s", "") < 40 then screenText = rawScreen:sub(1, 3000) end
-    -- with no selection AND no readable screen, there's nothing to reply to
+    -- with no selection AND no readable window, there's nothing to reply to
     if not sel and #screenText:gsub("%s", "") < 20 then
-      hs.alert.show("Vox: couldn't read the screen (grant Screen Recording"
-        .. " to Hammerspoon in Privacy & Security)", 4)
+      hs.alert.show(wid and ("Vox: couldn't read the window (grant Screen"
+        .. " Recording to Hammerspoon in Privacy & Security)")
+        or "Vox: click into the window you want a reply in, then triple-tap", 4)
       reset()
       return
     end
@@ -1765,12 +1782,15 @@ mini.act.content = function()
   miniStart("expand")
 end
 mini.act.grab = function()
-  local win = hs.window.focusedWindow()
-  local wid = win and win:id()
+  local wid = targetWindowId()
   local app = hs.application.frontmostApplication()
   local appName = app and app:name() or "screen"
+  if not wid then
+    hs.alert.show("Vox: click into the window you want to absorb first", 3)
+    return
+  end
   local ocrBin = HOME .. "/vox/ocr-bin"
-  hs.alert.show("📸 absorbing screen…", 1)
+  hs.alert.show("📸 absorbing window…", 1)
   local grabPng, grabTxt = tmp("grab.png"), tmp("grab.txt")
   M.grabTask = hs.task.new("/bin/sh", function()
     local f = io.open(grabTxt, "r")
@@ -1787,10 +1807,10 @@ mini.act.grab = function()
     hs.alert.show("🧠 absorbed into memory ✓", 2)
   end, { "-c", string.format(
     "[ -x %s ] || /usr/bin/swiftc -O %s -o %s 2>/dev/null; " ..
-    "/usr/sbin/screencapture -x %s %s && %s %s" ..
+    "/usr/sbin/screencapture -x -l %d %s && %s %s" ..
     " > %s 2>/dev/null; rm -f %s",
     ocrBin, HOME .. "/vox/ocr.swift", ocrBin,
-    wid and ("-l " .. wid) or "-m", grabPng, ocrBin, grabPng, grabTxt, grabPng) })
+    wid, grabPng, ocrBin, grabPng, grabTxt, grabPng) })
   M.grabTask:start()
 end
 
