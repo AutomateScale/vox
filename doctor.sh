@@ -146,7 +146,22 @@ else
   info "no Swift toolchain — screen features unavailable until Xcode CLT installed"
 fi
 
-echo "[9] Default audio input device"
+echo "[9] AI brain (Ollama — powers Hey Vox, smart reply, expand, translate)"
+OLL=$(curl -s --max-time 3 http://localhost:11434/api/tags 2>/dev/null)
+if [ -n "$OLL" ]; then
+  ok "Ollama reachable"
+  for m in llama3.2:3b qwen2.5:7b; do
+    case "$OLL" in
+      *"$m"*) ok "model $m present";;
+      *)      info "model $m not pulled — some AI features degrade (ollama pull $m)";;
+    esac
+  done
+else
+  info "Ollama not running — dictation works fine, but Hey Vox / smart reply /"
+  info "expand / translate are unavailable until: brew services start ollama"
+fi
+
+echo "[10] Default audio input device"
 system_profiler SPAudioDataType 2>/dev/null | awk '/Input Source|Default Input Device/{print "     " $0}' | head -6
 
 rm -rf "$T"
