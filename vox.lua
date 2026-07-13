@@ -1571,11 +1571,24 @@ local function handleTranscript(raw, t0)
   local ql = text:lower()
   local qs = ql:match("^hey,?%s*vox[,!%.%s]+()") or ql:match("^hey,?%s*alien[,!%.%s]+()")
   if qs then
-    local question = text:sub(qs)
-    if #question > 3 then
-      memoryLookup(question, 5, function(mem)
-        llmGenerate(askPrompt(question, mem), "answer", true,
-                    answerDeliver(question))
+    local rest = text:sub(qs)
+    -- "Hey Vox, remember (that) ..." — save a fact to the brain, no paste
+    local fact = rest:match("^[Rr]emember%s+that%s+(.+)")
+              or rest:match("^[Rr]emember%s+(.+)")
+    if fact and #fact > 2 then
+      context.app = "Hey Vox"
+      rememberText(fact:gsub("%s+$", ""), "note")
+      play("done")
+      hs.alert.show("🧠 got it — remembered", 2)
+      hudEmote("excite")
+      state, locked, pendingTap = "idle", false, false
+      duckUp()
+      if menubar then menubar:setIcon(icons.idle, true) end
+      return
+    end
+    if #rest > 3 then                -- otherwise it's a question
+      memoryLookup(rest, 5, function(mem)
+        llmGenerate(askPrompt(rest, mem), "answer", true, answerDeliver(rest))
       end)
       return
     end
@@ -1985,7 +1998,7 @@ menubar:setMenu(function()
     { title = "Vox — local dictation", disabled = true },
     { title = "Hold " .. C.holdKeyName .. " to talk · double-tap to lock", disabled = true },
     { title = "Triple-tap: smart reply · Shift+key: expand to content", disabled = true },
-    { title = "\"Hey Vox, …\" = ask your memory a question", disabled = true },
+    { title = "\"Hey Vox, …\" ask a question · \"Hey Vox, remember …\" save a fact", disabled = true },
     { title = "-" },
     { title = "Hold key", menu = {
         { title = "Right Option", checked = C.holdKeycode == 61,
