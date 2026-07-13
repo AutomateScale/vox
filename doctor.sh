@@ -116,7 +116,7 @@ if [ -f ~/vox/memory/vox-memory.db ]; then
 else
   info "no brain yet — it forms on your first dictation"
 fi
-[ -f ~/vox/identity.md ] && ok "identity notes present (replies sound like you)"   || info "no ~/vox/identity.md — smart replies won't know who you are (optional)"
+[ -f ~/vox/identity.md ] && ok "identity notes present (replies sound like you)"   || info "no ~/vox/identity.md — smart replies won't sound like you. Set it up: cp ~/vox/identity.example.md ~/vox/identity.md && open -e ~/vox/identity.md"
 
 echo "[7] Pulse API (localhost) + auth guard"
 API=$(curl -s --max-time 3 http://127.0.0.1:8091/status 2>/dev/null)

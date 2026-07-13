@@ -26,6 +26,8 @@ and sinks away.
 - **The brain** — every dictation remembered locally, auto-linked into a
   browsable wiki, feeding Whisper's vocabulary and all AI features.
   Export/merge between Macs: `python3 ~/vox/mem.py export`.
+- **Make replies sound like you** — `cp identity.example.md identity.md` and
+  describe yourself; Vox writes smart replies and content in your voice.
 - **Double-tap Right Option** — locks recording hands-free. Tap once more to stop.
   (A single stray tap is discarded quietly.)
 - **Menu bar alien** — white = idle, coral = recording, violet = transcribing.
