@@ -2144,6 +2144,18 @@ end
 -- After idle, macOS pages the model out of RAM and the first dictation pays
 -- a reload tax. A 0.3s silent inference every 15 min keeps it hot, and we
 -- warm immediately on wake/unlock — the moments that predict "about to talk".
+-- The LLM pays the same reload tax: the first Hey Vox / smart reply after
+-- Ollama restarts cold-loads the smart model (~4.7GB) and can blow the
+-- timeout. An empty-prompt generate preloads it with keep_alive, so the
+-- first real question is always warm. Only on Macs that use the smart model.
+local function warmBrain()
+  if lowRam or CORES <= 2 or not ollamaIsLocal() then return end
+  hs.http.asyncPost(C.ollamaUrl,
+    hs.json.encode({ model = C.models.smart, prompt = "",
+                     keep_alive = "24h" }),
+    { ["Content-Type"] = "application/json" }, function() end)
+end
+
 local function warmUp()
   if C.whisperHost ~= "127.0.0.1" then return end
   local warmWav = tmp("warm.wav")
@@ -2156,6 +2168,7 @@ local function warmUp()
     warmWav, C.sox, warmWav, warmWav, C.serverPort)
   M.warmTask = hs.task.new("/bin/sh", nil, { "-c", cmd })
   M.warmTask:start()
+  warmBrain()
   hudDance()          -- heartbeat you can see: a subtle groove per ping
 end
 
