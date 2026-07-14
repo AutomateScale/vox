@@ -28,6 +28,10 @@ and sinks away.
   Export/merge between Macs: `python3 ~/vox/mem.py export`.
 - **Make replies sound like you** — `cp identity.example.md identity.md` and
   describe yourself; Vox writes smart replies and content in your voice.
+- **Semantic memory** — recall by *meaning*, not just keywords: "the hospital
+  in Brussels" finds a memory that only says "Jules Bordet". Local embedding
+  model (nomic-embed-text via Ollama); word-match is the automatic fallback,
+  so recall never degrades. Backfill old memories: `python3 ~/vox/mem.py embed`.
 - **Double-tap Right Option** — locks recording hands-free. Tap once more to stop.
   (A single stray tap is discarded quietly.)
 - **Menu bar alien** — white = idle, coral = recording, violet = transcribing.

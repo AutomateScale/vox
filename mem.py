@@ -167,6 +167,8 @@ def con():
                 pass
         c.execute("PRAGMA user_version = %d" % SCHEMA)
         c.commit()
+    c.execute("CREATE TABLE IF NOT EXISTS vecs "
+              "(mem_rowid INTEGER PRIMARY KEY, model TEXT, vec BLOB)")
     return c
 
 
@@ -253,6 +255,8 @@ def add(text, app="", mode="dictate", ts=None, journal=True):
     ts = ts or time.time()
     c = con()
     rowid = _insert(c, text, app, mode, ts)
+    if rowid is not None:
+        _vec_store(c, rowid, text)     # best-effort; backfill catches misses
     c.commit()
     if journal and rowid is not None:
         with open(journal_path(ts), "a", encoding="utf-8") as f:
@@ -270,19 +274,115 @@ def q_words(q):
     return [w for w in re.sub(r"[^\w\s'-]", " ", q).split() if len(w) > 1]
 
 
+# ---- semantic layer -------------------------------------------------------
+# Meaning-vectors via a local Ollama embedding model. Best-effort everywhere:
+# if Ollama is down or the model is missing, everything silently falls back
+# to pure word-match — recall can never get WORSE than the lexical baseline.
+
+EMB_MODEL = os.environ.get("VOX_EMBED_MODEL", "nomic-embed-text")
+OLLAMA = os.environ.get("VOX_OLLAMA", "http://localhost:11434")
+
+
+def _embed(texts, query=False, timeout=4):
+    """Return list of unit-length vectors, or None if the model is offline.
+    nomic-embed-text was trained with task prefixes — using them matters."""
+    import urllib.request
+    prefix = "search_query: " if query else "search_document: "
+    body = json.dumps({"model": EMB_MODEL,
+                       "input": [prefix + t[:2000] for t in texts]}).encode()
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(
+            OLLAMA + "/api/embed", body,
+            {"Content-Type": "application/json"}), timeout=timeout)
+        out = []
+        for v in json.loads(r.read())["embeddings"]:
+            norm = sum(x * x for x in v) ** 0.5 or 1.0
+            out.append([x / norm for x in v])
+        return out
+    except Exception:
+        return None
+
+
+def _vec_pack(v):
+    import array
+    return array.array("f", v).tobytes()
+
+
+def _vec_store(c, rowid, text, timeout=2):
+    vs = _embed([text], timeout=timeout)
+    if vs:
+        c.execute("INSERT OR REPLACE INTO vecs VALUES (?,?,?)",
+                  (rowid, EMB_MODEL, _vec_pack(vs[0])))
+    return bool(vs)
+
+
+def _semantic_rank(c, q, limit):
+    """rowids of the `limit` memories nearest in meaning to q, best first."""
+    import array
+    qv = _embed([q], query=True, timeout=3)
+    if not qv:
+        return None
+    qv = qv[0]
+    scored = []
+    for rowid, blob in c.execute(
+            "SELECT mem_rowid, vec FROM vecs WHERE model = ?", (EMB_MODEL,)):
+        v = array.array("f"); v.frombytes(blob)
+        if len(v) != len(qv):
+            continue
+        scored.append((sum(a * b for a, b in zip(qv, v)), rowid))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    return [rowid for _, rowid in scored[:limit]]
+
+
+def embed_backfill(batch=32):
+    """Give every memory a meaning-vector (idempotent, resumable)."""
+    c = con()
+    rows = c.execute("SELECT m.rowid, m.text FROM mem_v3 m "
+                     "LEFT JOIN vecs v ON v.mem_rowid = m.rowid "
+                     "AND v.model = ? WHERE v.mem_rowid IS NULL",
+                     (EMB_MODEL,)).fetchall()
+    if not rows:
+        print(json.dumps({"embedded": 0, "note": "all memories embedded"}))
+        return
+    done = 0
+    for i in range(0, len(rows), batch):
+        chunk = rows[i:i + batch]
+        vs = _embed([t for _, t in chunk], timeout=60)
+        if not vs:
+            break                       # Ollama gone mid-run; resume later
+        for (rowid, _), v in zip(chunk, vs):
+            c.execute("INSERT OR REPLACE INTO vecs VALUES (?,?,?)",
+                      (rowid, EMB_MODEL, _vec_pack(v)))
+        c.commit()
+        done += len(chunk)
+    print(json.dumps({"embedded": done, "remaining": len(rows) - done}))
+
+
 def search(q, n=5):
+    """Hybrid recall: word-match and meaning-match, fused by reciprocal rank.
+    Either side may be empty; lexical-only is exactly the old behavior."""
     c, words = con(), q_words(q)
     if not words:
         return
     try:
-        rows = c.execute("SELECT text, app, mode, ts FROM mem_v3 WHERE mem_v3 "
-                         "MATCH ? ORDER BY rank LIMIT ?",
-                         (" OR ".join(words), n)).fetchall()
+        lex = [r[0] for r in c.execute(
+            "SELECT rowid FROM mem_v3 WHERE mem_v3 MATCH ? "
+            "ORDER BY rank LIMIT ?", (" OR ".join(words), n * 3)).fetchall()]
     except sqlite3.OperationalError:
-        rows = c.execute("SELECT text, app, mode, ts FROM mem_v3 WHERE text "
-                         "LIKE ? ORDER BY ts DESC LIMIT ?",
-                         (f"%{words[0]}%", n)).fetchall()
-    rows_out(rows)
+        lex = [r[0] for r in c.execute(
+            "SELECT rowid FROM mem_v3 WHERE text LIKE ? "
+            "ORDER BY ts DESC LIMIT ?", (f"%{words[0]}%", n * 3)).fetchall()]
+    sem = _semantic_rank(c, q, n * 3) or []
+    fused = {}
+    for lst in (lex, sem):
+        for rank, rowid in enumerate(lst):
+            fused[rowid] = fused.get(rowid, 0.0) + 1.0 / (60 + rank)
+    best = sorted(fused, key=fused.get, reverse=True)[:n]
+    rows = [c.execute("SELECT text, app, mode, ts FROM mem_v3 "
+                      "WHERE rowid = ?", (r,)).fetchone() for r in best]
+    rows_out([r for r in rows if r])
 
 
 def recent(n=10):
@@ -568,6 +668,7 @@ def stats():
     c = con()
     j = json.dumps({
         "entries": c.execute("SELECT count(*) FROM mem_v3").fetchone()[0],
+        "embedded": c.execute("SELECT count(*) FROM vecs").fetchone()[0],
         "entities": c.execute("SELECT count(*) FROM entities").fetchone()[0],
         "links": c.execute("SELECT count(*) FROM tags").fetchone()[0],
         "db_bytes": os.path.getsize(DB) if os.path.exists(DB) else 0,
@@ -683,7 +784,7 @@ if __name__ == "__main__":
     ap.add_argument("cmd", choices=["add", "search", "recent", "entities",
                                     "topic", "related", "wiki", "weave",
                                     "ingest", "retag", "prune", "stats",
-                                    "export", "import", "forget"])
+                                    "export", "import", "forget", "embed"])
     ap.add_argument("arg", nargs="?", default="")
     ap.add_argument("--text", default="")
     ap.add_argument("--app", default="")
@@ -702,10 +803,11 @@ if __name__ == "__main__":
      "related": lambda: related(a.arg, n or 12),
      "wiki": lambda: wiki(a.arg),
      "weave": weave,
-     "ingest": lambda: ingest(os.path.expanduser(a.arg)),
+     "ingest": lambda: (ingest(os.path.expanduser(a.arg)), embed_backfill()),
      "retag": retag,
      "prune": prune,
      "stats": stats,
      "export": export,
-     "import": lambda: do_import(a.arg),
-     "forget": lambda: forget(a.arg)}[a.cmd]()
+     "import": lambda: (do_import(a.arg), embed_backfill()),
+     "forget": lambda: forget(a.arg),
+     "embed": embed_backfill}[a.cmd]()

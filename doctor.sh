@@ -110,7 +110,8 @@ if [ -f ~/vox/memory/vox-memory.db ]; then
   echo "     $STATS"
   case "$STATS" in
     *'"entries": 0'*) info "brain is empty — dictate, or absorb screens with the P button";;
-    *entries*)        ok "brain healthy";;
+    *'"embedded": 0'*) ok "brain healthy (word-match recall; for meaning-based recall: ollama pull nomic-embed-text && python3 ~/vox/mem.py embed)";;
+    *entries*)        ok "brain healthy (semantic recall active)";;
     *)                bad "brain unreadable — check: python3 ~/vox/mem.py stats";;
   esac
 else
@@ -150,7 +151,7 @@ echo "[9] AI brain (Ollama — powers Hey Vox, smart reply, expand, translate)"
 OLL=$(curl -s --max-time 3 http://localhost:11434/api/tags 2>/dev/null)
 if [ -n "$OLL" ]; then
   ok "Ollama reachable"
-  for m in llama3.2:3b qwen2.5:7b; do
+  for m in llama3.2:3b qwen2.5:7b nomic-embed-text; do
     case "$OLL" in
       *"$m"*) ok "model $m present";;
       *)      info "model $m not pulled — some AI features degrade (ollama pull $m)";;

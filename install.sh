@@ -88,6 +88,8 @@ if ! ollama pull llama3.2:3b; then
   echo "    ⚠️  Ollama pull failed (network?). Basic dictation still works; LLM cleanup /"
   echo "        translation stay off until you run:  ollama pull llama3.2:3b"
 fi
+# tiny embedding model — gives the memory meaning-based recall (~274MB, all Macs)
+ollama pull nomic-embed-text || echo "    (skipped — memory uses word-match until you: ollama pull nomic-embed-text)"
 # smart model for translation/content/complex replies — only on Macs with RAM to spare
 if [ "$(sysctl -n hw.memsize)" -ge 12884901888 ]; then
   echo "    pulling the smart model (~4.7GB) for translation + content work..."
