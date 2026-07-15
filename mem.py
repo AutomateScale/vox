@@ -478,6 +478,157 @@ CATS = [("name", "🧑 Names & Terms"), ("brand", "🏷️ Brands & Products"),
         ("other", "🗂️ Other")]
 
 
+
+GRAPH_HTML = """<!doctype html><meta charset=utf-8>
+<title>Vox brain — knowledge graph</title>
+<style>
+ html,body{margin:0;height:100%;background:#0b0f14;color:#dfe7ef;
+   font:14px -apple-system,Helvetica,sans-serif;overflow:hidden}
+ canvas{display:block;cursor:grab}
+ #hud{position:fixed;top:12px;left:14px;z-index:2}
+ #hud h1{font-size:15px;margin:0 0 6px;color:#7ee0c3}
+ #q{background:#141b23;border:1px solid #26313d;color:#dfe7ef;
+   border-radius:8px;padding:6px 10px;width:220px;outline:none}
+ #legend{position:fixed;bottom:12px;left:14px;font-size:12px;color:#8fa3b5}
+ #legend b{display:inline-block;width:10px;height:10px;border-radius:50%;
+   margin:0 4px 0 10px}
+ #tip{position:fixed;pointer-events:none;background:#141b23ee;
+   border:1px solid #26313d;border-radius:8px;padding:6px 10px;font-size:12px;
+   display:none;z-index:3;max-width:260px}
+</style>
+<div id=hud><h1>👽 Vox brain — %%N%% entities, %%E%% links</h1>
+<input id=q placeholder="find… (click a node to open its wiki page)"></div>
+<div id=legend>size = how often you mention it<b style=background:#7ee0c3></b>names
+<b style=background:#69a7ff></b>brands<b style=background:#c88bff></b>concepts
+<b style=background:#ffb04d></b>acronyms<b style=background:#5c7387></b>other
+&nbsp;· drag to pan, wheel to zoom, drag nodes to untangle</div>
+<div id=tip></div><canvas id=cv></canvas>
+<script>
+const NODES=%%NODES%%, EDGES=%%EDGES%%;
+const COL={name:"#7ee0c3",brand:"#69a7ff",concept:"#c88bff",
+           acronym:"#ffb04d",other:"#5c7387"};
+const cv=document.getElementById("cv"),cx=cv.getContext("2d");
+let W,H,DPR=devicePixelRatio||1;
+function rs(){W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;
+  cv.style.width=W+"px";cv.style.height=H+"px";cx.setTransform(DPR,0,0,DPR,0,0)}
+rs();onresize=rs;
+// deterministic spiral seed, then force layout
+NODES.forEach((n,i)=>{const a=i*2.4,r=18*Math.sqrt(i);
+  n.x=W/2+r*Math.cos(a);n.y=H/2+r*Math.sin(a);n.vx=0;n.vy=0;
+  n.r=3+Math.sqrt(n.n)*1.1});
+const IDX={};NODES.forEach((n,i)=>IDX[n.k]=i);
+const E=EDGES.map(e=>({a:IDX[e[0]],b:IDX[e[1]],w:e[2]}))
+             .filter(e=>e.a!==undefined&&e.b!==undefined);
+let pan={x:0,y:0},zoom=1,hot=-1,drag=null,panning=false,px,py,heat=1;
+function step(){
+  if(heat<0.005)return;
+  for(let i=0;i<NODES.length;i++)for(let j=i+1;j<NODES.length;j++){
+    const a=NODES[i],b=NODES[j];let dx=a.x-b.x,dy=a.y-b.y;
+    let d2=dx*dx+dy*dy;
+    if(d2<1){dx=((i*7)%13-6)*0.3;dy=((j*5)%11-5)*0.3;d2=dx*dx+dy*dy}
+    if(d2<160000){const d=Math.sqrt(d2),f=Math.min(10,3200/d2);
+      a.vx+=dx/d*f;a.vy+=dy/d*f;b.vx-=dx/d*f;b.vy-=dy/d*f}}
+  E.forEach(e=>{const a=NODES[e.a],b=NODES[e.b];
+    const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1;
+    const f=Math.max(-3,Math.min(3,(d-150)*0.0009*Math.min(e.w,8)));
+    a.vx+=dx/d*f*d*0.02+dx*f*0;a.vy+=dy/d*f*d*0.02;
+    b.vx-=dx/d*f*d*0.02;b.vy-=dy/d*f*d*0.02});
+  NODES.forEach(n=>{n.vx+=(W/2-n.x)*0.0004;n.vy+=(H/2-n.y)*0.0004;
+    n.vx=Math.max(-25,Math.min(25,n.vx));
+    n.vy=Math.max(-25,Math.min(25,n.vy));
+    if(drag!==n){n.x+=n.vx*heat;n.y+=n.vy*heat}n.vx*=0.6;n.vy*=0.6;
+    if(!isFinite(n.x)||!isFinite(n.y)){n.x=W/2+(Math.sin(n.r*99)*99);
+      n.y=H/2+(Math.cos(n.r*77)*99);n.vx=0;n.vy=0}});
+  heat*=0.996}
+const q=document.getElementById("q"),tip=document.getElementById("tip");
+q.oninput=()=>{heat=Math.max(heat,0.05);draw()};
+function draw(){
+  cx.clearRect(0,0,W,H);cx.save();
+  cx.translate(pan.x,pan.y);cx.scale(zoom,zoom);
+  const f=q.value.toLowerCase();
+  cx.lineWidth=0.5;
+  E.forEach(e=>{const a=NODES[e.a],b=NODES[e.b];
+    const lit=hot>=0&&(e.a===hot||e.b===hot);
+    cx.strokeStyle=lit?"#7ee0c3aa":"#26313d88";
+    cx.lineWidth=lit?1.2:0.5;
+    cx.beginPath();cx.moveTo(a.x,a.y);cx.lineTo(b.x,b.y);cx.stroke()});
+  NODES.forEach((n,i)=>{
+    const dim=f&&!n.d.toLowerCase().includes(f);
+    cx.globalAlpha=dim?0.12:1;
+    cx.fillStyle=COL[n.c]||COL.other;
+    cx.beginPath();cx.arc(n.x,n.y,n.r,0,7);cx.fill();
+    if(i===hot){cx.strokeStyle="#fff";cx.lineWidth=1.5;cx.stroke()}
+    if(!dim&&(n.r>7||zoom>1.4||i===hot||f)){
+      cx.fillStyle=i===hot?"#fff":"#b6c6d4";
+      cx.font=(i===hot?"bold ":"")+"11px -apple-system";
+      cx.fillText(n.d,n.x+n.r+3,n.y+4)}
+    cx.globalAlpha=1});
+  cx.restore()}
+(function loop(){step();draw();requestAnimationFrame(loop)})();
+function pick(mx,my){const x=(mx-pan.x)/zoom,y=(my-pan.y)/zoom;
+  for(let i=NODES.length-1;i>=0;i--){const n=NODES[i];
+    if((n.x-x)**2+(n.y-y)**2<(n.r+3)**2)return i}return -1}
+cv.onmousedown=e=>{const i=pick(e.clientX,e.clientY);
+  if(i>=0){drag=NODES[i];heat=Math.max(heat,0.05)}
+  else{panning=true}px=e.clientX;py=e.clientY;cv.style.cursor="grabbing"};
+onmousemove=e=>{
+  if(drag){drag.x+=(e.clientX-px)/zoom;drag.y+=(e.clientY-py)/zoom;
+    px=e.clientX;py=e.clientY;heat=Math.max(heat,0.03);return}
+  if(panning){pan.x+=e.clientX-px;pan.y+=e.clientY-py;
+    px=e.clientX;py=e.clientY;return}
+  const i=pick(e.clientX,e.clientY);hot=i;
+  if(i>=0){const n=NODES[i];tip.style.display="block";
+    tip.style.left=(e.clientX+14)+"px";tip.style.top=(e.clientY+14)+"px";
+    tip.innerHTML="<b>"+n.d+"</b> · "+n.n+" mentions · "+n.c+
+      "<br><span style=color:#8fa3b5>click to open wiki page</span>"}
+  else tip.style.display="none"};
+onmouseup=e=>{
+  if(drag===null&&!panning)return;
+  const moved=Math.abs(e.clientX-px)+Math.abs(e.clientY-py)>4;
+  if(drag&&!moved){location.href=drag.s+".html"}
+  drag=null;panning=false;cv.style.cursor="grab"};
+cv.onwheel=e=>{e.preventDefault();
+  const z=Math.min(4,Math.max(0.25,zoom*(e.deltaY<0?1.12:0.89)));
+  pan.x=e.clientX-(e.clientX-pan.x)*z/zoom;
+  pan.y=e.clientY-(e.clientY-pan.y)*z/zoom;zoom=z;draw()};
+</script>"""
+
+
+def graph(top=120, min_co=2, per_node=6):
+    """Interactive force-directed map of the brain -> memory/wiki/graph.html.
+    Edges are co-mentions; each node keeps only its strongest links so the
+    picture stays readable as the brain grows."""
+    c = con()
+    out = os.path.join(MEM, "wiki")
+    os.makedirs(out, exist_ok=True)
+    ents = c.execute("SELECT key, display, n FROM entities "
+                     "ORDER BY n DESC LIMIT ?", (top,)).fetchall()
+    keys = [k for k, _, _ in ents]
+    ph = ",".join("?" * len(keys))
+    raw = c.execute(
+        "SELECT a.tag, b.tag, count(*) FROM tags a JOIN tags b "
+        "ON a.mem_rowid = b.mem_rowid AND a.tag < b.tag "
+        f"WHERE a.tag IN ({ph}) AND b.tag IN ({ph}) "
+        "GROUP BY a.tag, b.tag HAVING count(*) >= ?",
+        keys + keys + [min_co]).fetchall()
+    strongest, kept = {}, []
+    for a, b, w in sorted(raw, key=lambda r: -r[2]):
+        if strongest.get(a, 0) < per_node or strongest.get(b, 0) < per_node:
+            kept.append([a, b, w])
+            strongest[a] = strongest.get(a, 0) + 1
+            strongest[b] = strongest.get(b, 0) + 1
+    nodes = [{"k": k, "d": d, "n": n, "c": categorize(k, d), "s": slug(k)}
+             for k, d, n in ents]
+    page = (GRAPH_HTML
+            .replace("%%N%%", str(len(nodes)))
+            .replace("%%E%%", str(len(kept)))
+            .replace("%%NODES%%", json.dumps(nodes, ensure_ascii=False))
+            .replace("%%EDGES%%", json.dumps(kept)))
+    path = os.path.join(out, "graph.html")
+    open(path, "w", encoding="utf-8").write(page)
+    print(json.dumps({"graph": path, "nodes": len(nodes), "edges": len(kept)}))
+
+
 def weave():
     c = con()
     out = os.path.join(MEM, "wiki")
@@ -497,6 +648,7 @@ def weave():
            "<p class=meta>%d of %d entities · woven %s</p>"
            % (len(ents), total, time.strftime("%Y-%m-%d %H:%M")),
            '<div id=bar>',
+           '<a href="graph.html" style="color:#7ee0c3">🕸 open the knowledge graph</a><br>',
            '<input id=q placeholder="filter entities…" '
            'oninput="flt()" autocomplete=off>',
            '<button class="sb on" id=s-mentions onclick="srt(\'mentions\')">'
@@ -784,7 +936,7 @@ if __name__ == "__main__":
     ap.add_argument("cmd", choices=["add", "search", "recent", "entities",
                                     "topic", "related", "wiki", "weave",
                                     "ingest", "retag", "prune", "stats",
-                                    "export", "import", "forget", "embed"])
+                                    "export", "import", "forget", "embed", "graph"])
     ap.add_argument("arg", nargs="?", default="")
     ap.add_argument("--text", default="")
     ap.add_argument("--app", default="")
@@ -802,7 +954,8 @@ if __name__ == "__main__":
      "topic": lambda: topic(a.arg, n or 10),
      "related": lambda: related(a.arg, n or 12),
      "wiki": lambda: wiki(a.arg),
-     "weave": weave,
+     "weave": lambda: (weave(), graph()),
+     "graph": lambda: graph(n or 120),
      "ingest": lambda: (ingest(os.path.expanduser(a.arg)), embed_backfill()),
      "retag": retag,
      "prune": prune,

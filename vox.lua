@@ -2099,8 +2099,9 @@ menubar:setMenu(function()
         return items
       end)() },
     { title = "Open memory wiki 👽", fn = function()
+        -- weave prints one JSON line per artifact (wiki, then graph)
         M.weaveTask = hs.task.new("/usr/bin/python3", function(code, out)
-          local ok, res = pcall(hs.json.decode, out or "")
+          local ok, res = pcall(hs.json.decode, (out or ""):match("[^\n]+") or "")
           if code == 0 and ok and res and res.wiki then
             hs.task.new("/usr/bin/open", nil, { res.wiki }):start()
           else
@@ -2108,6 +2109,17 @@ menubar:setMenu(function()
           end
         end, { HOME .. "/vox/mem.py", "weave" })
         M.weaveTask:start()
+      end },
+    { title = "Open knowledge graph 🕸", fn = function()
+        M.graphTask = hs.task.new("/usr/bin/python3", function(code, out)
+          local ok, res = pcall(hs.json.decode, (out or ""):match("[^\n]+") or "")
+          if code == 0 and ok and res and res.graph then
+            hs.task.new("/usr/bin/open", nil, { res.graph }):start()
+          else
+            hs.alert.show("Graph build failed — see console", 3)
+          end
+        end, { HOME .. "/vox/mem.py", "graph" })
+        M.graphTask:start()
       end },
     { title = "Export brain (to Desktop)", fn = function()
         M.expTask = hs.task.new("/usr/bin/python3", function(code)
