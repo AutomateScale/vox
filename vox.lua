@@ -1901,9 +1901,12 @@ local function selfTest(interactive)
           secs, C.whisperHost))
       -- engine decay: a pass far slower than our best means the long-running
       -- server has degraded — refresh it and re-verify (found empirically:
-      -- ~12h-old servers drift 1s -> 9s; a restart fully restores them)
+      -- ~12h-old servers drift 1s -> 9s; a restart fully restores them).
+      -- Floor is 3.2s, not 4.5: the drift plateaus around 4.1s on fast Macs
+      -- and sat under the old threshold for hours at double latency. Slow
+      -- Macs stay protected by the best*2 term (tiny-model best ~4s -> 8s).
       if C.whisperHost == "127.0.0.1" and calib.bestLatency
-         and secs > math.max(4.5, calib.bestLatency * 2) and not M.refreshing then
+         and secs > math.max(3.2, calib.bestLatency * 2) and not M.refreshing then
         M.refreshing = true
         log(string.format("engine slow (%.1fs vs best %.1fs) — refreshing",
             secs, calib.bestLatency))
