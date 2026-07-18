@@ -828,7 +828,7 @@ def stats():
     print(j)
 
 
-def export():
+def export(dest=None):
     c = con()
     manifest = {
         "vox_brain": 1, "schema": SCHEMA,
@@ -839,7 +839,9 @@ def export():
     }
     mpath = os.path.join(MEM, "manifest.json")
     json.dump(manifest, open(mpath, "w"))
-    out = os.path.expanduser(time.strftime("~/Desktop/vox-brain-%Y%m%d-%H%M.tar.gz"))
+    out = os.path.join(
+        os.path.expanduser(dest or "~/Desktop"),
+        time.strftime("vox-brain-%Y%m%d-%H%M.tar.gz"))
 
     def keep(ti):
         n = ti.name
@@ -858,6 +860,26 @@ def export():
     os.remove(mpath)
     manifest["exported"] = out
     print(json.dumps(manifest))
+
+
+ICLOUD = os.path.expanduser(
+    "~/Library/Mobile Documents/com~apple~CloudDocs")
+
+
+def backup(local_only=False):
+    """Unattended daily safety net: export the whole brain to iCloud Drive
+    (falls back to ~/vox/backups if iCloud is absent, or when the caller
+    wants zero-outbound mode), keep the newest 7, prune the rest."""
+    if not local_only and os.path.isdir(ICLOUD):
+        dest = os.path.join(ICLOUD, "VoxBackups")
+    else:
+        dest = os.path.expanduser("~/vox/backups")
+    os.makedirs(dest, exist_ok=True)
+    export(dest)
+    snaps = sorted(glob.glob(os.path.join(dest, "vox-brain-*.tar.gz")))
+    for old_snap in snaps[:-7]:
+        os.remove(old_snap)
+    print(json.dumps({"backups_kept": min(len(snaps), 7), "dir": dest}))
 
 
 def merge_learned(path):
@@ -936,7 +958,8 @@ if __name__ == "__main__":
     ap.add_argument("cmd", choices=["add", "search", "recent", "entities",
                                     "topic", "related", "wiki", "weave",
                                     "ingest", "retag", "prune", "stats",
-                                    "export", "import", "forget", "embed", "graph"])
+                                    "export", "import", "forget", "embed", "graph",
+                                    "backup"])
     ap.add_argument("arg", nargs="?", default="")
     ap.add_argument("--text", default="")
     ap.add_argument("--app", default="")
@@ -960,7 +983,8 @@ if __name__ == "__main__":
      "retag": retag,
      "prune": prune,
      "stats": stats,
-     "export": export,
+     "export": lambda: export(a.arg or None),
+     "backup": lambda: backup(a.arg == "local"),
      "import": lambda: (do_import(a.arg), embed_backfill()),
      "forget": lambda: forget(a.arg),
      "embed": embed_backfill}[a.cmd]()

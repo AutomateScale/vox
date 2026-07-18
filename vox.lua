@@ -2196,6 +2196,22 @@ M.wakeWatcher = hs.caffeinate.watcher.new(function(ev)
 end)
 M.wakeWatcher:start()
 timers.warmLoop = hs.timer.doEvery(900, warmUp)
+-- daily brain backup — the memory is irreplaceable (it only exists on this
+-- disk) so snapshot it to iCloud Drive, keeping the newest 7. In zero-
+-- outbound mode (autoUpdate=false) it stays local in ~/vox/backups instead.
+local function brainBackup()
+  local mode = C.autoUpdate and "" or "local"
+  M.backupTask = hs.task.new("/usr/bin/python3", function(code, out)
+    if code == 0 then
+      log("brain backup ok: " .. (out or ""):gsub("%s+$", ""))
+    else
+      log("brain backup FAILED (code " .. tostring(code) .. ")")
+    end
+  end, { HOME .. "/vox/mem.py", "backup", mode })
+  M.backupTask:start()
+end
+timers.backupBoot = hs.timer.doAfter(300, brainBackup)
+timers.backupLoop = hs.timer.doEvery(86400, brainBackup)
 timers.miniBoot = hs.timer.doAfter(2, miniShow)
 -- long-running whisper-server drifts slow; a scheduled idle refresh keeps
 -- the 1.5s dictation feel permanent
