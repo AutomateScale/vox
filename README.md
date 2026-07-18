@@ -1,5 +1,8 @@
 # Vox — Local Dictation (Willow / Wispr Flow replacement)
 
+**Built by [AutomateScale](https://automatescale.com)** — AI automation &
+agent systems. Vox home: **[automatescale.com/vox](https://automatescale.com/vox)**
+
 Press-and-hold dictation that runs 100% on your Mac. No cloud, no subscription,
 no surprise platform updates. You own every line of it.
 

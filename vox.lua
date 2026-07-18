@@ -1119,6 +1119,15 @@ end
 -- ---------------- paste result -------------------------------
 local lastPasteTail, lastPasteApp = nil, nil
 
+-- last 10 pastes, newest first — an app eating your dictation shouldn't
+-- mean the words are gone; the menubar can re-paste any of them
+local pasteHistory = {}
+
+local function rememberPaste(text)
+  table.insert(pasteHistory, 1, text)
+  if #pasteHistory > 10 then table.remove(pasteHistory) end
+end
+
 local function insertText(text)
   -- smart spacing: consecutive dictations into the same app shouldn't
   -- produce "everything.Distribution" — bridge the gap ourselves
@@ -1129,6 +1138,7 @@ local function insertText(text)
   end
   lastPasteTail, lastPasteApp = text:sub(-1), context.app
 
+  rememberPaste(text)
   local prev = hs.pasteboard.getContents()
   hs.pasteboard.setContents(text)
   hs.eventtap.keyStroke({ "cmd" }, "v", 0)
@@ -1998,11 +2008,28 @@ menubar = hs.menubar.new()
 menubar:setIcon(icons.idle, true)
 menubar:setMenu(function()
   return {
-    { title = "Vox — local dictation", disabled = true },
+    { title = "Vox — local dictation, by AutomateScale", fn = function()
+        hs.urlevent.openURL("https://automatescale.com/vox")
+      end },
     { title = "Hold " .. C.holdKeyName .. " to talk · double-tap to lock", disabled = true },
     { title = "Triple-tap: smart reply · Shift+key: expand to content", disabled = true },
     { title = "\"Hey Vox, …\" ask a question · \"Hey Vox, remember …\" save a fact", disabled = true },
     { title = "-" },
+    { title = "Recent dictations", menu = (function()
+        if #pasteHistory == 0 then
+          return { { title = "nothing yet — dictate something", disabled = true } }
+        end
+        local items = {}
+        for _, t in ipairs(pasteHistory) do
+          local label = t:gsub("%s+", " ")
+          if #label > 60 then label = label:sub(1, 57) .. "…" end
+          items[#items + 1] = { title = label, fn = function()
+            -- menu click steals focus for a beat; paste after it returns
+            timers.repaste = hs.timer.doAfter(0.25, function() insertText(t) end)
+          end }
+        end
+        return items
+      end)() },
     { title = "Hold key", menu = {
         { title = "Right Option", checked = C.holdKeycode == 61,
           fn = function() C.holdKeycode = 61; C.holdKeyName = "Right Option"; hs.alert.show("Vox key: Right Option", 1) end },
@@ -2348,7 +2375,8 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
             commands = applyVoiceCommands, collapse = collapseRepeats,
             handle = handleTranscript,
-            selfTest = selfTest, dance = hudDance, fillers = cleanFillers }
+            selfTest = selfTest, dance = hudDance, fillers = cleanFillers,
+            history = function() return pasteHistory end }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
