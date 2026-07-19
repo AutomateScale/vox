@@ -293,9 +293,16 @@ end
 local function isCommonWord(wl)
   local d = systemDict()
   if d[wl] then return true end
+  local SLANG = { gonna = true, gotta = true, wanna = true, kinda = true,
+                  sorta = true, okay = true, yeah = true }
+  if SLANG[wl] then return true end
   for _, try in ipairs({ wl:gsub("s$", ""), wl:gsub("es$", ""),
                          wl:gsub("ed$", ""), wl:gsub("ed$", "e"),
-                         wl:gsub("ing$", ""), wl:gsub("ing$", "e") }) do
+                         wl:gsub("ing$", ""), wl:gsub("ing$", "e"),
+                         wl:gsub("'s$", ""), wl:gsub("n't$", ""),
+                         wl:gsub("'t$", ""), wl:gsub("'re$", ""),
+                         wl:gsub("'ve$", ""), wl:gsub("'ll$", ""),
+                         wl:gsub("'d$", "") }) do
     if try ~= wl and d[try] then return true end
   end
   return false
@@ -307,7 +314,7 @@ local function buildLearnedVocab()
   for lw, e in pairs(learned) do
     local proper  = e.cap >= 2 and (e.cap / e.n) > 0.5
     local unusual = (not dict[lw]) and e.n >= 3
-    if proper or unusual then
+    if (proper or unusual) and not isCommonWord(lw) then
       cands[#cands + 1] = { form = e.form, score = e.n + e.cap * 2 }
     end
   end
@@ -332,7 +339,8 @@ local function brainVocab()
   local parts, len = {}, 0
   for line in out:gmatch("[^\n]+") do
     local ok, e = pcall(hs.json.decode, line)
-    if ok and e and e.entity and e.entity:find("%u") then  -- proper nouns only
+    if ok and e and e.entity and e.entity:find("%u")
+       and not isCommonWord(e.entity:lower()) then   -- real names only
       len = len + #e.entity + 2
       if len > 220 then break end
       parts[#parts + 1] = e.entity
@@ -2393,7 +2401,8 @@ timers.stateWatchdog = hs.timer.doEvery(5, function()
   local now = hs.timer.secondsSinceEpoch()
   if state == "recording" or state == "processing" then
     if stuckSince[state] == 0 then stuckSince[state] = now end
-    local limit = (state == "recording") and (C.maxRecordSecs + 15) or 240
+    local limit = (state == "recording") and (C.maxRecordSecs + 15)
+                  or (IS_ARM and 60 or 240)
     if now - stuckSince[state] > limit then
       log("state watchdog: forcing reset (stuck in " .. state .. ")")
       state, locked, pendingTap = "idle", false, false
