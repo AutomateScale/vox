@@ -276,13 +276,33 @@ end
 
 -- distinctive = mostly-capitalized mid-sentence (names/brands) or absent
 -- from the system dictionary (jargon) and used repeatedly
-local function buildLearnedVocab()
-  local dict = {}
+local sysDict           -- loaded once (boot-time via buildLearnedVocab)
+local function systemDict()
+  if sysDict then return sysDict end
+  sysDict = {}
   local f = io.open("/usr/share/dict/words", "r")
   if f then
-    for line in f:lines() do dict[line:lower()] = true end
+    for line in f:lines() do sysDict[line:lower()] = true end
     f:close()
   end
+  return sysDict
+end
+
+-- dictionary check that also catches inflections the word list lacks
+-- (Founders -> founder, Hiring -> hire, Trusted -> trust)
+local function isCommonWord(wl)
+  local d = systemDict()
+  if d[wl] then return true end
+  for _, try in ipairs({ wl:gsub("s$", ""), wl:gsub("es$", ""),
+                         wl:gsub("ed$", ""), wl:gsub("ed$", "e"),
+                         wl:gsub("ing$", ""), wl:gsub("ing$", "e") }) do
+    if try ~= wl and d[try] then return true end
+  end
+  return false
+end
+
+local function buildLearnedVocab()
+  local dict = systemDict()
   local cands = {}
   for lw, e in pairs(learned) do
     local proper  = e.cap >= 2 and (e.cap / e.n) > 0.5
@@ -1660,10 +1680,14 @@ local function transcribe()
     local ctxText = cf:read("*a") or ""
     cf:close()
     os.remove(tmp("ctx.txt"))                -- privacy: single use
+    -- ONLY true proper nouns (absent from the dictionary) may enter the
+    -- prompt. Title Case marketing copy ("Qualified Leads On Autopilot")
+    -- used to flood it and Whisper mimicked the style — Adam got a whole
+    -- transcript As, A, Comma, Separated, Title, Case, List
     local seen, words, len = {}, {}, 0
     for raw in ctxText:gmatch("%u[%w'%-]+") do
       local w = raw:gsub("[^%w%-']", "")
-      if #w >= 3 and not seen[w:lower()] then
+      if #w >= 3 and not seen[w:lower()] and not isCommonWord(w:lower()) then
         seen[w:lower()] = true
         len = len + #w + 2
         if len > 140 then break end
