@@ -103,6 +103,8 @@ local C = {
   holdKeycode = 61,                  -- 61 = Right Option. (Right Cmd = 54)
   holdKeyName = "Right Option",
   tapLockMax  = 0.35,                -- press shorter than this counts as a tap
+  tailGrace   = 0.35,                -- mic stays open this long after release
+                                     -- (last-word syllables are still in the air)
   doubleTapWindow = 0.45,            -- two taps this close = hands-free lock
   minBytes    = 24000,               -- ignore recordings under ~0.7s
   maxRecordSecs = 180,               -- auto-stop a forgotten locked recording
@@ -1673,9 +1675,12 @@ local function transcribe()
       and (" -F language=" .. C.language) or ""
   local cmd = string.format(
     -- trailing-silence trim (reverse/silence/reverse) kills Whisper's
-    -- phantom "Yeah." hallucination on the breath after key-release
-    "%s %s %s highpass 80 norm -3 reverse silence 1 0.15 1.5%% reverse" ..
-    " 2>/dev/null || cp %s %s; " ..
+    -- phantom "Yeah." hallucination on the breath after key-release.
+    -- Gentle on purpose: 0.6%/0.3s — last words trail off quietly and the
+    -- old 1.5%/0.15s ate them as "silence"; the pad keeps Whisper from
+    -- clipping the decode at the cut
+    "%s %s %s highpass 80 norm -3 reverse silence 1 0.30 0.6%% reverse" ..
+    " pad 0 0.15 2>/dev/null || cp %s %s; " ..
     "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
     "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
     C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, maxTime, C.wavNorm,
@@ -1778,11 +1783,15 @@ local function stopRecording()
   setUI("work")
   duckUp()                       -- music fades back while we transcribe
   play("stop")
-  if recTask and recTask:isRunning() then
-    recTask:interrupt()          -- SIGINT lets sox finalize the WAV
-  else
-    transcribe()
-  end
+  -- tail grace: people release the key WHILE saying the last word — keep
+  -- the mic open a beat longer so its final syllables actually get recorded
+  timers.tailGrace = hs.timer.doAfter(C.tailGrace, function()
+    if recTask and recTask:isRunning() then
+      recTask:interrupt()        -- SIGINT lets sox finalize the WAV
+    else
+      transcribe()
+    end
+  end)
 end
 
 -- the mini alien's three powers
