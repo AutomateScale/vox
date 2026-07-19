@@ -1162,7 +1162,10 @@ local function insertText(text)
   if timers.maxRec then timers.maxRec:stop() end
   if menubar then menubar:setIcon(icons.idle, true) end
   hudEmote(detectEmotion(text))
-  os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
+  -- keep ONLY this clip (private 0700 scratch, replaced each dictation):
+  -- when words get dropped we can replay the actual audio instead of
+  -- guessing. Cancelled recordings are still deleted outright.
+  os.rename(C.wav, tmp("last-dictation.wav")); os.remove(C.wavNorm)
 end
 
 -- ---------------- LLM cleanup --------------------------------
@@ -1511,6 +1514,9 @@ local function cleanFillers(text)
   text = text:gsub("^%s*[,%.;]%s*", "")        -- orphaned leading punctuation
   text = text:gsub("%s+([,%.;!%?])", "%1")     -- space before punctuation
   text = text:gsub(",%s*,", ",")               -- doubled commas
+  text = text:gsub(",%s*([%.!%?;])", "%1")     -- "Good,." -> "Good."
+  text = text:gsub("([%.!%?])%s*,", "%1")      -- ". ," -> "."
+  text = text:gsub(",(%a)", ", %1")            -- ",word" -> ", word" (not 1,000)
   text = text:gsub("%s%s+", " ")
   text = text:gsub("^%s+", ""):gsub("%s+$", "")
   text = text:gsub("^(%l)", string.upper)      -- repair sentence starts
