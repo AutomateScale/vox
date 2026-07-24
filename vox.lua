@@ -2029,9 +2029,12 @@ local function checkForUpdates(interactive)
     end
   end, { "-c",
     "cd \"$HOME/vox\" || exit 3; " ..
-    -- only ever update from the canonical repo (defense against remote swap)
-    "[ \"$(/usr/bin/git remote get-url origin)\" = " ..
-    "\"https://github.com/AutomateScaleInc/vox.git\" ] || " ..
+    -- only ever update from the canonical repo (defense against remote swap).
+    -- Both URLs are ours: repo transferred AutomateScaleInc -> AutomateScale
+    -- (2026-07-24 account consolidation); the old address 301s to the new
+    "R=$(/usr/bin/git remote get-url origin); " ..
+    "[ \"$R\" = \"https://github.com/AutomateScale/vox.git\" ] || " ..
+    "[ \"$R\" = \"https://github.com/AutomateScaleInc/vox.git\" ] || " ..
     "{ echo wrong-remote; exit 3; }; " ..
     "/usr/bin/git fetch -q origin main && " ..
     "if [ \"$(/usr/bin/git rev-list --count HEAD..origin/main)\" = 0 ]; " ..

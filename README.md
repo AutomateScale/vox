@@ -64,7 +64,7 @@ installer, auto-detects your Accessibility grant, and triggers the Microphone
 prompt. Safe to re-run anytime. Manual equivalent:
 
 ```bash
-git clone https://github.com/AutomateScaleInc/vox.git ~/vox
+git clone https://github.com/AutomateScale/vox.git ~/vox
 cd ~/vox && bash install.sh
 ```
 
@@ -164,7 +164,7 @@ level, and permissions, and tells you what's wrong in plain language.
 
 ```bash
 rm -rf ~/vox
-git clone https://github.com/AutomateScaleInc/vox.git ~/vox
+git clone https://github.com/AutomateScale/vox.git ~/vox
 cd ~/vox && bash install.sh
 ```
 
@@ -178,7 +178,7 @@ Or from anywhere (even if ~/vox is broken), no questions asked:
 
 ```bash
 cd ~
-curl -fsSL https://raw.githubusercontent.com/AutomateScaleInc/vox/main/uninstall.sh | bash -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/AutomateScale/vox/main/uninstall.sh | bash -s -- --yes
 ```
 
 (The `cd ~` matters: if your terminal is inside ~/vox when it gets deleted,

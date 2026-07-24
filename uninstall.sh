@@ -7,7 +7,7 @@
 #                                      (Hammerspoon, whisper-cpp, sox, ollama)
 #
 # Works even if ~/vox is broken or already gone:
-#   curl -fsSL https://raw.githubusercontent.com/AutomateScaleInc/vox/main/uninstall.sh | bash -s -- --yes
+#   curl -fsSL https://raw.githubusercontent.com/AutomateScale/vox/main/uninstall.sh | bash -s -- --yes
 set -u
 
 YES=0; PURGE=0
@@ -66,5 +66,5 @@ fi
 echo
 echo "DONE — Vox removed."
 echo "Reinstall anytime:"
-echo "  git clone https://github.com/AutomateScaleInc/vox.git ~/vox && cd ~/vox && bash install.sh"
+echo "  git clone https://github.com/AutomateScale/vox.git ~/vox && cd ~/vox && bash install.sh"
 echo "  restore personal vocab after: mv ~/vox-local.lua.bak ~/vox/local.lua"

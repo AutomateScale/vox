@@ -1,6 +1,6 @@
 #!/bin/bash
 # Vox installer — drop-in setup for a new Mac.
-#   git clone https://github.com/AutomateScaleInc/vox.git ~/vox
+#   git clone https://github.com/AutomateScale/vox.git ~/vox
 #   cd ~/vox && bash install.sh
 set -e
 
