@@ -151,7 +151,8 @@ local C = {
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
   duckAudio   = true,
-  duckLevel   = 0.35,                -- music drops to 35% of current volume
+  duckLevel   = 0.15,                -- audio drops to 15% while recording
+  duckMode    = "duck",              -- "duck" | "mute" | "pause" (pause media)
 
   -- Deterministic post-transcription fixes: zero latency, never paraphrases.
   -- Matched case-insensitively; spaces in keys also match hyphens.
@@ -514,7 +515,7 @@ local function play(n)
   local s = sounds[n]
   if not s then return end
   -- boost cues while system volume is ducked so they stay audible
-  s:volume((duck and duck.active)
+  s:volume((duck and duck.active and C.duckLevel > 0.05)
            and math.min(1, C.soundVolume / C.duckLevel) or C.soundVolume)
   s:stop(); s:play()
 end
@@ -538,8 +539,19 @@ local function rampVolume(target, steps, interval, onDone)
   end)
 end
 
+local function mediaPlayPause()
+  hs.eventtap.event.newSystemKeyEvent("PLAY", true):post()
+  hs.eventtap.event.newSystemKeyEvent("PLAY", false):post()
+end
+
 local function duckDown()
   if not C.duckAudio then return end
+  -- "pause": stop the podcast/music itself (media key) — nothing bleeds into
+  -- the mic AND you miss nothing; it resumes the moment you stop talking
+  if C.duckMode == "pause" then
+    if not duck.paused then duck.paused = true; mediaPlayPause() end
+    return
+  end
   local dev = hs.audiodevice.defaultOutputDevice()
   if not dev or not dev:outputVolume() then return end
   local vol = dev:outputVolume()
@@ -547,10 +559,13 @@ local function duckDown()
   if not duck.active then                    -- don't clobber orig mid-restore
     duck.orig, duck.dev, duck.active = vol, dev, true
   end
-  rampVolume(duck.orig * C.duckLevel, 5, 0.05)          -- quick fade down
+  -- "mute": total silence while the mic is open — zero contamination
+  local target = (C.duckMode == "mute") and 0 or duck.orig * C.duckLevel
+  rampVolume(target, 5, 0.05)                -- quick fade down
 end
 
 local function duckUp()
+  if duck.paused then duck.paused = false; mediaPlayPause() end
   if not duck.active then return end
   rampVolume(duck.orig, 8, 0.06, function() duck.active = false end)
 end
@@ -2080,6 +2095,14 @@ menubar:setMenu(function()
         end
         return items
       end)() },
+    { title = "While recording", menu = {
+        { title = "Duck audio to 15%", checked = C.duckMode == "duck",
+          fn = function() C.duckMode = "duck"; hs.alert.show("Recording: duck audio", 1) end },
+        { title = "Mute audio (zero mic bleed)", checked = C.duckMode == "mute",
+          fn = function() C.duckMode = "mute"; hs.alert.show("Recording: mute audio", 1) end },
+        { title = "Pause media (podcast/music pauses + resumes)", checked = C.duckMode == "pause",
+          fn = function() C.duckMode = "pause"; hs.alert.show("Recording: pause media", 1) end },
+      } },
     { title = "Hold key", menu = {
         { title = "Right Option", checked = C.holdKeycode == 61,
           fn = function() C.holdKeycode = 61; C.holdKeyName = "Right Option"; hs.alert.show("Vox key: Right Option", 1) end },
