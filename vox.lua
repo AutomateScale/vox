@@ -739,7 +739,9 @@ end
 local function miniShow()
   if not C.miniAlien or hud.visible then return end
   miniEnsure()
-  local f = hs.screen.mainScreen():fullFrame()
+  -- primary screen, always: mainScreen() follows keyboard focus, which on
+  -- multi-monitor setups strands the alien on whatever display had focus
+  local f = hs.screen.primaryScreen():fullFrame()
   mini.canvas:frame({ x = f.x + (f.w - MW) / 2, y = f.y + f.h - 34,
                       w = MW, h = MH })
   mini.canvas:show()
@@ -2295,6 +2297,12 @@ M.wakeWatcher = hs.caffeinate.watcher.new(function(ev)
   end
 end)
 M.wakeWatcher:start()
+M.screenWatcher = hs.screen.watcher.new(function()
+  timers.miniReposition = hs.timer.doAfter(2, function()
+    if mini.canvas and mini.canvas:isShowing() then miniShow() end
+  end)
+end)
+M.screenWatcher:start()
 timers.warmLoop = hs.timer.doEvery(900, warmUp)
 -- daily brain backup — the memory is irreplaceable (it only exists on this
 -- disk) so snapshot it to iCloud Drive, keeping the newest 7. In zero-
@@ -2451,7 +2459,13 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             handle = handleTranscript,
             selfTest = selfTest, dance = hudDance, fillers = cleanFillers,
             history = function() return pasteHistory end,
-            duckDown = duckDown, duckUp = duckUp, config = C }
+            duckDown = duckDown, duckUp = duckUp, config = C,
+            miniInfo = function()
+              if not mini.canvas then return "no canvas" end
+              local f = mini.canvas:frame()
+              return string.format("visible=%s x=%d y=%d",
+                tostring(mini.canvas:isShowing()), f.x, f.y)
+            end, miniShow = miniShow }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
