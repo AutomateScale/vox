@@ -2450,7 +2450,8 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             commands = applyVoiceCommands, collapse = collapseRepeats,
             handle = handleTranscript,
             selfTest = selfTest, dance = hudDance, fillers = cleanFillers,
-            history = function() return pasteHistory end }
+            history = function() return pasteHistory end,
+            duckDown = duckDown, duckUp = duckUp, config = C }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
