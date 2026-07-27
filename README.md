@@ -39,8 +39,10 @@ and sinks away.
   (A single stray tap is discarded quietly.)
 - **Voice vignette** — the border of the screen you're dictating on glows and
   BREATHES with your voice: silence = a faint ring (the mic is live), speech =
-  the ring blooms with every word. Violet slow-breathing = transcribing. Pure
-  feedback, fully click-through. Disable with `vignette = false` in local.lua.
+  the ring blooms with every word. A second ring hugs the exact WINDOW your
+  words will land in. Violet slow-breathing = transcribing; everything fades
+  the moment your words paste. Pure feedback, fully click-through. Tune in
+  local.lua: `vignette = false`, `vignetteWindow = false`, `vignetteColor`.
 - **Menu bar alien** — white = idle, coral = recording, violet = transcribing.
   Menu has toggles: hold key, music ducking, AI cleanup, translation, sound
   theme, language.

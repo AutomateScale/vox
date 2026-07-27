@@ -133,6 +133,9 @@ local C = {
   -- Violet slow-breathing = transcribing. Fades away when your words land.
   vignette      = true,
   vignetteColor = { red = 1.0, green = 0.31, blue = 0.85 },  -- Vox magenta
+  -- Second ring: a glow hugging the WINDOW your words will land in — the
+  -- most precise "dictating here" signal. Skipped for fullscreen windows.
+  vignetteWindow = true,
 
   -- Voice commands: say "scratch that" to undo the last dictation;
   -- say "new paragraph." / "new line." (as their own clause) for breaks.
@@ -1097,11 +1100,15 @@ end
 -- Perf: two STATIC border canvases (a soft base ring + a deeper voice bloom)
 -- whose gradients never re-render — only the window alpha animates (an
 -- NSWindow property, no redraw), so 20fps costs ~nothing even at 4K.
-local vign = { base = nil, voice = nil, timer = nil, frame = nil,
+local vign = { base = nil, voice = nil, win = nil, timer = nil, frame = nil,
+               winObj = nil, winFrame = nil, winCheck = 0,
                mode = nil,        -- nil | "rec" | "work"
                tint = nil,        -- which color the canvases currently show
                anim = nil, animT = 0, level = 0, phase = 0, demo = false }
 local VIGN_VIOLET = { red = 0.52, green = 0.30, blue = 1.0 }
+local VIGN_PAD = 26                -- window-ring glow room around the frame
+local VIGN_WIN_LAYERS = { { w = 18, a = 0.10 }, { w = 10, a = 0.22 },
+                          { w = 5,  a = 0.50 }, { w = 2,  a = 0.90 } }
 
 local function vignStops(color, peak)
   local function s(a)
@@ -1138,6 +1145,38 @@ end
 local function vignDelete()
   if vign.base  then vign.base:delete();  vign.base  = nil end
   if vign.voice then vign.voice:delete(); vign.voice = nil end
+  if vign.win   then vign.win:delete();   vign.win   = nil end
+  vign.winObj = nil
+end
+
+-- second ring: a glow hugging the window you're dictating INTO — the most
+-- precise "your words land here" signal. Skipped for (near-)fullscreen
+-- windows, where the screen border already is the window border.
+local function vignWinBuild(win)
+  if vign.win then vign.win:delete(); vign.win = nil end
+  vign.winObj = nil
+  if not (C.vignetteWindow and win) then return end
+  local ok, f = pcall(function() return win:frame() end)
+  if not ok or not f or f.w < 80 or f.h < 60 then return end
+  local sf = vign.frame
+  if sf and f.w >= sf.w - 24 and f.h >= sf.h - 24 then return end
+  local c = hs.canvas.new({ x = f.x - VIGN_PAD, y = f.y - VIGN_PAD,
+                            w = f.w + 2 * VIGN_PAD, h = f.h + 2 * VIGN_PAD })
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behavior({ "canJoinAllSpaces", "stationary" })
+  c:clickActivating(false)
+  local col = (vign.tint == "work") and VIGN_VIOLET or C.vignetteColor
+  for i, L in ipairs(VIGN_WIN_LAYERS) do
+    c[i] = { type = "rectangle", action = "stroke",
+             strokeColor = { red = col.red, green = col.green,
+                             blue = col.blue, alpha = L.a },
+             strokeWidth = L.w,
+             roundedRectRadii = { xRadius = 14, yRadius = 14 },
+             frame = { x = VIGN_PAD, y = VIGN_PAD, w = f.w, h = f.h } }
+  end
+  c:alpha(0)
+  c:show()
+  vign.win, vign.winObj, vign.winFrame, vign.winCheck = c, win, f, 0
 end
 
 -- (re)build for the screen holding keyboard focus — that's where you dictate
@@ -1158,6 +1197,11 @@ local function vignRecolor(color, tint)
   for i = 1, 4 do
     vign.base[i].fillGradientColors  = vignStops(color, 0.75)
     vign.voice[i].fillGradientColors = vignStops(color, 0.95)
+    if vign.win then
+      vign.win[i].strokeColor = { red = color.red, green = color.green,
+                                  blue = color.blue,
+                                  alpha = VIGN_WIN_LAYERS[i].a }
+    end
   end
 end
 
@@ -1168,16 +1212,17 @@ local function vignTick()
     vign.animT = math.min(1, vign.animT + 0.11)
     if vign.animT >= 1 then vign.anim = nil end
   elseif vign.anim == "out" then
-    vign.animT = math.max(0, vign.animT - 0.09)
+    vign.animT = math.max(0, vign.animT - 0.15)
     if vign.animT <= 0 then
       vign.base:hide(); vign.voice:hide()
+      if vign.win then vign.win:hide() end
       if vign.timer then vign.timer:stop(); vign.timer = nil end
       vign.mode, vign.anim = nil, nil
       return
     end
   end
   local env = vign.animT * (2 - vign.animT)          -- easeOutQuad envelope
-  local baseA, voiceA
+  local baseA, voiceA, winA
   if vign.mode == "work" then
     -- whisper is thinking: both layers breathe violet, slow and calm
     vign.level = vign.level * 0.85
@@ -1185,8 +1230,11 @@ local function vignTick()
     baseA  = 0.42 + 0.20 * breathe
     voiceA = math.max(0.20 + 0.18 * breathe,
                       0.5 * math.min(1, vign.level / 0.16))
+    winA   = 0.30 + 0.22 * breathe
   else
-    -- live mic: bloom fast on speech (attack .55), linger after it (release .10)
+    -- live mic: bloom fast on speech (attack .75), follow drops quickly too
+    -- (release .16) — sox --buffer 1024 feeds fresh samples every ~32ms, so
+    -- the glow can afford to trust the signal instead of smoothing it away
     local raw
     if vign.demo then
       raw = math.max(0, math.sin(vign.phase * 5.2)) * 0.35
@@ -1194,15 +1242,38 @@ local function vignTick()
     else
       raw = (state == "recording") and micLevel() or 0
     end
-    local k = (raw > vign.level) and 0.55 or 0.10
+    local k = (raw > vign.level) and 0.75 or 0.16
     vign.level = vign.level + (raw - vign.level) * k
     local norm = math.min(1, vign.level / 0.16) ^ 0.7
-    local breathe = 0.03 + 0.03 * math.sin(vign.phase * 3.4)
-    baseA  = 0.34 + 0.18 * norm + breathe
-    voiceA = 0.88 * norm
+    local breathe = 0.02 + 0.02 * math.sin(vign.phase * 3.4)
+    baseA  = 0.32 + 0.20 * norm + breathe
+    voiceA = 0.90 * norm
+    winA   = 0.22 + 0.72 * norm
   end
   vign.base:alpha(baseA * env)
   vign.voice:alpha(voiceA * env)
+  if vign.win then
+    vign.win:alpha(winA * env)
+    -- follow the target window if it moves or resizes (~2x per second)
+    vign.winCheck = vign.winCheck + 1
+    if vign.winCheck % 10 == 0 and vign.winObj then
+      local ok, f = pcall(function() return vign.winObj:frame() end)
+      if ok and f then
+        local o = vign.winFrame
+        if f.x ~= o.x or f.y ~= o.y or f.w ~= o.w or f.h ~= o.h then
+          if f.w == o.w and f.h == o.h then
+            vign.win:topLeft({ x = f.x - VIGN_PAD, y = f.y - VIGN_PAD })
+            vign.winFrame = f
+          else
+            vignWinBuild(vign.winObj)
+          end
+        end
+      else
+        vign.win:hide()               -- window closed mid-dictation
+        vign.win:delete(); vign.win, vign.winObj = nil, nil
+      end
+    end
+  end
 end
 
 local function vignShow()
@@ -1210,6 +1281,7 @@ local function vignShow()
   vignEnsure()
   vignRecolor(C.vignetteColor, "rec")
   vign.mode = "rec"
+  vignWinBuild(hs.window.focusedWindow())
   if not vign.base:isShowing() then
     vign.level, vign.animT = 0, 0
     vign.base:show(); vign.voice:show()
@@ -1231,6 +1303,7 @@ local function vignHide()
   if not vign.mode then
     if vign.timer then vign.timer:stop(); vign.timer = nil end
     if vign.base then vign.base:hide(); vign.voice:hide() end
+    if vign.win then vign.win:hide() end
     return
   end
   vign.anim = "out"                      -- vignTick finishes the exit
@@ -1366,6 +1439,7 @@ local function insertText(text)
   -- idle everything, but let the alien react to what you said first
   state, locked, pendingTap = "idle", false, false
   duckUp()
+  vignHide()                              -- words landed — glow fades now
   if timers.maxRec then timers.maxRec:stop() end
   if menubar then menubar:setIcon(icons.idle, true) end
   hudEmote(detectEmotion(text))
@@ -1499,6 +1573,7 @@ local function answerDeliver(question)
     play("done")
     state, locked, pendingTap = "idle", false, false
     duckUp()
+    vignHide()
     if menubar then menubar:setIcon(icons.idle, true) end
     hudEmote("excite")
   end
@@ -1808,6 +1883,7 @@ local function handleTranscript(raw, t0)
       hudEmote("excite")
       state, locked, pendingTap = "idle", false, false
       duckUp()
+      vignHide()
       if menubar then menubar:setIcon(icons.idle, true) end
       return
     end
@@ -1940,7 +2016,9 @@ local function startRecording()
   recTask = hs.task.new(C.sox, function(code, _, _)
     -- only transcribe if THIS recording ended intentionally (not cancelled)
     if state == "processing" and myGen == recGen then transcribe() end
-  end, { "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav })
+  end, { "--buffer", "1024",  -- flush every ~32ms so the live level meter
+                              -- (HUD bars + vignette) tracks the voice tightly
+         "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav })
   recTask:start()
   -- screen-aware dictation: OCR the target window WHILE recording (free time)
   if C.screenContext and CORES > 2 then
