@@ -150,8 +150,9 @@ local C = {
 
   -- Alien voice output: speaks answers to "Hey Vox..." questions and fact confirmations out loud
   alienVoice      = true,
-  alienVoiceName  = "vox",   -- "vox" = OUR OWN alien voice (neural + FX);
-                             -- or raw Kokoro: "af_heart", "af_bella", "af_river", "am_adam"
+  alienVoiceName  = "vox",   -- "vox" = OUR OWN alien voice (am_adam + FX) —
+                             -- Adam's pick 2026-07-28; raw Kokoro also works:
+                             -- "am_adam", "af_heart", "am_fenrir"
   alienVoiceSpeed = 1.0,
 
   -- Voice commands: say "scratch that" to undo the last dictation;
