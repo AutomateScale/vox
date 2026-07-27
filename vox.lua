@@ -127,6 +127,12 @@ local C = {
   -- Vox is idle. Click him to start/stop a hands-free dictation.
   miniAlien = true,
 
+  -- Where the recording alien pops up — a SET, pick any combo from the
+  -- menubar (persisted): window = he rises out of the window you're
+  -- dictating into; center = bottom center; top = top center; side = right
+  -- edge. All off / no window found -> bottom center.
+  alienPos = { window = true },
+
   -- Voice vignette: while you dictate, the border of the screen you're
   -- recording on glows — and BREATHES with your voice. Silence = a faint
   -- ring (proof the mic is live); speech = the ring blooms with every word.
@@ -200,6 +206,11 @@ do
         .. table.concat(bad, ", "), 5)
     end)
   end
+end
+-- menubar choices that should survive restarts (only alien position so far)
+do
+  local saved = hs.settings.get("vox.alienPos")
+  if type(saved) == "table" then C.alienPos = saved end
 end
 -- ------------------------------------------------------------
 
@@ -590,7 +601,7 @@ local PUFFS = 7
 local hud = { canvas = nil, timer = nil, mode = "rec", phase = 0,
               visible = false, anim = nil, animT = 0,
               nextBlink = 30, blinkUntil = 0, baseX = 0, baseY = 0,
-              level = 0, emote = nil, emoteUntil = 0 }
+              level = 0, emote = nil, emoteUntil = 0, mirrors = {} }
 
 -- live mic level: peek at the tail of the growing recording (16-bit PCM)
 local function micLevel()
@@ -852,6 +863,7 @@ local function hudTick()
       hud.visible = false
       if hud.timer then hud.timer:stop(); hud.timer = nil end
       c:hide()
+      for _, m in ipairs(hud.mirrors) do m.canvas:hide() end
       miniShow()               -- the tiny idle alien takes back the stage
       return
     end
@@ -1020,6 +1032,64 @@ local function hudTick()
                         or (OX + PILL_W - 36 + (i - 5) * 7)
     c[i + 7].frame = { x = x, y = OY + (PILL_H - h) / 2, w = 3, h = h }
   end
+
+  -- extra positions: mirror the finished frame (tiny canvas — trivial copy)
+  if #hud.mirrors > 0 then
+    local img = c:imageFromCanvas()
+    local a = puffT and alpha or 1
+    for _, m in ipairs(hud.mirrors) do
+      m.canvas[1].image = img
+      m.canvas:frame({ x = m.x, y = m.y + yOff, w = CV_W, h = CV_H })
+      m.canvas:alpha(a)
+    end
+  end
+end
+
+-- where does the alien pop up? C.alienPos is a set: window/center/top/side,
+-- menu-selectable, any combo. "window" = he rises out of the window you're
+-- dictating into. One alien is real; extra positions get cheap mirrors.
+local function hudPositions()
+  local f = hs.screen.mainScreen():fullFrame()
+  local list, seen = {}, {}
+  local function add(x, y)
+    x = math.max(f.x + 4, math.min(x, f.x + f.w - CV_W - 4))
+    y = math.max(f.y + 4, math.min(y, f.y + f.h - CV_H - 4))
+    local key = math.floor(x) .. ":" .. math.floor(y)
+    if not seen[key] then seen[key] = true; list[#list + 1] = { x = x, y = y } end
+  end
+  local pos = C.alienPos or {}
+  if pos.window then
+    local ok, wf = pcall(function()
+      local w = hs.window.focusedWindow(); return w and w:frame()
+    end)
+    if ok and wf and wf.w > 120 then
+      -- straddle the top edge: he pops up out of the window
+      add(wf.x + (wf.w - CV_W) / 2, wf.y - CV_H + 24)
+    end
+  end
+  if pos.center then add(f.x + (f.w - CV_W) / 2, f.y + f.h - CV_H - 28) end
+  if pos.top    then add(f.x + (f.w - CV_W) / 2, f.y + 34) end
+  if pos.side   then add(f.x + f.w - CV_W - 8, f.y + (f.h - CV_H) / 2) end
+  if #list == 0 then add(f.x + (f.w - CV_W) / 2, f.y + f.h - CV_H - 28) end
+  return list
+end
+
+-- mirrors re-display the primary canvas's image each tick — at 150x70 the
+-- copy is trivial, so N aliens cost barely more than one
+local function hudMirrorsBuild(positions)
+  for _, m in ipairs(hud.mirrors) do m.canvas:delete() end
+  hud.mirrors = {}
+  for i = 2, #positions do
+    local p = positions[i]
+    local c = hs.canvas.new({ x = p.x, y = p.y + 24, w = CV_W, h = CV_H })
+    c:level(hs.canvas.windowLevels.overlay)
+    c:behavior({ "canJoinAllSpaces", "stationary" })
+    c:clickActivating(false)
+    c[1] = { type = "image", frame = { x = 0, y = 0, w = CV_W, h = CV_H } }
+    c:alpha(0)
+    c:show()
+    hud.mirrors[#hud.mirrors + 1] = { canvas = c, x = p.x, y = p.y }
+  end
 end
 
 local function hudShow(mode)
@@ -1031,9 +1101,9 @@ local function hudShow(mode)
       or  { red = 0.72, green = 0.52, blue = 1.0, alpha = 0.95 }   -- violet: thinking
   for i = 1, BARS do hud.canvas[i + 7].fillColor = col end
   if not hud.visible then
-    local f = hs.screen.mainScreen():fullFrame()
-    hud.baseX = f.x + (f.w - CV_W) / 2
-    hud.baseY = f.y + f.h - CV_H - 28
+    local ps = hudPositions()
+    hud.baseX, hud.baseY = ps[1].x, ps[1].y
+    hudMirrorsBuild(ps)
     hud.visible, hud.anim, hud.animT = true, "in", 0
     hud.emote = nil
     hud.canvas:alpha(0)
@@ -1053,6 +1123,7 @@ local function hudHide()
   if not hud.visible then
     if hud.timer then hud.timer:stop(); hud.timer = nil end
     if hud.canvas then hud.canvas:hide() end
+    for _, m in ipairs(hud.mirrors) do m.canvas:hide() end
     return
   end
   hud.anim, hud.animT = "out", 0   -- hudTick finishes the exit
@@ -1067,9 +1138,9 @@ local function hudDance()
   hud.emoteUntil = hud.phase + 26
   local col = { red = 0.45, green = 0.97, blue = 0.72, alpha = 0.7 }
   for i = 1, BARS do hud.canvas[i + 7].fillColor = col end
-  local f = hs.screen.mainScreen():fullFrame()
-  hud.baseX = f.x + (f.w - CV_W) / 2
-  hud.baseY = f.y + f.h - CV_H - 28
+  local ps = hudPositions()
+  hud.baseX, hud.baseY = ps[1].x, ps[1].y
+  hudMirrorsBuild(ps)
   hud.visible, hud.anim, hud.animT = true, "in", 0
   hud.canvas:alpha(0)
   hud.canvas:frame({ x = hud.baseX, y = hud.baseY + 24, w = CV_W, h = CV_H })
@@ -2420,6 +2491,30 @@ menubar:setMenu(function()
         { title = "Left Command", checked = C.holdKeycode == 55,
           fn = function() C.holdKeycode = 55; C.holdKeyName = "Left Command"; hs.alert.show("Vox key: Left Command", 1) end },
       } },
+    { title = "Alien position (pick any combo)", menu = (function()
+        local defs = {
+          { "window", "Pops out of the window you dictate into" },
+          { "center", "Bottom center of the screen" },
+          { "top",    "Top center of the screen" },
+          { "side",   "Right edge, mid-height" },
+        }
+        local items = {}
+        for _, d in ipairs(defs) do
+          local k = d[1]
+          items[#items + 1] = { title = d[2], checked = C.alienPos[k] == true,
+            fn = function()
+              C.alienPos[k] = (not C.alienPos[k]) or nil
+              hs.settings.set("vox.alienPos", C.alienPos)
+              local on = {}
+              for _, e in ipairs(defs) do
+                if C.alienPos[e[1]] then on[#on + 1] = e[1] end
+              end
+              hs.alert.show("Alien: " .. (#on > 0
+                and table.concat(on, " + ") or "bottom center"), 1.5)
+            end }
+        end
+        return items
+      end)() },
     { title = "Tiny idle alien (click him to dictate)", checked = C.miniAlien,
       fn = function()
         C.miniAlien = not C.miniAlien

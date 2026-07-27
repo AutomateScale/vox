@@ -43,6 +43,9 @@ and sinks away.
   words will land in. Violet slow-breathing = transcribing; everything fades
   the moment your words paste. Pure feedback, fully click-through. Tune in
   local.lua: `vignette = false`, `vignetteWindow = false`, `vignetteColor`.
+- **Alien position** — menu → "Alien position": the recording alien pops out
+  of the window you're dictating into (default), and/or bottom center, top
+  center, right edge — any combo at once, remembered across restarts.
 - **Menu bar alien** — white = idle, coral = recording, violet = transcribing.
   Menu has toggles: hold key, music ducking, AI cleanup, translation, sound
   theme, language.
