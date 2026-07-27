@@ -150,7 +150,8 @@ local C = {
 
   -- Alien voice output: speaks answers to "Hey Vox..." questions and fact confirmations out loud
   alienVoice      = true,
-  alienVoiceName  = "af_heart",   -- Kokoro-82M neural AI voice: "af_heart", "af_bella", "af_river", "am_adam"
+  alienVoiceName  = "vox",   -- "vox" = OUR OWN alien voice (neural + FX);
+                             -- or raw Kokoro: "af_heart", "af_bella", "af_river", "am_adam"
   alienVoiceSpeed = 1.0,
 
   -- Voice commands: say "scratch that" to undo the last dictation;
@@ -2203,12 +2204,6 @@ end
 local function startRecording()
   if state ~= "idle" then return end
   state = "recording"
-  -- if the alien is mid-sentence, hush him — Zarvox must never leak into
-  -- the mic and come back transcribed inside your dictation
-  if speechTask then
-    pcall(function() speechTask:terminate() end)
-    speechTask = nil
-  end
   captureContext()
   os.remove(C.wav)
   recGen = recGen + 1
@@ -2248,6 +2243,12 @@ local function startRecording()
         timers.uiDelay = hs.timer.doAfter(0.15, fanfare)
         return
       end
+      -- hold is deliberate: NOW hush a talking alien (never at raw ⌘-press —
+      -- with ⌘ as hold key, every shortcut chord would cut his voice off)
+      if speechTask then
+        pcall(function() speechTask:terminate() end)
+        speechTask = nil
+      end
       duckDown()
       setUI(locked and "lock" or "rec")
       play("start")
@@ -2258,6 +2259,11 @@ local function startRecording()
     end
     timers.uiDelay = hs.timer.doAfter(C.tapLockMax + 0.03, fanfare)
   else
+    -- dedicated hold key (no shortcut ambiguity): hush + fanfare right away
+    if speechTask then
+      pcall(function() speechTask:terminate() end)
+      speechTask = nil
+    end
     duckDown()
     setUI("rec")
     play("start")
@@ -2650,6 +2656,8 @@ menubar:setMenu(function()
             if C.alienVoice then speakAlien("Kokoro neural voice online.") end
           end },
         { title = "-" },
+        { title = "👽 Vox (our own alien — neural + FX)", checked = C.alienVoiceName == "vox",
+          fn = function() C.alienVoiceName = "vox"; speakAlien("This is my own voice. Pretty voxy, right?") end },
         { title = "❤️ Heart (Warm, Silky Female — Top Neural)", checked = C.alienVoiceName == "af_heart",
           fn = function() C.alienVoiceName = "af_heart"; speakAlien("Heart voice active.") end },
         { title = "🌹 Bella (Expressive, Smooth Female)", checked = C.alienVoiceName == "af_bella",
