@@ -127,6 +127,13 @@ local C = {
   -- Vox is idle. Click him to start/stop a hands-free dictation.
   miniAlien = true,
 
+  -- Voice vignette: while you dictate, the border of the screen you're
+  -- recording on glows — and BREATHES with your voice. Silence = a faint
+  -- ring (proof the mic is live); speech = the ring blooms with every word.
+  -- Violet slow-breathing = transcribing. Fades away when your words land.
+  vignette      = true,
+  vignetteColor = { red = 1.0, green = 0.31, blue = 0.85 },  -- Vox magenta
+
   -- Voice commands: say "scratch that" to undo the last dictation;
   -- say "new paragraph." / "new line." (as their own clause) for breaks.
   voiceCommands = true,
@@ -1082,6 +1089,161 @@ local function hudEmote(kind)
   for i = 1, BARS do hud.canvas[i + 7].fillColor = col end
 end
 
+-- ---------------- voice vignette ------------------------------
+-- The border of the screen you're dictating on glows, and the glow breathes
+-- with your voice: fast attack so it blooms the instant you speak, slow
+-- release so it lingers between words like breath. Magenta = recording,
+-- violet slow-breathing = transcribing, gentle fade-out when the words land.
+-- Perf: two STATIC border canvases (a soft base ring + a deeper voice bloom)
+-- whose gradients never re-render — only the window alpha animates (an
+-- NSWindow property, no redraw), so 20fps costs ~nothing even at 4K.
+local vign = { base = nil, voice = nil, timer = nil, frame = nil,
+               mode = nil,        -- nil | "rec" | "work"
+               tint = nil,        -- which color the canvases currently show
+               anim = nil, animT = 0, level = 0, phase = 0, demo = false }
+local VIGN_VIOLET = { red = 0.52, green = 0.30, blue = 1.0 }
+
+local function vignStops(color, peak)
+  local function s(a)
+    return { red = color.red, green = color.green, blue = color.blue, alpha = a }
+  end
+  return { s(peak), s(peak * 0.33), s(0) }
+end
+
+-- four linear-gradient strips, one per edge; the corner overlaps blend into
+-- naturally brighter corners — a true vignette without radial-gradient fuss
+local function vignLayer(f, color, peak, thick)
+  local c = hs.canvas.new(f)
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behavior({ "canJoinAllSpaces", "stationary" })
+  c:clickActivating(false)
+  local th = math.max(60, math.min(f.w, f.h) * thick)
+  local stops = vignStops(color, peak)
+  c[1] = { type = "rectangle", action = "fill", fillGradient = "linear",
+           fillGradientColors = stops, fillGradientAngle = 90,
+           frame = { x = 0, y = 0, w = f.w, h = th } }              -- top
+  c[2] = { type = "rectangle", action = "fill", fillGradient = "linear",
+           fillGradientColors = stops, fillGradientAngle = 270,
+           frame = { x = 0, y = f.h - th, w = f.w, h = th } }       -- bottom
+  c[3] = { type = "rectangle", action = "fill", fillGradient = "linear",
+           fillGradientColors = stops, fillGradientAngle = 0,
+           frame = { x = 0, y = 0, w = th, h = f.h } }              -- left
+  c[4] = { type = "rectangle", action = "fill", fillGradient = "linear",
+           fillGradientColors = stops, fillGradientAngle = 180,
+           frame = { x = f.w - th, y = 0, w = th, h = f.h } }       -- right
+  c:alpha(0)
+  return c
+end
+
+local function vignDelete()
+  if vign.base  then vign.base:delete();  vign.base  = nil end
+  if vign.voice then vign.voice:delete(); vign.voice = nil end
+end
+
+-- (re)build for the screen holding keyboard focus — that's where you dictate
+local function vignEnsure()
+  local f = hs.screen.mainScreen():fullFrame()
+  if vign.base and vign.frame and vign.frame.x == f.x and vign.frame.y == f.y
+     and vign.frame.w == f.w and vign.frame.h == f.h then return end
+  vignDelete()
+  vign.frame = f
+  vign.base  = vignLayer(f, C.vignetteColor, 0.75, 0.085)
+  vign.voice = vignLayer(f, C.vignetteColor, 0.95, 0.20)
+  vign.tint  = "rec"
+end
+
+local function vignRecolor(color, tint)
+  if not vign.base or vign.tint == tint then return end
+  vign.tint = tint
+  for i = 1, 4 do
+    vign.base[i].fillGradientColors  = vignStops(color, 0.75)
+    vign.voice[i].fillGradientColors = vignStops(color, 0.95)
+  end
+end
+
+local function vignTick()
+  if not vign.base then return end
+  vign.phase = vign.phase + 0.05
+  if vign.anim == "in" then
+    vign.animT = math.min(1, vign.animT + 0.11)
+    if vign.animT >= 1 then vign.anim = nil end
+  elseif vign.anim == "out" then
+    vign.animT = math.max(0, vign.animT - 0.09)
+    if vign.animT <= 0 then
+      vign.base:hide(); vign.voice:hide()
+      if vign.timer then vign.timer:stop(); vign.timer = nil end
+      vign.mode, vign.anim = nil, nil
+      return
+    end
+  end
+  local env = vign.animT * (2 - vign.animT)          -- easeOutQuad envelope
+  local baseA, voiceA
+  if vign.mode == "work" then
+    -- whisper is thinking: both layers breathe violet, slow and calm
+    vign.level = vign.level * 0.85
+    local breathe = 0.5 + 0.5 * math.sin(vign.phase * 2.6)
+    baseA  = 0.42 + 0.20 * breathe
+    voiceA = math.max(0.20 + 0.18 * breathe,
+                      0.5 * math.min(1, vign.level / 0.16))
+  else
+    -- live mic: bloom fast on speech (attack .55), linger after it (release .10)
+    local raw
+    if vign.demo then
+      raw = math.max(0, math.sin(vign.phase * 5.2)) * 0.35
+            * (0.6 + 0.4 * math.sin(vign.phase * 1.3))
+    else
+      raw = (state == "recording") and micLevel() or 0
+    end
+    local k = (raw > vign.level) and 0.55 or 0.10
+    vign.level = vign.level + (raw - vign.level) * k
+    local norm = math.min(1, vign.level / 0.16) ^ 0.7
+    local breathe = 0.03 + 0.03 * math.sin(vign.phase * 3.4)
+    baseA  = 0.34 + 0.18 * norm + breathe
+    voiceA = 0.88 * norm
+  end
+  vign.base:alpha(baseA * env)
+  vign.voice:alpha(voiceA * env)
+end
+
+local function vignShow()
+  if not C.vignette then return end
+  vignEnsure()
+  vignRecolor(C.vignetteColor, "rec")
+  vign.mode = "rec"
+  if not vign.base:isShowing() then
+    vign.level, vign.animT = 0, 0
+    vign.base:show(); vign.voice:show()
+  end
+  vign.anim = "in"                       -- also rescues a mid-exit fade
+  if not vign.timer then
+    vign.timer = hs.timer.doEvery(CORES <= 2 and 0.12 or 0.05,
+                                  safeTick("vignTick", vignTick))
+  end
+end
+
+local function vignWork()
+  if not (C.vignette and vign.base and vign.mode) then return end
+  vign.mode = "work"
+  vignRecolor(VIGN_VIOLET, "work")
+end
+
+local function vignHide()
+  if not vign.mode then
+    if vign.timer then vign.timer:stop(); vign.timer = nil end
+    if vign.base then vign.base:hide(); vign.voice:hide() end
+    return
+  end
+  vign.anim = "out"                      -- vignTick finishes the exit
+end
+
+-- fake a full dictation cycle so the effect can be seen without speaking
+local function vignDemo()
+  vign.demo = true
+  vignShow()
+  hs.timer.doAfter(6, function() vignWork() end)
+  hs.timer.doAfter(9, function() vign.demo = false; vignHide() end)
+end
+
 -- branded menubar icon: tiny alien silhouette with punched-out eyes.
 -- idle = monochrome template (adapts to menubar theme), rec = coral,
 -- work = violet.
@@ -1117,9 +1279,9 @@ local function setUI(mode)
     local key = (mode == "lock") and "rec" or mode
     menubar:setIcon(icons[key] or icons.idle, mode == "idle")
   end
-  if mode == "rec" or mode == "lock" then hudShow("rec")
-  elseif mode == "work" then hudShow("work")
-  else hudHide() end
+  if mode == "rec" or mode == "lock" then hudShow("rec"); vignShow()
+  elseif mode == "work" then hudShow("work"); vignWork()
+  else hudHide(); vignHide() end
 end
 
 local function reset()
@@ -2452,7 +2614,7 @@ end)
 -- Anchor everything in the module table so Lua GC never collects
 -- the eventtap, menubar, canvas, or timers (classic Hammerspoon gotcha).
 M.flagTap, M.menubar, M.timers, M.hud, M.sounds = flagTap, menubar, timers, hud, sounds
-M.mini = mini
+M.mini, M.vign = mini, vign
 M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             fix = applyCorrections, smartReply = smartReply,
             commands = applyVoiceCommands, collapse = collapseRepeats,
@@ -2465,7 +2627,9 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
               local f = mini.canvas:frame()
               return string.format("visible=%s x=%d y=%d",
                 tostring(mini.canvas:isShowing()), f.x, f.y)
-            end, miniShow = miniShow }
+            end, miniShow = miniShow,
+            vignDemo = vignDemo, vignShow = vignShow,
+            vignWork = vignWork, vignHide = vignHide }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)

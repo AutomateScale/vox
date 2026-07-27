@@ -37,6 +37,10 @@ and sinks away.
   so recall never degrades. Backfill old memories: `python3 ~/vox/mem.py embed`.
 - **Double-tap Right Option** — locks recording hands-free. Tap once more to stop.
   (A single stray tap is discarded quietly.)
+- **Voice vignette** — the border of the screen you're dictating on glows and
+  BREATHES with your voice: silence = a faint ring (the mic is live), speech =
+  the ring blooms with every word. Violet slow-breathing = transcribing. Pure
+  feedback, fully click-through. Disable with `vignette = false` in local.lua.
 - **Menu bar alien** — white = idle, coral = recording, violet = transcribing.
   Menu has toggles: hold key, music ducking, AI cleanup, translation, sound
   theme, language.
