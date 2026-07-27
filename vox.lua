@@ -553,13 +553,53 @@ local function play(n)
 end
 
 -- ---------------- alien voice synthesis (Kokoro-82M Neural AI) --------
+-- Fast path: speak_server.py keeps the model warm (loads once, ~real-time
+-- synthesis) — same trick as whisper-server. Fallbacks: one-shot script
+-- (slow, reloads model), then plain `say`. /stop hushes instantly.
+local SPEECH_PORT = 8093
 local speechTask = nil
-local function speakAlien(text)
-  if not C.alienVoice or not text or #text == 0 then return end
+
+local function speechServerRunning()
+  local p = io.popen("/usr/bin/pgrep -f 'speak_serve[r].py' 2>/dev/null")
+  local out = p:read("*a"); p:close()
+  return out ~= nil and out ~= ""
+end
+
+local function ensureSpeechServer()
+  if not C.alienVoice then return end
+  local pyBin = HOME .. "/vox/.venv/bin/python"
+  local script = HOME .. "/vox/speak_server.py"
+  if not (hs.fs.attributes(pyBin) and hs.fs.attributes(script)) then return end
+  if speechServerRunning() then return end
+  M.speechSrvTask = hs.task.new(pyBin, nil, { script })
+  M.speechSrvTask:start()
+  log("speech server starting (model warming)")
+end
+
+local function hushAlien()
   if speechTask then
     pcall(function() speechTask:terminate() end)
     speechTask = nil
   end
+  hs.http.asyncPost("http://127.0.0.1:" .. SPEECH_PORT .. "/stop", "", nil,
+                    function() end)
+end
+
+local function speakFallback(clean, voice, speed)
+  local pyBin = HOME .. "/vox/.venv/bin/python"
+  local script = HOME .. "/vox/speak_kokoro.py"
+  if hs.fs.attributes(pyBin) and hs.fs.attributes(script) then
+    speechTask = hs.task.new(pyBin, nil, { script, clean, voice, tostring(speed) })
+  else
+    speechTask = hs.task.new("/usr/bin/say", nil,
+                             { "-v", "Samantha", "-r", "185", clean })
+  end
+  speechTask:start()
+end
+
+local function speakAlien(text)
+  if not C.alienVoice or not text or #text == 0 then return end
+  hushAlien()
   -- Clean up markdown formatting and prompt noise for spoken output
   local clean = text:gsub("```.-```", "")
                     :gsub("`.-`", "")
@@ -571,18 +611,16 @@ local function speakAlien(text)
   if #clean > 350 then
     clean = clean:sub(1, 350) .. "..."
   end
-  local pyBin = os.getenv("HOME") .. "/vox/.venv/bin/python"
-  local script = os.getenv("HOME") .. "/vox/speak_kokoro.py"
-  local voice = C.alienVoiceName or "af_heart"
-  local speed = tostring(C.alienVoiceSpeed or 1.0)
-
-  if hs.fs.attributes(pyBin) and hs.fs.attributes(script) then
-    speechTask = hs.task.new(pyBin, nil, { script, clean, voice, speed })
-    speechTask:start()
-  else
-    speechTask = hs.task.new("/usr/bin/say", nil, { "-v", "Samantha", "-r", "185", clean })
-    speechTask:start()
-  end
+  local voice = C.alienVoiceName or "vox"
+  local speed = C.alienVoiceSpeed or 1.0
+  hs.http.asyncPost("http://127.0.0.1:" .. SPEECH_PORT .. "/speak",
+    hs.json.encode({ text = clean, voice = voice, speed = speed }), nil,
+    function(status)
+      if status ~= 200 then          -- server cold: speak slow, warm it up
+        ensureSpeechServer()
+        speakFallback(clean, voice, speed)
+      end
+    end)
 end
 
 -- ---------------- smart audio ducking -------------------------
@@ -2245,10 +2283,7 @@ local function startRecording()
       end
       -- hold is deliberate: NOW hush a talking alien (never at raw ⌘-press —
       -- with ⌘ as hold key, every shortcut chord would cut his voice off)
-      if speechTask then
-        pcall(function() speechTask:terminate() end)
-        speechTask = nil
-      end
+      hushAlien()
       duckDown()
       setUI(locked and "lock" or "rec")
       play("start")
@@ -2260,10 +2295,7 @@ local function startRecording()
     timers.uiDelay = hs.timer.doAfter(C.tapLockMax + 0.03, fanfare)
   else
     -- dedicated hold key (no shortcut ambiguity): hush + fanfare right away
-    if speechTask then
-      pcall(function() speechTask:terminate() end)
-      speechTask = nil
-    end
+    hushAlien()
     duckDown()
     setUI("rec")
     play("start")
@@ -2855,6 +2887,9 @@ M.screenWatcher = hs.screen.watcher.new(function()
 end)
 M.screenWatcher:start()
 timers.warmLoop = hs.timer.doEvery(900, warmUp)
+-- keep the alien's voice warm too (kokoro model in RAM = instant speech)
+ensureSpeechServer()
+timers.speechSrvLoop = hs.timer.doEvery(900, ensureSpeechServer)
 -- daily brain backup — the memory is irreplaceable (it only exists on this
 -- disk) so snapshot it to iCloud Drive, keeping the newest 7. In zero-
 -- outbound mode (autoUpdate=false) it stays local in ~/vox/backups instead.

@@ -19,7 +19,7 @@ speed = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
 # still perfectly intelligible.
 vox_mode = voice == "vox"
 if vox_mode:
-    voice = "af_heart"
+    voice = "am_adam"
 
 if not text.strip():
     sys.exit(0)
@@ -39,10 +39,10 @@ try:
             fx_wav = os.path.join(script_dir, "models/kokoro/out-fx.wav")
             r = subprocess.run(
                 [sox, out_wav, fx_wav,
-                 "pitch", "230",
+                 "pitch", "200",
                  "chorus", "0.6", "0.9", "50", "0.4", "0.25", "2", "-t",
-                 "tremolo", "20", "18",
-                 "reverb", "12",
+                 "tremolo", "20", "15",
+                 "reverb", "10",
                  "gain", "-n", "-1"],
                 capture_output=True)
             if r.returncode == 0:
