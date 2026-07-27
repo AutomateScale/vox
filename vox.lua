@@ -1101,20 +1101,33 @@ end
 -- whose gradients never re-render — only the window alpha animates (an
 -- NSWindow property, no redraw), so 20fps costs ~nothing even at 4K.
 local vign = { base = nil, voice = nil, win = nil, timer = nil, frame = nil,
+               flowL = nil, flowR = nil, flowFS = 0,
                winObj = nil, winFrame = nil, winCheck = 0,
                mode = nil,        -- nil | "rec" | "work"
                tint = nil,        -- which color the canvases currently show
                anim = nil, animT = 0, level = 0, phase = 0, demo = false }
 local VIGN_VIOLET = { red = 0.52, green = 0.30, blue = 1.0 }
-local VIGN_PAD = 26                -- window-ring glow room around the frame
-local VIGN_WIN_LAYERS = { { w = 18, a = 0.10 }, { w = 10, a = 0.22 },
-                          { w = 5,  a = 0.50 }, { w = 2,  a = 0.90 } }
+local VIGN_PAD = 64                -- window-ring halo room around the frame
+-- window ring: a neon glow, not stacked strokes — soft halo + crisp line
+local VIGN_WIN_LAYERS = { { w = 8, a = 0.30, blur = 40, ba = 0.90 },
+                          { w = 2, a = 0.95, blur = 12, ba = 0.80 } }
 
+-- 5-stop ease-out falloff: fuses into the screen instead of blotching
 local function vignStops(color, peak)
   local function s(a)
     return { red = color.red, green = color.green, blue = color.blue, alpha = a }
   end
-  return { s(peak), s(peak * 0.33), s(0) }
+  return { s(peak), s(peak * 0.55), s(peak * 0.25), s(peak * 0.075), s(0) }
+end
+
+-- soft light-orb gradient: lightened core melting into the accent
+local function vignFlowStops(color)
+  local function s(r, g, b, a) return { red = r, green = g, blue = b, alpha = a } end
+  local cr, cg, cb = (color.red + 1) / 2, (color.green + 1) / 2, (color.blue + 1) / 2
+  return { s(cr, cg, cb, 0.50), s(color.red, color.green, color.blue, 0.22),
+           s(color.red, color.green, color.blue, 0.08),
+           s(color.red, color.green, color.blue, 0.02),
+           s(color.red, color.green, color.blue, 0) }
 end
 
 -- four linear-gradient strips, one per edge; the corner overlaps blend into
@@ -1146,7 +1159,27 @@ local function vignDelete()
   if vign.base  then vign.base:delete();  vign.base  = nil end
   if vign.voice then vign.voice:delete(); vign.voice = nil end
   if vign.win   then vign.win:delete();   vign.win   = nil end
+  if vign.flowL then vign.flowL:delete(); vign.flowL = nil end
+  if vign.flowR then vign.flowR:delete(); vign.flowR = nil end
   vign.winObj = nil
+end
+
+-- two pre-rendered light orbs that drift along the side edges — the energy.
+-- Motion comes from MOVING the canvas window each tick (no re-render), so
+-- the flow costs as little as the alpha animation does.
+local function vignFlowBuild(f)
+  local FS = math.floor(math.min(f.w, f.h) * 0.38)
+  local function orb()
+    local c = hs.canvas.new({ x = f.x, y = f.y, w = FS, h = FS })
+    c:level(hs.canvas.windowLevels.overlay)
+    c:behavior({ "canJoinAllSpaces", "stationary" })
+    c:clickActivating(false)
+    c[1] = { type = "oval", action = "fill", fillGradient = "radial",
+             fillGradientColors = vignFlowStops(C.vignetteColor) }
+    c:alpha(0)
+    return c
+  end
+  vign.flowL, vign.flowR, vign.flowFS = orb(), orb(), FS
 end
 
 -- second ring: a glow hugging the window you're dictating INTO — the most
@@ -1172,6 +1205,10 @@ local function vignWinBuild(win)
                              blue = col.blue, alpha = L.a },
              strokeWidth = L.w,
              roundedRectRadii = { xRadius = 14, yRadius = 14 },
+             withShadow = true,
+             shadow = { blurRadius = L.blur, offset = { h = 0, w = 0 },
+                        color = { red = col.red, green = col.green,
+                                  blue = col.blue, alpha = L.ba } },
              frame = { x = VIGN_PAD, y = VIGN_PAD, w = f.w, h = f.h } }
   end
   c:alpha(0)
@@ -1188,6 +1225,7 @@ local function vignEnsure()
   vign.frame = f
   vign.base  = vignLayer(f, C.vignetteColor, 0.75, 0.085)
   vign.voice = vignLayer(f, C.vignetteColor, 0.95, 0.20)
+  vignFlowBuild(f)
   vign.tint  = "rec"
 end
 
@@ -1197,10 +1235,17 @@ local function vignRecolor(color, tint)
   for i = 1, 4 do
     vign.base[i].fillGradientColors  = vignStops(color, 0.75)
     vign.voice[i].fillGradientColors = vignStops(color, 0.95)
-    if vign.win then
+  end
+  for _, orb in ipairs({ vign.flowL, vign.flowR }) do
+    if orb then orb[1].fillGradientColors = vignFlowStops(color) end
+  end
+  if vign.win then
+    for i, L in ipairs(VIGN_WIN_LAYERS) do
       vign.win[i].strokeColor = { red = color.red, green = color.green,
-                                  blue = color.blue,
-                                  alpha = VIGN_WIN_LAYERS[i].a }
+                                  blue = color.blue, alpha = L.a }
+      vign.win[i].shadow = { blurRadius = L.blur, offset = { h = 0, w = 0 },
+                             color = { red = color.red, green = color.green,
+                                       blue = color.blue, alpha = L.ba } }
     end
   end
 end
@@ -1216,13 +1261,14 @@ local function vignTick()
     if vign.animT <= 0 then
       vign.base:hide(); vign.voice:hide()
       if vign.win then vign.win:hide() end
+      if vign.flowL then vign.flowL:hide(); vign.flowR:hide() end
       if vign.timer then vign.timer:stop(); vign.timer = nil end
       vign.mode, vign.anim = nil, nil
       return
     end
   end
   local env = vign.animT * (2 - vign.animT)          -- easeOutQuad envelope
-  local baseA, voiceA, winA
+  local baseA, voiceA, winA, flowA
   if vign.mode == "work" then
     -- whisper is thinking: both layers breathe violet, slow and calm
     vign.level = vign.level * 0.85
@@ -1231,6 +1277,7 @@ local function vignTick()
     voiceA = math.max(0.20 + 0.18 * breathe,
                       0.5 * math.min(1, vign.level / 0.16))
     winA   = 0.30 + 0.22 * breathe
+    flowA  = 0.08 + 0.08 * breathe
   else
     -- live mic: bloom fast on speech (attack .75), follow drops quickly too
     -- (release .16) — sox --buffer 1024 feeds fresh samples every ~32ms, so
@@ -1249,9 +1296,24 @@ local function vignTick()
     baseA  = 0.32 + 0.20 * norm + breathe
     voiceA = 0.90 * norm
     winA   = 0.22 + 0.72 * norm
+    flowA  = 0.10 + 0.40 * norm
   end
   vign.base:alpha(baseA * env)
   vign.voice:alpha(voiceA * env)
+  -- the energy: light orbs drifting along the side edges — left rises,
+  -- right descends, both wobbling gently. Voice charges their brightness.
+  if vign.flowL then
+    local f, FS = vign.frame, vign.flowFS
+    local wob = math.sin(vign.phase * 1.7) * FS * 0.06
+    local pL = (vign.phase * 0.14) % 1
+    local pR = (vign.phase * 0.11 + 0.5) % 1
+    vign.flowL:topLeft({ x = f.x - FS * 0.55,
+                         y = f.y + f.h * (1.10 - 1.20 * pL) - FS / 2 + wob })
+    vign.flowR:topLeft({ x = f.x + f.w - FS * 0.45,
+                         y = f.y + f.h * (1.20 * pR - 0.10) - FS / 2 - wob })
+    vign.flowL:alpha(flowA * env)
+    vign.flowR:alpha(flowA * env)
+  end
   if vign.win then
     vign.win:alpha(winA * env)
     -- follow the target window if it moves or resizes (~2x per second)
@@ -1285,6 +1347,7 @@ local function vignShow()
   if not vign.base:isShowing() then
     vign.level, vign.animT = 0, 0
     vign.base:show(); vign.voice:show()
+    if vign.flowL then vign.flowL:show(); vign.flowR:show() end
   end
   vign.anim = "in"                       -- also rescues a mid-exit fade
   if not vign.timer then
@@ -1304,6 +1367,7 @@ local function vignHide()
     if vign.timer then vign.timer:stop(); vign.timer = nil end
     if vign.base then vign.base:hide(); vign.voice:hide() end
     if vign.win then vign.win:hide() end
+    if vign.flowL then vign.flowL:hide(); vign.flowR:hide() end
     return
   end
   vign.anim = "out"                      -- vignTick finishes the exit
@@ -1352,7 +1416,8 @@ local function setUI(mode)
     local key = (mode == "lock") and "rec" or mode
     menubar:setIcon(icons[key] or icons.idle, mode == "idle")
   end
-  if mode == "rec" or mode == "lock" then hudShow("rec"); vignShow()
+  if mode == "rec" or mode == "lock" then
+    hudShow("rec"); vign.demo = false; vignShow()
   elseif mode == "work" then hudShow("work"); vignWork()
   else hudHide(); vignHide() end
 end
