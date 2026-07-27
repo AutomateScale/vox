@@ -15,8 +15,10 @@ Localhost only. Started and kept alive by vox.lua.
 """
 import json
 import os
+import re
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SD = os.path.dirname(os.path.realpath(__file__))
@@ -52,32 +54,54 @@ def stop_playback():
         player = None
 
 
+def sentences(text):
+    parts = re.split(r"(?<=[.!?…])\s+", text.strip())
+    return [p for p in parts if p]
+
+
+def synth_one(text, voice, speed, idx):
+    """Synthesize one chunk into an alternating buffer; returns wav path."""
+    base = "am_adam" if voice == "vox" else voice
+    samples, sr = kokoro.create(text, voice=base, speed=speed, lang="en-us")
+    out = os.path.join(SD, "models/kokoro/srv-%d.wav" % (idx % 2))
+    sf.write(out, samples, sr)
+    if voice == "vox":
+        sox = sox_path()
+        fx = os.path.join(SD, "models/kokoro/srv-fx-%d.wav" % (idx % 2))
+        if sox and subprocess.run(
+            [sox, out, fx,
+             "pitch", "200",
+             "chorus", "0.6", "0.9", "50", "0.4", "0.25", "2", "-t",
+             "tremolo", "20", "15",
+             "reverb", "10",
+             "gain", "-n", "-1"],
+            capture_output=True).returncode == 0:
+            return fx
+    return out
+
+
 def speak(text, voice, speed, my_gen):
+    """Streaming: synthesize sentence N+1 WHILE sentence N plays — first
+    words are audible after one short synth instead of the whole answer's."""
     global player
     with synth_lock:
-        if my_gen != gen:
-            return
-        base = "am_adam" if voice == "vox" else voice
-        samples, sr = kokoro.create(text, voice=base, speed=speed, lang="en-us")
-        if my_gen != gen:
-            return
-        sf.write(OUT, samples, sr)
-        wav = OUT
-        if voice == "vox":
-            sox = sox_path()
-            if sox and subprocess.run(
-                [sox, OUT, FX,
-                 "pitch", "200",
-                 "chorus", "0.6", "0.9", "50", "0.4", "0.25", "2", "-t",
-                 "tremolo", "20", "15",
-                 "reverb", "10",
-                 "gain", "-n", "-1"],
-                capture_output=True).returncode == 0:
-                wav = FX
-        if my_gen != gen:
-            return
-        with state_lock:
-            player = subprocess.Popen(["afplay", wav])
+        for i, sent in enumerate(sentences(text)):
+            if my_gen != gen:
+                return
+            wav = synth_one(sent, voice, speed, i)   # overlaps prior playback
+            if my_gen != gen:
+                return
+            with state_lock:
+                prev = player
+            if prev:
+                while prev.poll() is None:           # let the last one finish
+                    if my_gen != gen:
+                        return
+                    time.sleep(0.05)
+            if my_gen != gen:
+                return
+            with state_lock:
+                player = subprocess.Popen(["afplay", wav])
 
 
 class Handler(BaseHTTPRequestHandler):
