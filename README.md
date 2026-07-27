@@ -9,7 +9,7 @@ no surprise platform updates. You own every line of it.
 ## How it works
 
 ```
-Hold Right ⌥  →  sox records mic  →  whisper-server transcribes (persistent
+Hold Left ⌘   →  sox records mic  →  whisper-server transcribes (persistent
               local server, model held in RAM, Metal GPU)  →  pasted at your
               cursor. Optional: Ollama LLM cleanup pass (menubar toggle).
 ```
@@ -21,10 +21,10 @@ and sinks away.
 
 - **Hold Left Command (⌘)** — push-to-talk. Release = transcribe + paste (~1.5s).
   Quick ⌘-shortcuts (⌘C, ⌘Tab…) stay silent — Vox only lights up when you hold.
-- **Hold ⌘ + tap Right Option (⌥)** — ask mode: your words become a question
+- **Hold ⌘ + tap Left Shift (⇧)** — ask mode: your words become a question
   and the alien answers on screen AND out loud (voice pickable in the menu).
 - **Triple-tap** — smart reply: reads the window on screen, drafts the response.
-- **Shift + hold** — expand mode: speak a rough idea, get polished content.
+- **Right Option (⌥) + hold** — expand mode: speak a rough idea, get polished content.
 - **"Hey Vox, …"** — ask a question; the alien answers from its local memory.
 - **Voice commands** — "scratch that" undoes; "new paragraph." / "new line." break.
 - **Tiny idle alien** — click = dictate hands-free, C = speak-to-content,
@@ -38,7 +38,7 @@ and sinks away.
   in Brussels" finds a memory that only says "Jules Bordet". Local embedding
   model (nomic-embed-text via Ollama); word-match is the automatic fallback,
   so recall never degrades. Backfill old memories: `python3 ~/vox/mem.py embed`.
-- **Double-tap Right Option** — locks recording hands-free. Tap once more to stop.
+- **Double-tap the hold key (Left ⌘)** — locks recording hands-free. Tap once more to stop.
   (A single stray tap is discarded quietly.)
 - **Voice vignette** — the border of the screen you're dictating on glows and
   BREATHES with your voice: silence = a faint ring (the mic is live), speech =
@@ -100,7 +100,7 @@ Hammerspoon). That's it.
 
 | Setting | What it does |
 |---|---|
-| `holdKeycode` | Hotkey. 61 = Right ⌥ (default), 54 = Right ⌘ |
+| `holdKeycode` | Hotkey. 55 = Left ⌘ (default), 61 = Right ⌥, 54 = Right ⌘ |
 | `language` | `"en"` (default, fastest), `"fr"` for French dictation, `"auto"` (+1s). Also switchable from the menubar |
 | `translateTo` | `"off"` (default, fastest), `"English"`, `"French"`, `"Spanish"`, or `"Dutch"`. Also switchable from the menubar |
 | `vocabulary` | Words Whisper must spell correctly. Add client names, jargon. |

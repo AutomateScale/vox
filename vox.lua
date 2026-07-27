@@ -104,9 +104,9 @@ local C = {
   holdKeyName = "Left Command",
   -- Ask combo: while holding the talk key, ALSO press this key and the
   -- utterance becomes a QUESTION — Vox answers out loud (alien voice)
-  -- instead of pasting. Hold ⌘, tap Right ⌥, speak, release.
-  askKeycode  = 61,                  -- 61 = Right Option
-  askKeyName  = "Right Option",
+  -- instead of pasting. Hold ⌘, tap Left Shift, speak, release.
+  askKeycode  = 56,                  -- 56 = Left Shift
+  askKeyName  = "Left Shift",
   tapLockMax  = 0.35,                -- press shorter than this counts as a tap
   tailGrace   = 0.35,                -- mic stays open this long after release
                                      -- (last-word syllables are still in the air)
@@ -149,9 +149,9 @@ local C = {
   vignetteWindow = true,
 
   -- Alien voice output: speaks answers to "Hey Vox..." questions and fact confirmations out loud
-  alienVoice     = true,
-  alienVoiceName = "Whisper",   -- macOS voice: "Whisper", "Samantha", "Moira", "Daniel", etc.
-  alienVoiceRate = 170,
+  alienVoice      = true,
+  alienVoiceName  = "af_heart",   -- Kokoro-82M neural AI voice: "af_heart", "af_bella", "af_river", "am_adam"
+  alienVoiceSpeed = 1.0,
 
   -- Voice commands: say "scratch that" to undo the last dictation;
   -- say "new paragraph." / "new line." (as their own clause) for breaks.
@@ -551,7 +551,7 @@ local function play(n)
   s:stop(); s:play()
 end
 
--- ---------------- alien voice synthesis ----------------------
+-- ---------------- alien voice synthesis (Kokoro-82M Neural AI) --------
 local speechTask = nil
 local function speakAlien(text)
   if not C.alienVoice or not text or #text == 0 then return end
@@ -570,10 +570,18 @@ local function speakAlien(text)
   if #clean > 350 then
     clean = clean:sub(1, 350) .. "..."
   end
-  local voice = C.alienVoiceName or "Zarvox"
-  local rate = tostring(C.alienVoiceRate or 195)
-  speechTask = hs.task.new("/usr/bin/say", nil, { "-v", voice, "-r", rate, clean })
-  speechTask:start()
+  local pyBin = os.getenv("HOME") .. "/vox/.venv/bin/python"
+  local script = os.getenv("HOME") .. "/vox/speak_kokoro.py"
+  local voice = C.alienVoiceName or "af_heart"
+  local speed = tostring(C.alienVoiceSpeed or 1.0)
+
+  if hs.fs.attributes(pyBin) and hs.fs.attributes(script) then
+    speechTask = hs.task.new(pyBin, nil, { script, clean, voice, speed })
+    speechTask:start()
+  else
+    speechTask = hs.task.new("/usr/bin/say", nil, { "-v", "Samantha", "-r", "185", clean })
+    speechTask:start()
+  end
 end
 
 -- ---------------- smart audio ducking -------------------------
@@ -2244,6 +2252,9 @@ local function startRecording()
       setUI(locked and "lock" or "rec")
       play("start")
       startCtxOCR()
+      if recMode == "ask" then
+        hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
+      end
     end
     timers.uiDelay = hs.timer.doAfter(C.tapLockMax + 0.03, fanfare)
   else
@@ -2251,6 +2262,9 @@ local function startRecording()
     setUI("rec")
     play("start")
     startCtxOCR()
+    if recMode == "ask" then
+      hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
+    end
   end
   -- safety: a forgotten locked recording stops itself
   timers.maxRec = hs.timer.doAfter(C.maxRecordSecs, function()
@@ -2357,14 +2371,28 @@ mini.act.grab = function()
 end
 
 -- ---------------- hotkey: hold-to-talk + tap-to-lock ---------
+-- is THIS key's own modifier flag down? (flags can't tell left from right,
+-- but the event's keycode + the flag family together can)
+local function keyFlagDown(fl, kc)
+  if kc == 56 or kc == 60 then return fl.shift end
+  if kc == 58 or kc == 61 then return fl.alt end
+  if kc == 54 or kc == 55 then return fl.cmd end
+  return false
+end
+
 local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
   local kc = e:getKeyCode()
-  -- ask combo: ask-key pressed while a recording is running -> question mode
+  -- ask combo: ask-key pressed while a recording is running -> question mode.
+  -- Silent unless the hold is already deliberate — ⌘⇧3/⌘⇧4-style shortcut
+  -- chords pass through without an "ask mode" flash (their recording gets
+  -- discarded as a quick tap anyway, which also resets the mode).
   if kc == C.askKeycode and kc ~= C.holdKeycode then
-    if state == "recording" and (e:getFlags().alt or e:getFlags().cmd)
+    if state == "recording" and keyFlagDown(e:getFlags(), kc)
        and recMode ~= "ask" then
       recMode = "ask"
-      hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
+      if locked or (hs.timer.secondsSinceEpoch() - keyDownAt) > C.tapLockMax then
+        hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
+      end
     end
     return false
   end
@@ -2389,13 +2417,11 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
       setUI("lock")
     elseif state == "idle" then
       keyDownAt = hs.timer.secondsSinceEpoch()
-      recMode = e:getFlags().shift and "expand"
-             or (e:getFlags().alt and C.askKeycode ~= C.holdKeycode and "ask")
+      -- shift already down = ask · alt already down = expand to content
+      recMode = e:getFlags().shift and "ask"
+             or (e:getFlags().alt and "expand")
              or "dictate"
       startRecording()
-      if recMode == "ask" then
-        hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
-      end
     end
   else -- released
     if state == "recording" and not locked then
@@ -2550,7 +2576,7 @@ menubar:setMenu(function()
         hs.urlevent.openURL("https://automatescale.com/vox")
       end },
     { title = "Hold " .. C.holdKeyName .. " to talk · double-tap to lock", disabled = true },
-    { title = "Triple-tap: smart reply · Shift+key: expand to content", disabled = true },
+    { title = "Triple-tap: smart reply · Right Option+key: expand to content", disabled = true },
     { title = "\"Hey Vox, …\" ask a question · \"Hey Vox, remember …\" save a fact", disabled = true },
     { title = "Hold key + " .. C.askKeyName .. " = ask mode — Vox answers out loud", disabled = true },
     { title = "-" },
@@ -2616,24 +2642,26 @@ menubar:setMenu(function()
         C.miniAlien = not C.miniAlien
         if C.miniAlien then miniShow() else miniHide() end
       end },
-    { title = "Alien voice playback", menu = {
+    { title = "Alien voice playback (Kokoro Neural AI)", menu = {
         { title = "Voice output (on/off)", checked = C.alienVoice,
           fn = function()
             C.alienVoice = not C.alienVoice
             hs.alert.show("Alien voice: " .. (C.alienVoice and "on" or "off"), 1)
-            if C.alienVoice then speakAlien("Voice online.") end
+            if C.alienVoice then speakAlien("Kokoro neural voice online.") end
           end },
         { title = "-" },
-        { title = "🌌 Whisper (Intimate / Breathy)", checked = C.alienVoiceName == "Whisper",
-          fn = function() C.alienVoiceName = "Whisper"; speakAlien("Vox whisper voice active.") end },
-        { title = "💎 Samantha (Smooth & Sleek)", checked = C.alienVoiceName == "Samantha",
-          fn = function() C.alienVoiceName = "Samantha"; speakAlien("Samantha voice active.") end },
-        { title = "👑 Moira (Intelligent & Crisp)", checked = C.alienVoiceName == "Moira",
-          fn = function() C.alienVoiceName = "Moira"; speakAlien("Moira voice active.") end },
-        { title = "🇬🇧 Daniel (Smooth British)", checked = C.alienVoiceName == "Daniel",
-          fn = function() C.alienVoiceName = "Daniel"; speakAlien("Daniel voice active.") end },
-        { title = "🤖 Zarvox (Retro Robot)", checked = C.alienVoiceName == "Zarvox",
-          fn = function() C.alienVoiceName = "Zarvox"; speakAlien("Zarvox voice active.") end },
+        { title = "❤️ Heart (Warm, Silky Female — Top Neural)", checked = C.alienVoiceName == "af_heart",
+          fn = function() C.alienVoiceName = "af_heart"; speakAlien("Heart voice active.") end },
+        { title = "🌹 Bella (Expressive, Smooth Female)", checked = C.alienVoiceName == "af_bella",
+          fn = function() C.alienVoiceName = "af_bella"; speakAlien("Bella voice active.") end },
+        { title = "🌊 River (Calm & Atmospheric Female)", checked = C.alienVoiceName == "af_river",
+          fn = function() C.alienVoiceName = "af_river"; speakAlien("River voice active.") end },
+        { title = "⚡ Nova (Dynamic, Modern Female)", checked = C.alienVoiceName == "af_nova",
+          fn = function() C.alienVoiceName = "af_nova"; speakAlien("Nova voice active.") end },
+        { title = "🕶️ Adam (Deep, Smooth Male)", checked = C.alienVoiceName == "am_adam",
+          fn = function() C.alienVoiceName = "am_adam"; speakAlien("Adam voice active.") end },
+        { title = "🐺 Fenrir (Rich, Dark Male)", checked = C.alienVoiceName == "am_fenrir",
+          fn = function() C.alienVoiceName = "am_fenrir"; speakAlien("Fenrir voice active.") end },
       } },
     { title = "Keep dictation in clipboard (⌘V re-paste)", checked = C.keepInClipboard,
       fn = function() C.keepInClipboard = not C.keepInClipboard end },
