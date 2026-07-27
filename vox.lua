@@ -100,8 +100,13 @@ local C = {
     smart = "qwen2.5:7b",
   },
 
-  holdKeycode = 61,                  -- 61 = Right Option. (Right Cmd = 54)
-  holdKeyName = "Right Option",
+  holdKeycode = 55,                  -- 55 = Left Command. (Right Option = 61)
+  holdKeyName = "Left Command",
+  -- Ask combo: while holding the talk key, ALSO press this key and the
+  -- utterance becomes a QUESTION — Vox answers out loud (alien voice)
+  -- instead of pasting. Hold ⌘, tap Right ⌥, speak, release.
+  askKeycode  = 61,                  -- 61 = Right Option
+  askKeyName  = "Right Option",
   tapLockMax  = 0.35,                -- press shorter than this counts as a tap
   tailGrace   = 0.35,                -- mic stays open this long after release
                                      -- (last-word syllables are still in the air)
@@ -145,8 +150,8 @@ local C = {
 
   -- Alien voice output: speaks answers to "Hey Vox..." questions and fact confirmations out loud
   alienVoice     = true,
-  alienVoiceName = "Zarvox",   -- macOS voice: "Zarvox", "Samantha", "Daniel", etc.
-  alienVoiceRate = 195,
+  alienVoiceName = "Whisper",   -- macOS voice: "Whisper", "Samantha", "Moira", "Daniel", etc.
+  alienVoiceRate = 170,
 
   -- Voice commands: say "scratch that" to undo the last dictation;
   -- say "new paragraph." / "new line." (as their own clause) for breaks.
@@ -1528,6 +1533,7 @@ local function reset()
   duckUp()
   if timers.maxRec then timers.maxRec:stop() end
   if timers.stuckKey then timers.stuckKey:stop() end
+  if timers.uiDelay then timers.uiDelay:stop(); timers.uiDelay = nil end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
   setUI("idle")
 end
@@ -2029,7 +2035,8 @@ local function handleTranscript(raw, t0)
       hs.timer.secondsSinceEpoch() - t0, text:sub(1, 80)))
   if #text == 0 then reset() return end
   if CORES <= 2 and ollamaIsLocal() and not C.forceLocalLLM
-     and (recMode == "expand" or C.llmCleanup or C.translateTo ~= "off") then
+     and (recMode == "expand" or recMode == "ask"
+          or C.llmCleanup or C.translateTo ~= "off") then
     recMode = "dictate"
     log("ancient hardware + local LLM: skipping LLM features, pasting raw")
     insertText(text)                 -- never lose the user's words
@@ -2058,6 +2065,17 @@ local function handleTranscript(raw, t0)
     if #rest > 3 then                -- otherwise it's a question
       memoryLookup(rest, 5, function(mem)
         llmGenerate(askPrompt(rest, mem), "answer", true, answerDeliver(rest))
+      end)
+      return
+    end
+  end
+  if recMode == "ask" then
+    -- ⌘ + ask-key combo: the whole utterance is a question — no "Hey Vox"
+    -- prefix needed; the alien answers on screen AND out loud
+    recMode = "dictate"
+    if #text > 3 then
+      memoryLookup(text, 5, function(mem)
+        llmGenerate(askPrompt(text, mem), "answer", true, answerDeliver(text))
       end)
       return
     end
@@ -2195,7 +2213,8 @@ local function startRecording()
          "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav })
   recTask:start()
   -- screen-aware dictation: OCR the target window WHILE recording (free time)
-  if C.screenContext and CORES > 2 then
+  local function startCtxOCR()
+    if not (C.screenContext and CORES > 2) then return end
     local win = hs.window.focusedWindow()
     local wid = win and win:id()
     if wid then
@@ -2208,9 +2227,31 @@ local function startRecording()
       M.ctxTask:start()
     end
   end
-  duckDown()
-  setUI("rec")
-  play("start")
+  -- Command-key hold: ⌘ is also every shortcut chord's modifier, so a quick
+  -- ⌘C must not beep, flash the vignette, or screenshot-OCR the window.
+  -- The mic starts NOW (first words are never lost); sound + UI + OCR fire
+  -- only once the press outlives a tap. Quick taps get discarded before
+  -- that, so shortcuts stay silent and cheap.
+  if C.holdKeycode == 54 or C.holdKeycode == 55 then
+    local function fanfare()
+      timers.uiDelay = nil
+      if state ~= "recording" then return end
+      if pendingTap then       -- tap verdict still pending: look again soon
+        timers.uiDelay = hs.timer.doAfter(0.15, fanfare)
+        return
+      end
+      duckDown()
+      setUI(locked and "lock" or "rec")
+      play("start")
+      startCtxOCR()
+    end
+    timers.uiDelay = hs.timer.doAfter(C.tapLockMax + 0.03, fanfare)
+  else
+    duckDown()
+    setUI("rec")
+    play("start")
+    startCtxOCR()
+  end
   -- safety: a forgotten locked recording stops itself
   timers.maxRec = hs.timer.doAfter(C.maxRecordSecs, function()
     if state == "recording" then
@@ -2317,7 +2358,17 @@ end
 
 -- ---------------- hotkey: hold-to-talk + tap-to-lock ---------
 local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
-  if e:getKeyCode() ~= C.holdKeycode then return false end
+  local kc = e:getKeyCode()
+  -- ask combo: ask-key pressed while a recording is running -> question mode
+  if kc == C.askKeycode and kc ~= C.holdKeycode then
+    if state == "recording" and (e:getFlags().alt or e:getFlags().cmd)
+       and recMode ~= "ask" then
+      recMode = "ask"
+      hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
+    end
+    return false
+  end
+  if kc ~= C.holdKeycode then return false end
   local pressed = e:getFlags().alt or e:getFlags().cmd  -- covers ⌥ or ⌘ keys
 
   if pressed then
@@ -2334,11 +2385,17 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
       if timers.tapWait then timers.tapWait:stop() end
       locked = true
       lockAt = hs.timer.secondsSinceEpoch()
+      -- (soft-start's deferred fanfare sees the lock and fires in full)
       setUI("lock")
     elseif state == "idle" then
       keyDownAt = hs.timer.secondsSinceEpoch()
-      recMode = e:getFlags().shift and "expand" or "dictate"
+      recMode = e:getFlags().shift and "expand"
+             or (e:getFlags().alt and C.askKeycode ~= C.holdKeycode and "ask")
+             or "dictate"
       startRecording()
+      if recMode == "ask" then
+        hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
+      end
     end
   else -- released
     if state == "recording" and not locked then
@@ -2495,6 +2552,7 @@ menubar:setMenu(function()
     { title = "Hold " .. C.holdKeyName .. " to talk · double-tap to lock", disabled = true },
     { title = "Triple-tap: smart reply · Shift+key: expand to content", disabled = true },
     { title = "\"Hey Vox, …\" ask a question · \"Hey Vox, remember …\" save a fact", disabled = true },
+    { title = "Hold key + " .. C.askKeyName .. " = ask mode — Vox answers out loud", disabled = true },
     { title = "-" },
     { title = "Recent dictations", menu = (function()
         if #pasteHistory == 0 then
@@ -2563,15 +2621,19 @@ menubar:setMenu(function()
           fn = function()
             C.alienVoice = not C.alienVoice
             hs.alert.show("Alien voice: " .. (C.alienVoice and "on" or "off"), 1)
-            if C.alienVoice then speakAlien("Alien voice online!") end
+            if C.alienVoice then speakAlien("Voice online.") end
           end },
         { title = "-" },
-        { title = "Voice: Zarvox (Sci-fi alien)", checked = C.alienVoiceName == "Zarvox",
-          fn = function() C.alienVoiceName = "Zarvox"; speakAlien("Zarvox voice selected.") end },
-        { title = "Voice: Samantha (Natural US)", checked = C.alienVoiceName == "Samantha",
-          fn = function() C.alienVoiceName = "Samantha"; speakAlien("Samantha voice selected.") end },
-        { title = "Voice: Daniel (British)", checked = C.alienVoiceName == "Daniel",
-          fn = function() C.alienVoiceName = "Daniel"; speakAlien("Daniel voice selected.") end },
+        { title = "🌌 Whisper (Intimate / Breathy)", checked = C.alienVoiceName == "Whisper",
+          fn = function() C.alienVoiceName = "Whisper"; speakAlien("Vox whisper voice active.") end },
+        { title = "💎 Samantha (Smooth & Sleek)", checked = C.alienVoiceName == "Samantha",
+          fn = function() C.alienVoiceName = "Samantha"; speakAlien("Samantha voice active.") end },
+        { title = "👑 Moira (Intelligent & Crisp)", checked = C.alienVoiceName == "Moira",
+          fn = function() C.alienVoiceName = "Moira"; speakAlien("Moira voice active.") end },
+        { title = "🇬🇧 Daniel (Smooth British)", checked = C.alienVoiceName == "Daniel",
+          fn = function() C.alienVoiceName = "Daniel"; speakAlien("Daniel voice active.") end },
+        { title = "🤖 Zarvox (Retro Robot)", checked = C.alienVoiceName == "Zarvox",
+          fn = function() C.alienVoiceName = "Zarvox"; speakAlien("Zarvox voice active.") end },
       } },
     { title = "Keep dictation in clipboard (⌘V re-paste)", checked = C.keepInClipboard,
       fn = function() C.keepInClipboard = not C.keepInClipboard end },

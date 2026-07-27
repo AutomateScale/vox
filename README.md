@@ -19,7 +19,10 @@ he bobs, blinks, and his antenna sways while waveform bars dance on both
 sides of him (cyan = listening, violet = thinking). The pill bounces in
 and sinks away.
 
-- **Hold Right Option (⌥)** — push-to-talk. Release = transcribe + paste (~1.5s).
+- **Hold Left Command (⌘)** — push-to-talk. Release = transcribe + paste (~1.5s).
+  Quick ⌘-shortcuts (⌘C, ⌘Tab…) stay silent — Vox only lights up when you hold.
+- **Hold ⌘ + tap Right Option (⌥)** — ask mode: your words become a question
+  and the alien answers on screen AND out loud (voice pickable in the menu).
 - **Triple-tap** — smart reply: reads the window on screen, drafts the response.
 - **Shift + hold** — expand mode: speak a rough idea, get polished content.
 - **"Hey Vox, …"** — ask a question; the alien answers from its local memory.
