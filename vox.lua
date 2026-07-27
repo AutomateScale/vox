@@ -143,6 +143,11 @@ local C = {
   -- most precise "dictating here" signal. Skipped for fullscreen windows.
   vignetteWindow = true,
 
+  -- Alien voice output: speaks answers to "Hey Vox..." questions and fact confirmations out loud
+  alienVoice     = true,
+  alienVoiceName = "Zarvox",   -- macOS voice: "Zarvox", "Samantha", "Daniel", etc.
+  alienVoiceRate = 195,
+
   -- Voice commands: say "scratch that" to undo the last dictation;
   -- say "new paragraph." / "new line." (as their own clause) for breaks.
   voiceCommands = true,
@@ -539,6 +544,31 @@ local function play(n)
   s:volume((duck and duck.active and C.duckLevel > 0.05)
            and math.min(1, C.soundVolume / C.duckLevel) or C.soundVolume)
   s:stop(); s:play()
+end
+
+-- ---------------- alien voice synthesis ----------------------
+local speechTask = nil
+local function speakAlien(text)
+  if not C.alienVoice or not text or #text == 0 then return end
+  if speechTask then
+    pcall(function() speechTask:terminate() end)
+    speechTask = nil
+  end
+  -- Clean up markdown formatting and prompt noise for spoken output
+  local clean = text:gsub("```.-```", "")
+                    :gsub("`.-`", "")
+                    :gsub("[%*_%#]", "")
+                    :gsub("%b[]", "")
+                    :gsub("%b()", "")
+                    :gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if #clean == 0 then return end
+  if #clean > 350 then
+    clean = clean:sub(1, 350) .. "..."
+  end
+  local voice = C.alienVoiceName or "Zarvox"
+  local rate = tostring(C.alienVoiceRate or 195)
+  speechTask = hs.task.new("/usr/bin/say", nil, { "-v", voice, "-r", rate, clean })
+  speechTask:start()
 end
 
 -- ---------------- smart audio ducking -------------------------
@@ -1707,6 +1737,7 @@ local function answerDeliver(question)
     hs.alert.show("👽 " .. answer:sub(1, 400), 9)
     rememberText("Q: " .. question .. " — A: " .. answer, "answer")
     play("done")
+    speakAlien(answer)
     state, locked, pendingTap = "idle", false, false
     duckUp()
     vignHide()
@@ -2015,6 +2046,7 @@ local function handleTranscript(raw, t0)
       context.app = "Hey Vox"
       rememberText(fact:gsub("%s+$", ""), "note")
       play("done")
+      speakAlien("Fact remembered.")
       hs.alert.show("🧠 got it — remembered", 2)
       hudEmote("excite")
       state, locked, pendingTap = "idle", false, false
@@ -2145,6 +2177,12 @@ end
 local function startRecording()
   if state ~= "idle" then return end
   state = "recording"
+  -- if the alien is mid-sentence, hush him — Zarvox must never leak into
+  -- the mic and come back transcribed inside your dictation
+  if speechTask then
+    pcall(function() speechTask:terminate() end)
+    speechTask = nil
+  end
   captureContext()
   os.remove(C.wav)
   recGen = recGen + 1
@@ -2520,6 +2558,21 @@ menubar:setMenu(function()
         C.miniAlien = not C.miniAlien
         if C.miniAlien then miniShow() else miniHide() end
       end },
+    { title = "Alien voice playback", menu = {
+        { title = "Voice output (on/off)", checked = C.alienVoice,
+          fn = function()
+            C.alienVoice = not C.alienVoice
+            hs.alert.show("Alien voice: " .. (C.alienVoice and "on" or "off"), 1)
+            if C.alienVoice then speakAlien("Alien voice online!") end
+          end },
+        { title = "-" },
+        { title = "Voice: Zarvox (Sci-fi alien)", checked = C.alienVoiceName == "Zarvox",
+          fn = function() C.alienVoiceName = "Zarvox"; speakAlien("Zarvox voice selected.") end },
+        { title = "Voice: Samantha (Natural US)", checked = C.alienVoiceName == "Samantha",
+          fn = function() C.alienVoiceName = "Samantha"; speakAlien("Samantha voice selected.") end },
+        { title = "Voice: Daniel (British)", checked = C.alienVoiceName == "Daniel",
+          fn = function() C.alienVoiceName = "Daniel"; speakAlien("Daniel voice selected.") end },
+      } },
     { title = "Keep dictation in clipboard (⌘V re-paste)", checked = C.keepInClipboard,
       fn = function() C.keepInClipboard = not C.keepInClipboard end },
     { title = "Duck music while recording", checked = C.duckAudio,
