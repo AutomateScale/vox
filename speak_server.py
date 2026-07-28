@@ -15,6 +15,7 @@ Localhost only. Started and kept alive by vox.lua.
 """
 import json
 import os
+import random
 import re
 import subprocess
 import threading
@@ -117,6 +118,45 @@ def worker():
 
 threading.Thread(target=worker, daemon=True).start()
 
+# Instant acknowledgments: tiny pre-rendered phrases played the moment a
+# question comes in (POST /ack) — zero synth wait, so Vox feels alive while
+# the real first sentence is still being generated. Rendered once at boot,
+# reused from disk on every later boot.
+ACK_DIR = os.path.join(SD, "models/kokoro/acks")
+ACKS = ["Hmm.", "Let me see.", "On it.", "One sec."]
+ack_files = []
+
+
+def prepare_acks():
+    os.makedirs(ACK_DIR, exist_ok=True)
+    sox = sox_path()
+    for i, phrase in enumerate(ACKS):
+        p = os.path.join(ACK_DIR, "ack-%d.wav" % i)
+        if not os.path.exists(p):
+            samples, sr = kokoro.create(phrase, voice="am_adam", speed=1.0,
+                                        lang="en-us")
+            raw = os.path.join(ACK_DIR, "ack-raw.wav")
+            sf.write(raw, samples, sr)
+            if sox and subprocess.run(
+                [sox, raw, p,
+                 "pitch", "200",
+                 "chorus", "0.6", "0.9", "50", "0.4", "0.25", "2", "-t",
+                 "tremolo", "20", "15",
+                 "reverb", "10",
+                 "gain", "-n", "-1"],
+                capture_output=True).returncode == 0:
+                pass
+            else:
+                os.replace(raw, p)
+        ack_files.append(p)
+    try:
+        os.remove(os.path.join(ACK_DIR, "ack-raw.wav"))
+    except OSError:
+        pass
+
+
+prepare_acks()
+
 
 def enqueue(text, voice, speed, my_gen):
     with cond:
@@ -143,7 +183,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        global gen
+        global gen, player
+        if self.path == "/ack":
+            with state_lock:
+                busy = player and player.poll() is None
+                if not busy and ack_files:
+                    player = subprocess.Popen(
+                        ["afplay", random.choice(ack_files)])
+            self._ok()
+            return
         if self.path == "/stop":
             gen += 1
             with cond:
