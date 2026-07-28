@@ -466,9 +466,11 @@ local function pickModel(task, complex)
   local want
   if lowRam and ollamaIsLocal() then
     want = C.models.fast     -- 8GB Macs never swap-thrash; remote brain = no cap
-  elseif task == "translate" or task == "expand" or task == "answer" then
+  elseif task == "translate" or task == "expand" then
     want = C.models.smart                      -- quality IS the product
-  elseif task == "reply" then
+  elseif task == "reply" or task == "answer" then
+    -- spoken answers are 1-3 sentences: the fast model is plenty and
+    -- shaves seconds off every "Hey Vox" / ask-mode roundtrip
     want = complex and C.models.smart or C.models.fast
   else
     want = C.models.fast                       -- mechanical: speed wins
@@ -1800,6 +1802,105 @@ local function answerDeliver(question)
   end
 end
 
+-- streaming ask: Ollama's token stream -> sentences -> the speech queue.
+-- Vox starts TALKING while the model is still writing the rest — perceived
+-- latency collapses from "whole answer generated" to "first sentence born".
+-- All local: ollama and the speech server both live on 127.0.0.1.
+local function streamAsk(question)
+  if CORES <= 2 and ollamaIsLocal() and not C.forceLocalLLM then
+    memoryLookup(question, 3, function(mem)     -- old non-stream path guards
+      llmGenerate(askPrompt(question, mem), "answer", true,
+                  answerDeliver(question))
+    end)
+    return
+  end
+  memoryLookup(question, 3, function(mem)
+    reqId = reqId + 1
+    local myId = reqId
+    local model = pickModel("answer", false)
+    log("ask (streaming) using " .. model)
+    hs.http.asyncPost("http://127.0.0.1:" .. SPEECH_PORT .. "/stop", "", nil,
+                      function(status)
+                        if status ~= 200 then ensureSpeechServer() end
+                      end)
+    local bodyFile = tmp("ask.json")
+    local f = io.open(bodyFile, "w")
+    f:write(hs.json.encode({
+      model = model, stream = true, prompt = askPrompt(question, mem),
+      keep_alive = "24h", options = { temperature = 0.6 },
+    }))
+    f:close()
+    local full, sentBuf, pending = "", "", ""
+    local function flush()
+      local s = sentBuf:gsub("[%*_#`]", ""):gsub("%s+", " ")
+                       :gsub("^%s+", ""):gsub("%s+$", "")
+      sentBuf = ""
+      if #s == 0 or not C.alienVoice then return end
+      local payload = hs.json.encode({ text = s,
+        voice = C.alienVoiceName or "vox", speed = C.alienVoiceSpeed or 1.0 })
+      local function post(attempt)   -- server may still be warming: retry
+        hs.http.asyncPost("http://127.0.0.1:" .. SPEECH_PORT .. "/queue",
+          payload, nil, function(status)
+            if status ~= 200 and attempt < 4 then
+              ensureSpeechServer()
+              timers["q" .. (myId % 8)] = hs.timer.doAfter(1.5, function()
+                post(attempt + 1)
+              end)
+            end
+          end)
+      end
+      post(1)
+    end
+    timers.llmTimeout = hs.timer.doAfter(C.llmTimeout + 20, function()
+      if myId == reqId and state ~= "idle" then
+        hs.alert.show("Vox: answer timed out", 3)
+        reset()
+      end
+    end)
+    M.askTask = hs.task.new("/usr/bin/curl", function(code)
+      if myId ~= reqId then return end
+      if timers.llmTimeout then timers.llmTimeout:stop() end
+      flush()                                   -- speak any trailing words
+      local answer = cleanLLMOutput(full)
+      if code ~= 0 or #answer == 0 then
+        hs.alert.show("Vox: answer failed — is Ollama running?", 3)
+        reset()
+        return
+      end
+      hs.pasteboard.setContents(answer)         -- ⌘V pastes it if wanted
+      hs.alert.show("👽 " .. answer:sub(1, 400), 9)
+      rememberText("Q: " .. question .. " — A: " .. answer, "answer")
+      play("done")
+      state, locked, pendingTap = "idle", false, false
+      duckUp()
+      vignHide()
+      if menubar then menubar:setIcon(icons.idle, true) end
+      hudEmote("excite")
+    end, function(_, stdout)
+      if myId ~= reqId then return false end
+      pending = pending .. (stdout or "")       -- NDJSON lines can split
+      while true do
+        local nl = pending:find("\n", 1, true)
+        if not nl then break end
+        local line = pending:sub(1, nl - 1)
+        pending = pending:sub(nl + 1)
+        local ok, d = pcall(hs.json.decode, line)
+        if ok and d and d.response then
+          full = full .. d.response
+          sentBuf = sentBuf .. d.response
+          if (#sentBuf > 12 and sentBuf:find("[%.!%?…][\"')]?%s*$"))
+             or #sentBuf > 240 then
+            flush()
+          end
+        end
+      end
+      return true
+    end, { "-sN", "--max-time", "90", "-X", "POST",
+           "-d", "@" .. bodyFile, C.ollamaUrl })
+    M.askTask:start()
+  end)
+end
+
 -- Screen OCR is a vertical wall of UI chrome — menus, unread counters, nav
 -- links, truncated edge labels. Fed raw to the LLM it produces vague, off-
 -- target replies. Shed the slop: keep only lines that read like real content
@@ -2048,19 +2149,88 @@ local function collapseRepeats(text)
   return table.concat(out)
 end
 
--- spoken commands: deterministic, punctuation-gated so normal speech
--- ("the new line of products") is never mangled
+-- spoken commands: deterministic, pattern-matched voice control
 local function applyVoiceCommands(text)
-  if not C.voiceCommands then return text, false end
-  local bare = text:lower():gsub("^%s+", ""):gsub("[%p%s]+$", "")
-  if bare == "scratch that" or bare == "undo that" or bare == "delete that" then
-    return "", true
+  if not C.voiceCommands then return text, nil end
+  local bare = text:lower():gsub("^[%p%s]+", ""):gsub("[%p%s]+$", ""):gsub("%s+", " ")
+  log("Voice command parsed: bare='" .. bare .. "' (raw='" .. text .. "')")
+
+  if bare == "scratch that" or bare == "undo that" or bare == "delete that" or bare == "scratch" or bare == "undo" then
+    return "", "undo"
   end
+
+  -- Navigation: Back / Forward / Refresh
+  if bare:find("^go back") or bare:find("^backwards?") or bare:find("^page back") or bare == "back" then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "[", 0) end, label = "Back" }
+  end
+  if bare:find("^go forward") or bare:find("^forwards?") or bare:find("^page forward") or bare == "forward" then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "]", 0) end, label = "Forward" }
+  end
+  if bare:find("refresh") or bare:find("reload") then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "r", 0) end, label = "Reload" }
+  end
+
+  -- Window & Tab Closing
+  if bare:find("close window") or bare == "close this window" or bare == "shut window" then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "w", 0) end, label = "Close window" }
+  end
+  if bare:find("close tab") or bare == "close this tab" or bare == "shut tab" or bare == "close" then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "w", 0) end, label = "Close tab" }
+  end
+  if bare:find("new tab") or bare:find("open tab") then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "t", 0) end, label = "New tab" }
+  end
+  if bare:find("quit app") or bare:find("close app") or bare:find("shut down app") or bare == "quit" then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "q", 0) end, label = "Quit app" }
+  end
+
+  -- Fullscreen & Expand
+  if bare:find("expand") or bare:find("full screen") or bare:find("fullscreen") or bare:find("maximize") then
+    return "", { fn = function()
+      local win = hs.window.focusedWindow()
+      if win then win:toggleFullScreen() end
+    end, label = "Toggle Fullscreen" }
+  end
+  if bare:find("minimize") then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "m", 0) end, label = "Minimize" }
+  end
+
+  -- Scrolling
+  if bare:find("scroll down") or bare:find("page down") or bare == "down" then
+    return "", { fn = function() hs.eventtap.keyStroke({}, "pagedown", 0) end, label = "Scroll down" }
+  end
+  if bare:find("scroll up") or bare:find("page up") or bare == "up" then
+    return "", { fn = function() hs.eventtap.keyStroke({}, "pageup", 0) end, label = "Scroll up" }
+  end
+  if bare:find("top of page") or bare:find("go to top") then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "up", 0) end, label = "Top of page" }
+  end
+  if bare:find("bottom of page") or bare:find("go to bottom") then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "down", 0) end, label = "Bottom of page" }
+  end
+
+  -- Editing
+  if bare:find("select all") then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "a", 0) end, label = "Select all" }
+  end
+  if bare:find("copy that") or bare == "copy" then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "c", 0) end, label = "Copy" }
+  end
+  if bare:find("save file") or bare:find("save document") or bare == "save" then
+    return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "s", 0) end, label = "Save" }
+  end
+
+  -- App Openers
+  local appName = bare:match("^open%s+(.+)")
+  if appName then
+    return "", { fn = function() hs.application.launchOrFocus(appName) end, label = "Open " .. appName }
+  end
+
   text = text:gsub("%s*[Nn]ew [Pp]aragraph[%.,:]%s*", "\n\n")
   text = text:gsub("%s*[Nn]ew [Pp]aragraph%s*$", "\n\n")
   text = text:gsub("%s*[Nn]ew [Ll]ine[%.,:]%s*", "\n")
   text = text:gsub("%s*[Nn]ew [Ll]ine%s*$", "\n")
-  return text, false
+  return text, nil
 end
 
 local function handleTranscript(raw, t0)
@@ -2069,12 +2239,23 @@ local function handleTranscript(raw, t0)
   text = applyCorrections(text)
   text = cleanFillers(text)
   text = collapseRepeats(text)
-  local undo
-  text, undo = applyVoiceCommands(text)
-  if undo then
-    hs.eventtap.keyStroke({ "cmd" }, "z", 0)   -- undo the last paste
+  local cmdResult
+  text, cmdResult = applyVoiceCommands(text)
+  if cmdResult == "undo" then
+    hs.timer.doAfter(0.08, function()
+      hs.eventtap.keyStroke({ "cmd" }, "z", 0)   -- undo the last paste
+    end)
     play("done")
     hs.alert.show("↩︎ scratched", 1)
+    reset()
+    return
+  elseif type(cmdResult) == "table" and cmdResult.fn then
+    play("done")
+    hs.alert.show("⚡ " .. cmdResult.label, 1)
+    speakAlien(cmdResult.label)
+    hs.timer.doAfter(0.08, function()
+      cmdResult.fn()                             -- execute after 80ms keyup delay
+    end)
     reset()
     return
   end
@@ -2111,9 +2292,7 @@ local function handleTranscript(raw, t0)
       return
     end
     if #rest > 3 then                -- otherwise it's a question
-      memoryLookup(rest, 5, function(mem)
-        llmGenerate(askPrompt(rest, mem), "answer", true, answerDeliver(rest))
-      end)
+      streamAsk(rest)                -- speaks while the answer is being born
       return
     end
   end
@@ -2122,9 +2301,7 @@ local function handleTranscript(raw, t0)
     -- prefix needed; the alien answers on screen AND out loud
     recMode = "dictate"
     if #text > 3 then
-      memoryLookup(text, 5, function(mem)
-        llmGenerate(askPrompt(text, mem), "answer", true, answerDeliver(text))
-      end)
+      streamAsk(text)                -- speaks while the answer is being born
       return
     end
   end
@@ -2855,6 +3032,10 @@ local function warmBrain()
     hs.json.encode({ model = C.models.smart, prompt = "",
                      keep_alive = "24h" }),
     { ["Content-Type"] = "application/json" }, function() end)
+  hs.http.asyncPost(C.ollamaUrl,                 -- the ask/reply model too
+    hs.json.encode({ model = C.models.fast, prompt = "",
+                     keep_alive = "24h" }),
+    { ["Content-Type"] = "application/json" }, function() end)
 end
 
 local function warmUp()
@@ -2888,8 +3069,11 @@ M.screenWatcher = hs.screen.watcher.new(function()
 end)
 M.screenWatcher:start()
 timers.warmLoop = hs.timer.doEvery(900, warmUp)
--- keep the alien's voice warm too (kokoro model in RAM = instant speech)
+-- keep the alien's voice warm too (kokoro model in RAM = instant speech).
+-- Immediate + one delayed attempt (boot-time spawns have raced before),
+-- then a 15-min heartbeat.
 ensureSpeechServer()
+timers.speechSrvBoot = hs.timer.doAfter(8, ensureSpeechServer)
 timers.speechSrvLoop = hs.timer.doEvery(900, ensureSpeechServer)
 -- daily brain backup — the memory is irreplaceable (it only exists on this
 -- disk) so snapshot it to iCloud Drive, keeping the newest 7. In zero-
@@ -3054,7 +3238,8 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
                 tostring(mini.canvas:isShowing()), f.x, f.y)
             end, miniShow = miniShow,
             vignDemo = vignDemo, vignShow = vignShow,
-            vignWork = vignWork, vignHide = vignHide }
+            vignWork = vignWork, vignHide = vignHide,
+            streamAsk = streamAsk, speak = speakAlien }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)

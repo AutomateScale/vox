@@ -80,28 +80,49 @@ def synth_one(text, voice, speed, idx):
     return out
 
 
-def speak(text, voice, speed, my_gen):
-    """Streaming: synthesize sentence N+1 WHILE sentence N plays — first
-    words are audible after one short synth instead of the whole answer's."""
-    global player
-    with synth_lock:
-        for i, sent in enumerate(sentences(text)):
-            if my_gen != gen:
-                return
-            wav = synth_one(sent, voice, speed, i)   # overlaps prior playback
-            if my_gen != gen:
-                return
-            with state_lock:
-                prev = player
-            if prev:
-                while prev.poll() is None:           # let the last one finish
-                    if my_gen != gen:
-                        return
-                    time.sleep(0.05)
-            if my_gen != gen:
-                return
-            with state_lock:
-                player = subprocess.Popen(["afplay", wav])
+# Playback queue: sentences are synthesized one ahead while the previous
+# one plays. /speak replaces the queue; /queue APPENDS (token-streaming from
+# the LLM feeds sentences here as they're born); /stop clears everything.
+queue = []
+cond = threading.Condition()
+buf_idx = 0
+
+
+def worker():
+    global player, buf_idx
+    while True:
+        with cond:
+            while not queue:
+                cond.wait()
+            my_gen, text, voice, speed = queue.pop(0)
+        if my_gen != gen:
+            continue
+        with synth_lock:
+            buf_idx += 1
+            wav = synth_one(text, voice, speed, buf_idx)  # overlaps playback
+        if my_gen != gen:
+            continue
+        with state_lock:
+            prev = player
+        if prev:
+            while prev.poll() is None:               # let the last one finish
+                if my_gen != gen:
+                    break
+                time.sleep(0.05)
+        if my_gen != gen:
+            continue
+        with state_lock:
+            player = subprocess.Popen(["afplay", wav])
+
+
+threading.Thread(target=worker, daemon=True).start()
+
+
+def enqueue(text, voice, speed, my_gen):
+    with cond:
+        for s in sentences(text):
+            queue.append((my_gen, s, voice, speed))
+        cond.notify()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -125,10 +146,12 @@ class Handler(BaseHTTPRequestHandler):
         global gen
         if self.path == "/stop":
             gen += 1
+            with cond:
+                queue.clear()
             stop_playback()
             self._ok()
             return
-        if self.path == "/speak":
+        if self.path in ("/speak", "/queue"):
             n = int(self.headers.get("Content-Length", 0))
             try:
                 d = json.loads(self.rfile.read(n))
@@ -136,13 +159,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 return
-            gen += 1
-            stop_playback()
-            threading.Thread(
-                target=speak,
-                args=(d.get("text", ""), d.get("voice", "vox"),
-                      float(d.get("speed", 1.0)), gen),
-                daemon=True).start()
+            if self.path == "/speak":          # replace whatever was playing
+                gen += 1
+                with cond:
+                    queue.clear()
+                stop_playback()
+            enqueue(d.get("text", ""), d.get("voice", "vox"),
+                    float(d.get("speed", 1.0)), gen)
             self._ok()
             return
         self.send_response(404)
