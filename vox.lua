@@ -1941,11 +1941,109 @@ local function actionSay(msg, icon)
   hs.alert.show((icon or "👽") .. " " .. msg, 2)
 end
 
+-- the dictionary: single source of truth for what the alien can DO.
+-- Rendered as the on-screen cheat sheet, the menubar submenu, and the
+-- README table all come from here — add a verb, document it once.
+local ACTION_DICT = {
+  { "Apps", {
+    { "open / launch / start <app>",   "opens or focuses it" },
+    { "close / quit <app>",            "quits it gracefully" },
+    { "force quit <app>",              "kills it immediately" },
+    { "switch to / go to <app>",       "brings it to the front" },
+    { "hide <app>",                    "hides its windows" },
+  } },
+  { "Windows", {
+    { "close this window",             "closes the focused window" },
+    { "minimize",                      "minimizes the focused window" },
+    { "fullscreen",                    "toggles full screen" },
+  } },
+  { "Keyboard", {
+    { "press <keys> · hit enter",      "press command shift F, hit escape…" },
+  } },
+  { "System", {
+    { "volume up / volume down",       "nudges output ±12%" },
+    { "mute / unmute",                 "output audio" },
+    { "take a screenshot",             "presses ⌘⇧3" },
+    { "lock the screen",               "locks the Mac" },
+  } },
+  { "Brain", {
+    { "hey vox, remember <fact>",      "saves it to local memory" },
+    { "hey vox, <question>",           "answers out loud from memory" },
+    { "what can you do",               "shows this dictionary" },
+  } },
+}
+
+local help = { canvas = nil, timer = nil }
+local function helpHide()
+  if help.timer then help.timer:stop(); help.timer = nil end
+  if help.canvas then help.canvas:delete(); help.canvas = nil end
+end
+
+local function helpShow()
+  helpHide()
+  local W, PAD, LH, HH = 620, 28, 22, 34
+  local rows = 0
+  for _, sec in ipairs(ACTION_DICT) do rows = rows + #sec[2] end
+  local H = 96 + rows * LH + #ACTION_DICT * HH + PAD
+  local f = hs.screen.mainScreen():frame()
+  local c = hs.canvas.new({ x = f.x + (f.w - W) / 2,
+                            y = f.y + (f.h - H) / 2, w = W, h = H })
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behavior({ "canJoinAllSpaces", "stationary" })
+  c:clickActivating(false)
+  c[1] = { type = "rectangle", action = "strokeAndFill",
+           fillColor = { red = 0.05, green = 0.06, blue = 0.09, alpha = 0.96 },
+           strokeColor = { red = 1.0, green = 0.31, blue = 0.85, alpha = 0.55 },
+           strokeWidth = 2,
+           roundedRectRadii = { xRadius = 18, yRadius = 18 },
+           trackMouseDown = true }
+  c[2] = { type = "text", text = "👽  Vox — voice dictionary",
+           textSize = 20, textColor = { red = 1, green = 0.31, blue = 0.85, alpha = 1 },
+           frame = { x = PAD, y = 20, w = W - 2 * PAD, h = 28 } }
+  c[3] = { type = "text",
+           text = "say it after “Hey Vox,” — or hold ⌘ and tap Left Shift · click to close",
+           textSize = 11.5, textColor = { red = 1, green = 1, blue = 1, alpha = 0.45 },
+           frame = { x = PAD, y = 50, w = W - 2 * PAD, h = 16 } }
+  local y, i = 78, 3
+  for _, sec in ipairs(ACTION_DICT) do
+    i = i + 1
+    c[i] = { type = "text", text = sec[1]:upper(),
+             textSize = 11, textColor = { red = 0.61, green = 0.36, blue = 1, alpha = 0.95 },
+             frame = { x = PAD, y = y + 10, w = W - 2 * PAD, h = 15 } }
+    y = y + HH
+    for _, it in ipairs(sec[2]) do
+      i = i + 1
+      c[i] = { type = "text", text = it[1], textSize = 13,
+               textColor = { red = 1, green = 1, blue = 1, alpha = 0.95 },
+               frame = { x = PAD, y = y, w = 300, h = LH } }
+      i = i + 1
+      c[i] = { type = "text", text = it[2], textSize = 13,
+               textColor = { red = 1, green = 1, blue = 1, alpha = 0.5 },
+               frame = { x = PAD + 310, y = y, w = W - PAD - 310 - PAD, h = LH } }
+      y = y + LH
+    end
+  end
+  c:canvasMouseEvents(true, false, false, false)
+  c:mouseCallback(function() helpHide() end)
+  c:show()
+  help.canvas = c
+  help.timer = hs.timer.doAfter(60, helpHide)
+end
+
 -- returns true if the utterance was an action and was handled
 local function performAction(text)
   local t = text:lower():gsub("[%.!%?]+%s*$", ""):gsub("^%s+", "")
   t = t:gsub("^please%s+", ""):gsub("^can you%s+", ""):gsub("^could you%s+", "")
        :gsub("^please%s+", "")
+
+  -- the dictionary itself
+  if t:match("^what can you do") or t == "help" or t == "show help"
+     or t:match("^show%s+.*%f[%a]commands%f[%A]")
+     or t:match("^show%s+.*%f[%a]dictionary%f[%A]") then
+    helpShow()
+    speakAlien("Here is everything I can do. It is on your screen.")
+    return true
+  end
 
   -- open / launch / start <app>
   local arg = t:match("^open%s+(.+)$") or t:match("^launch%s+(.+)$")
@@ -2988,6 +3086,21 @@ menubar:setMenu(function()
     { title = "Triple-tap: smart reply · Right Option+key: expand to content", disabled = true },
     { title = "\"Hey Vox, …\" ask a question · \"Hey Vox, remember …\" save a fact", disabled = true },
     { title = "Hold key + " .. C.askKeyName .. " = ask mode — Vox answers out loud", disabled = true },
+    { title = "Voice actions — dictionary", menu = (function()
+        local items = {
+          { title = "Show cheat sheet on screen", fn = helpShow },
+          { title = "(or say: \"Hey Vox, what can you do?\")", disabled = true },
+        }
+        for _, sec in ipairs(ACTION_DICT) do
+          items[#items + 1] = { title = "-" }
+          items[#items + 1] = { title = "— " .. sec[1] .. " —", disabled = true }
+          for _, it in ipairs(sec[2]) do
+            items[#items + 1] = { title = it[1] .. "  ·  " .. it[2],
+                                  disabled = true }
+          end
+        end
+        return items
+      end)() },
     { title = "-" },
     { title = "Recent dictations", menu = (function()
         if #pasteHistory == 0 then
@@ -3433,7 +3546,13 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             vignDemo = vignDemo, vignShow = vignShow,
             vignWork = vignWork, vignHide = vignHide,
             streamAsk = streamAsk, speak = speakAlien,
-            act = performAction }
+            act = performAction, helpShow = helpShow,
+            helpInfo = function()
+              if not help.canvas then return "no canvas" end
+              local f = help.canvas:frame()
+              return string.format("showing=%s x=%d y=%d w=%d h=%d",
+                tostring(help.canvas:isShowing()), f.x, f.y, f.w, f.h)
+            end }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
