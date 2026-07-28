@@ -1901,6 +1901,189 @@ local function streamAsk(question)
   end)
 end
 
+-- ---------------- voice actions -------------------------------
+-- The alien gets hands: "Hey Vox, open Safari" / ask-mode "close Slack".
+-- Deterministic verb parser — no LLM in the loop, so actions fire instantly
+-- and never hallucinate. Unrecognized utterances fall through to Q&A.
+local APP_ALIASES = {
+  ["chrome"] = "Google Chrome", ["google chrome"] = "Google Chrome",
+  ["vs code"] = "Visual Studio Code", ["vscode"] = "Visual Studio Code",
+  ["code"] = "Visual Studio Code", ["cursor"] = "Cursor",
+  ["terminal"] = "Terminal", ["iterm"] = "iTerm",
+  ["safari"] = "Safari", ["finder"] = "Finder", ["notes"] = "Notes",
+  ["mail"] = "Mail", ["messages"] = "Messages", ["whatsapp"] = "WhatsApp",
+  ["slack"] = "Slack", ["spotify"] = "Spotify", ["music"] = "Music",
+  ["calendar"] = "Calendar", ["photos"] = "Photos", ["preview"] = "Preview",
+  ["calculator"] = "Calculator", ["activity monitor"] = "Activity Monitor",
+  ["settings"] = "System Settings", ["system settings"] = "System Settings",
+  ["system preferences"] = "System Settings", ["claude"] = "Claude",
+}
+
+local SPOKEN_KEYS = {
+  enter = "return", ["return"] = "return", escape = "escape", esc = "escape",
+  tab = "tab", space = "space", spacebar = "space", delete = "delete",
+  backspace = "delete", up = "up", down = "down", left = "left",
+  right = "right", home = "home", ["end"] = "end",
+}
+local SPOKEN_MODS = { command = "cmd", cmd = "cmd", shift = "shift",
+                      option = "alt", alt = "alt", control = "ctrl",
+                      ctrl = "ctrl", fn = "fn" }
+
+local function resolveApp(name)
+  name = name:gsub("^%s+", ""):gsub("%s+$", ""):gsub("[%.!%?,]+$", "")
+  local lower = name:lower():gsub("^the%s+", ""):gsub("%s+app$", "")
+  if APP_ALIASES[lower] then return APP_ALIASES[lower] end
+  return (lower:gsub("(%a)([%w']*)", function(a, b) return a:upper() .. b end))
+end
+
+local function actionSay(msg, icon)
+  speakAlien(msg)
+  hs.alert.show((icon or "👽") .. " " .. msg, 2)
+end
+
+-- returns true if the utterance was an action and was handled
+local function performAction(text)
+  local t = text:lower():gsub("[%.!%?]+%s*$", ""):gsub("^%s+", "")
+  t = t:gsub("^please%s+", ""):gsub("^can you%s+", ""):gsub("^could you%s+", "")
+       :gsub("^please%s+", "")
+
+  -- open / launch / start <app>
+  local arg = t:match("^open%s+(.+)$") or t:match("^launch%s+(.+)$")
+           or t:match("^start%s+(.+)$")
+  if arg then
+    local app = resolveApp(arg)
+    if hs.application.launchOrFocus(app) then
+      actionSay("Opening " .. app .. ".", "🚀")
+    else
+      actionSay("I could not find an app called " .. app .. ".")
+    end
+    return true
+  end
+
+  -- close/quit <app> or "close this window"
+  local force = t:match("^force%s+quit%s+(.+)$")
+  arg = force or t:match("^close%s+(.+)$") or t:match("^quit%s+(.+)$")
+  if arg then
+    if arg:match("^th[ei]s?%s+window$") or arg == "window"
+       or arg == "the window" then
+      local w = hs.window.focusedWindow()
+      if w then w:close(); actionSay("Window closed.", "🪟") end
+      return true
+    end
+    local app = hs.application.find(resolveApp(arg))
+    if app then
+      if force then app:kill9() else app:kill() end
+      actionSay("Closing " .. app:name() .. ".", "🛑")
+    else
+      actionSay("I do not see " .. resolveApp(arg) .. " running.")
+    end
+    return true
+  end
+
+  -- switch to / focus / go to <app>
+  arg = t:match("^switch%s+to%s+(.+)$") or t:match("^focus%s+(.+)$")
+     or t:match("^go%s+to%s+(.+)$") or t:match("^show%s+me%s+(.+)$")
+  if arg then
+    local app = resolveApp(arg)
+    if hs.application.launchOrFocus(app) then
+      actionSay("Switching to " .. app .. ".", "🔀")
+    else
+      actionSay("I could not find " .. app .. ".")
+    end
+    return true
+  end
+
+  -- hide <app>
+  arg = t:match("^hide%s+(.+)$")
+  if arg then
+    local app = hs.application.find(resolveApp(arg))
+    if app then app:hide(); actionSay("Hidden.", "🫥")
+    else actionSay("I do not see " .. resolveApp(arg) .. " running.") end
+    return true
+  end
+
+  -- window controls
+  if t:match("^minimi[sz]e") then
+    local w = hs.window.focusedWindow()
+    if w then w:minimize(); actionSay("Minimized.", "🪟") end
+    return true
+  end
+  if t:match("^full%s*screen") or t:match("^toggle%s+full%s*screen") then
+    local w = hs.window.focusedWindow()
+    if w then w:setFullScreen(not w:isFullScreen()); actionSay("Done.", "🪟") end
+    return true
+  end
+
+  -- system bits
+  if t:match("^take%s+a%s+screenshot") or t == "screenshot" then
+    hs.eventtap.keyStroke({ "cmd", "shift" }, "3", 0)
+    actionSay("Screenshot taken.", "📸")
+    return true
+  end
+  if t:match("^lock%s+the%s+screen$") or t == "lock screen" then
+    actionSay("Locking.", "🔒")
+    timers.lockDelay = hs.timer.doAfter(1.2, hs.caffeinate.lockScreen)
+    return true
+  end
+  if t:match("^volume%s+up$") or t:match("^turn%s+it%s+up$") then
+    local d = hs.audiodevice.defaultOutputDevice()
+    if d then d:setOutputVolume(math.min(100, (d:outputVolume() or 50) + 12)) end
+    actionSay("Louder.", "🔊")
+    return true
+  end
+  if t:match("^volume%s+down$") or t:match("^turn%s+it%s+down$") then
+    local d = hs.audiodevice.defaultOutputDevice()
+    if d then d:setOutputVolume(math.max(0, (d:outputVolume() or 50) - 12)) end
+    actionSay("Quieter.", "🔉")
+    return true
+  end
+  if t == "mute" or t == "mute the sound" then
+    local d = hs.audiodevice.defaultOutputDevice()
+    if d then d:setOutputMuted(true) end
+    hs.alert.show("🔇 muted", 1.5)
+    return true
+  end
+  if t == "unmute" or t == "unmute the sound" then
+    local d = hs.audiodevice.defaultOutputDevice()
+    if d then d:setOutputMuted(false) end
+    actionSay("Sound is back.", "🔊")
+    return true
+  end
+
+  -- generic keystroke: "press command shift f" / "hit enter"
+  local keys = t:match("^press%s+(.+)$") or t:match("^hit%s+(.+)$")
+  if keys then
+    local mods, key = {}, nil
+    for w in keys:gmatch("[%w]+") do
+      if SPOKEN_MODS[w] then
+        mods[#mods + 1] = SPOKEN_MODS[w]
+      else
+        key = SPOKEN_KEYS[w] or w
+      end
+    end
+    if key and (#key == 1 or SPOKEN_KEYS[key] or key:match("^f%d+$")
+                or key == "return" or key == "escape" or key == "tab"
+                or key == "space" or key == "delete" or key == "up"
+                or key == "down" or key == "left" or key == "right") then
+      hs.eventtap.keyStroke(mods, key, 0)
+      actionSay("Done.", "⌨️")
+      return true
+    end
+  end
+
+  return false
+end
+
+-- shared "action finished, back to idle" cleanup
+local function actionDone()
+  play("done")
+  state, locked, pendingTap = "idle", false, false
+  duckUp()
+  vignHide()
+  if menubar then menubar:setIcon(icons.idle, true) end
+  hudEmote("excite")
+end
+
 -- Screen OCR is a vertical wall of UI chrome — menus, unread counters, nav
 -- links, truncated edge labels. Fed raw to the LLM it produces vague, off-
 -- target replies. Shed the slop: keep only lines that read like real content
@@ -2291,8 +2474,13 @@ local function handleTranscript(raw, t0)
       if menubar then menubar:setIcon(icons.idle, true) end
       return
     end
-    if #rest > 3 then                -- otherwise it's a question
-      streamAsk(rest)                -- speaks while the answer is being born
+    if #rest > 3 then
+      if performAction(rest) then    -- "Hey Vox, open Safari" — hands first
+        context.app = "Hey Vox"
+        actionDone()
+        return
+      end
+      streamAsk(rest)                -- otherwise it's a question
       return
     end
   end
@@ -2301,6 +2489,11 @@ local function handleTranscript(raw, t0)
     -- prefix needed; the alien answers on screen AND out loud
     recMode = "dictate"
     if #text > 3 then
+      if performAction(text) then    -- ask mode does actions too
+        context.app = "Hey Vox"
+        actionDone()
+        return
+      end
       streamAsk(text)                -- speaks while the answer is being born
       return
     end
@@ -3239,7 +3432,8 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             end, miniShow = miniShow,
             vignDemo = vignDemo, vignShow = vignShow,
             vignWork = vignWork, vignHide = vignHide,
-            streamAsk = streamAsk, speak = speakAlien }
+            streamAsk = streamAsk, speak = speakAlien,
+            act = performAction }
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)

@@ -26,6 +26,10 @@ and sinks away.
 - **Triple-tap** — smart reply: reads the window on screen, drafts the response.
 - **Right Option (⌥) + hold** — expand mode: speak a rough idea, get polished content.
 - **"Hey Vox, …"** — ask a question; the alien answers from its local memory.
+- **Voice actions** — "Hey Vox, open Safari" / "close Slack" / "switch to
+  Chrome" / "minimize" / "press command W" / "volume up" / "take a
+  screenshot" / "lock the screen". Works in ask mode too (⌘+⇧). Deterministic
+  parser, no LLM — actions fire instantly and never hallucinate.
 - **Voice commands** — "scratch that" undoes; "new paragraph." / "new line." break.
 - **Tiny idle alien** — click = dictate hands-free, C = speak-to-content,
   P = absorb the screen into your knowledge base.
