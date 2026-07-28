@@ -1821,7 +1821,14 @@ local function streamAsk(question)
     log("ask (streaming) using " .. model)
     hs.http.asyncPost("http://127.0.0.1:" .. SPEECH_PORT .. "/stop", "", nil,
                       function(status)
-                        if status ~= 200 then ensureSpeechServer() end
+                        if status ~= 200 then
+                          ensureSpeechServer()
+                        elseif C.alienVoice then
+                          -- instant "Hmm." while the real answer is born —
+                          -- pre-rendered, so it's audible within ~300ms
+                          hs.http.asyncPost("http://127.0.0.1:" .. SPEECH_PORT
+                            .. "/ack", "", nil, function() end)
+                        end
                       end)
     local bodyFile = tmp("ask.json")
     local f = io.open(bodyFile, "w")
@@ -2178,6 +2185,21 @@ end
 -- so the action layer stays deterministic: the LLM can pick from the menu,
 -- never invent. Falls through to Q&A on NO/timeout.
 local function normalizeAction(text, cb)
+  -- app candidates = the usual suspects + what's ACTUALLY running right now,
+  -- so "switch to bear" maps correctly the day you install Bear
+  local appNames = { "Safari", "Google Chrome", "Terminal", "Slack",
+                     "Finder", "Spotify", "Messages", "Notes", "Mail",
+                     "Calculator", "System Settings", "Cursor" }
+  local seen = {}
+  for _, n in ipairs(appNames) do seen[n] = true end
+  for _, a in ipairs(hs.application.runningApplications()) do
+    local n = a:name()
+    if n and #n > 2 and not seen[n] and a:kind() == 1
+       and #appNames < 24 then
+      seen[n] = true
+      appNames[#appNames + 1] = n
+    end
+  end
   local prompt = table.concat({
     "A voice command was mis-transcribed. Map it to ONE of these exact",
     "command patterns, or reply NO if it is not clearly one of them:",
@@ -2185,8 +2207,7 @@ local function normalizeAction(text, cb)
     "hide <app> / close this window / minimize / fullscreen /",
     "volume up / volume down / mute / unmute / take a screenshot /",
     "lock the screen / what can you do",
-    "Likely app names: Safari, Google Chrome, Terminal, Slack, Finder,",
-    "Spotify, Messages, Notes, Mail, Calculator, System Settings, Cursor.",
+    "Likely app names: " .. table.concat(appNames, ", ") .. ".",
     "Pick the verb that SOUNDS most like the transcript's first word(s):",
     "'clothes', 'quos', 'cloze', 'closed' sound like CLOSE — not open.",
     "Most transcripts are NOT commands — when in doubt, reply NO.",
