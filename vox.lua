@@ -2706,6 +2706,13 @@ local function handleTranscript(raw, t0)
 end
 
 -- slow path: only used if the server is down (also restarts it)
+-- screen-OCR cache: rapid consecutive dictations into the SAME window reuse
+-- the words instead of re-screenshotting + re-OCRing every time (Gemini's
+-- idea; hoisted here so it actually persists across recordings, and it
+-- stores the text — ctx.txt is single-use, so a bare skip would silently
+-- drop screen context on the follow-up dictation)
+local ocrCache = { wid = nil, ts = 0, txt = nil }
+
 local function transcribeCLI(t0)
   M.sttTask = hs.task.new(C.whisper, function(code, out, err)
     if code ~= 0 then
@@ -2749,6 +2756,7 @@ local function transcribe()
     local ctxText = cf:read("*a") or ""
     cf:close()
     os.remove(tmp("ctx.txt"))                -- privacy: single use
+    ocrCache.txt = ctxText                   -- reusable within the 15s window
     -- ONLY true proper nouns (absent from the dictionary) may enter the
     -- prompt. Title Case marketing copy ("Qualified Leads On Autopilot")
     -- used to flood it and Whisper mimicked the style — Adam got a whole
@@ -2831,7 +2839,17 @@ local function startRecording()
     if not (C.screenContext and CORES > 2) then return end
     local win = hs.window.focusedWindow()
     local wid = win and win:id()
+    local now = hs.timer.secondsSinceEpoch()
+    if wid and ocrCache.wid == wid and (now - ocrCache.ts) < 15
+       and ocrCache.txt then
+      -- replay the cached words so transcribe() finds them as usual
+      local cf = io.open(tmp("ctx.txt"), "w")
+      if cf then cf:write(ocrCache.txt); cf:close() end
+      log("reusing cached screen OCR words for window " .. tostring(wid))
+      return
+    end
     if wid then
+      ocrCache.wid, ocrCache.ts, ocrCache.txt = wid, now, nil
       local ocrBin = HOME .. "/vox/ocr-bin"
       local ctxPng, ctxTxt = tmp("ctx.png"), tmp("ctx.txt")
       M.ctxTask = hs.task.new("/bin/sh", nil, { "-c", string.format(
