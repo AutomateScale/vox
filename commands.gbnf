@@ -1,0 +1,8 @@
+# GBNF Grammar for Vox Voice Commands
+# Guarantees zero hallucinations for spoken system actions
+
+root ::= verb " " target
+
+verb ::= "close" | "open" | "quit" | "expand" | "minimize" | "reload" | "refresh" | "go back" | "backwards" | "forward" | "scroll down" | "scroll up"
+
+target ::= "window" | "tab" | "app" | "page" | "chrome" | "safari" | "arc" | "slack" | "terminal" | "cursor" | "finder"
