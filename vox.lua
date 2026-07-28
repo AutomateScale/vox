@@ -2172,6 +2172,111 @@ local function performAction(text)
   return false
 end
 
+-- Whisper mangles two-word commands ("Close Safari" -> "Quo's Safari").
+-- When a SHORT utterance matches no verb, ask the fast local model to map
+-- it onto the whitelist — it may only answer with an exact command or NO,
+-- so the action layer stays deterministic: the LLM can pick from the menu,
+-- never invent. Falls through to Q&A on NO/timeout.
+local function normalizeAction(text, cb)
+  local prompt = table.concat({
+    "A voice command was mis-transcribed. Map it to ONE of these exact",
+    "command patterns, or reply NO if it is not clearly one of them:",
+    "open <app> / close <app> / force quit <app> / switch to <app> /",
+    "hide <app> / close this window / minimize / fullscreen /",
+    "volume up / volume down / mute / unmute / take a screenshot /",
+    "lock the screen / what can you do",
+    "Likely app names: Safari, Google Chrome, Terminal, Slack, Finder,",
+    "Spotify, Messages, Notes, Mail, Calculator, System Settings, Cursor.",
+    "Pick the verb that SOUNDS most like the transcript's first word(s):",
+    "'clothes', 'quos', 'cloze', 'closed' sound like CLOSE — not open.",
+    "Most transcripts are NOT commands — when in doubt, reply NO.",
+    "Examples:",
+    "\"clothes safari\" -> close Safari",
+    "\"oaken chrome\" -> open Google Chrome",
+    "\"what's the weather\" -> NO",
+    "\"who is doctor smith\" -> NO",
+    "\"crucified\" -> NO",
+    "Transcript: \"" .. text .. "\"",
+    "Reply with ONLY the corrected command, or NO. Nothing else.",
+  }, "\n")
+  local done = false
+  timers.normTimeout = hs.timer.doAfter(6, function()
+    if not done then done = true; cb(nil) end
+  end)
+  hs.http.asyncPost(C.ollamaUrl, hs.json.encode({
+    model = pickModel("answer", false), stream = false, prompt = prompt,
+    keep_alive = "24h", options = { temperature = 0 },
+  }), { ["Content-Type"] = "application/json" }, function(status, body)
+    if done then return end
+    done = true
+    if timers.normTimeout then timers.normTimeout:stop() end
+    local cmd
+    if status == 200 then
+      local ok, d = pcall(hs.json.decode, body)
+      if ok and d and d.response then
+        cmd = d.response:gsub("[\"'%.]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if cmd:upper() == "NO" or #cmd == 0 or #cmd > 40 then cmd = nil end
+      end
+    end
+    cb(cmd)
+  end)
+end
+
+-- Deterministic gates on the normalizer's proposal — the LLM can pick from
+-- the menu, but code checks its work:
+-- (1) the command must share phonetic material with what was actually said
+local function soundsPlausible(orig, cmd)
+  local o = " " .. orig:lower():gsub("[^%w%s]", "") .. " "
+  local oflat = o:gsub("%s", "")
+  local hasSig, hit = false, false
+  for w in cmd:lower():gmatch("%a+") do
+    if #w >= 4 and not (w == "open" or w == "close" or w == "quit"
+        or w == "switch" or w == "hide" or w == "force" or w == "this"
+        or w == "google") then
+      hasSig = true
+      if o:find(w, 1, true) or oflat:find(w:sub(1, 3), 1, true) then
+        hit = true
+      end
+    end
+  end
+  if hasSig then return hit end
+  local verb = cmd:lower():match("%a+") or ""
+  return oflat:find(verb:sub(1, 3), 1, true) ~= nil
+end
+
+-- (2) close/quit/hide/switch may only target a known alias or a RUNNING app
+-- ("who is dr kornreich" must never become close Dr Kornreich)
+local function appTargetOK(cmd)
+  local lc = cmd:lower()
+  local arg = lc:match("^force quit%s+(.+)$") or lc:match("^close%s+(.+)$")
+           or lc:match("^quit%s+(.+)$") or lc:match("^switch%s+to%s+(.+)$")
+           or lc:match("^hide%s+(.+)$")
+  if not arg then return true end          -- open/argless: handled gracefully
+  if arg:match("window") then return true end
+  if APP_ALIASES[arg] then return true end
+  return hs.application.find(resolveApp(arg)) ~= nil
+end
+
+-- action if it parses; short garbled utterances get one normalizer pass;
+-- everything else becomes a question. onAction/onQuestion are callbacks.
+local function routeUtterance(text, onAction, onQuestion)
+  if performAction(text) then onAction() return end
+  local words = select(2, text:gsub("%S+", ""))
+  if words <= 5 then
+    normalizeAction(text, function(cmd)
+      if cmd and soundsPlausible(text, cmd) and appTargetOK(cmd)
+         and performAction(cmd) then
+        log("action normalized: '" .. text .. "' -> '" .. cmd .. "'")
+        onAction()
+      else
+        onQuestion()
+      end
+    end)
+    return
+  end
+  onQuestion()
+end
+
 -- shared "action finished, back to idle" cleanup
 local function actionDone()
   play("done")
@@ -2573,12 +2678,9 @@ local function handleTranscript(raw, t0)
       return
     end
     if #rest > 3 then
-      if performAction(rest) then    -- "Hey Vox, open Safari" — hands first
-        context.app = "Hey Vox"
-        actionDone()
-        return
-      end
-      streamAsk(rest)                -- otherwise it's a question
+      routeUtterance(rest,
+        function() context.app = "Hey Vox"; actionDone() end,
+        function() streamAsk(rest) end)
       return
     end
   end
@@ -2587,12 +2689,9 @@ local function handleTranscript(raw, t0)
     -- prefix needed; the alien answers on screen AND out loud
     recMode = "dictate"
     if #text > 3 then
-      if performAction(text) then    -- ask mode does actions too
-        context.app = "Hey Vox"
-        actionDone()
-        return
-      end
-      streamAsk(text)                -- speaks while the answer is being born
+      routeUtterance(text,
+        function() context.app = "Hey Vox"; actionDone() end,
+        function() streamAsk(text) end)
       return
     end
   end
@@ -2640,6 +2739,11 @@ local function transcribe()
 
   -- vocabulary for THIS dictation: saved words + what's visible on screen
   local promptStr = fullVocabulary()
+  -- bias short command utterances: "Close Safari" once arrived as
+  -- "Quo's Safari" (and once as "Crucified"!) — seed the verbs + app names
+  promptStr = promptStr
+    .. " Close Safari. Open Chrome. Quit Slack. Switch to Terminal."
+    .. " Minimize. Fullscreen. Mute. Take a screenshot. Lock the screen."
   local cf = io.open(tmp("ctx.txt"), "r")
   if cf then
     local ctxText = cf:read("*a") or ""
@@ -3547,6 +3651,7 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
             vignWork = vignWork, vignHide = vignHide,
             streamAsk = streamAsk, speak = speakAlien,
             act = performAction, helpShow = helpShow,
+            route = routeUtterance,
             helpInfo = function()
               if not help.canvas then return "no canvas" end
               local f = help.canvas:frame()
