@@ -108,12 +108,16 @@ fi
 
 echo "==> [5/6] Wiring the Vox engine config + hs CLI..."
 mkdir -p ~/.hammerspoon
-if ! grep -q 'require("vox")' ~/.hammerspoon/init.lua 2>/dev/null; then
+if grep -q 'require("vox")' ~/.hammerspoon/init.lua 2>/dev/null \
+   && ! grep -q 'bootguard' ~/.hammerspoon/init.lua; then
+  # older install: swap the direct load for the guarded one
+  sed -i '' 's|require("vox")|require("bootguard")  -- guarded load: rolls back a broken Vox update|' \
+    ~/.hammerspoon/init.lua
+elif ! grep -q 'require("bootguard")' ~/.hammerspoon/init.lua 2>/dev/null; then
   cat >> ~/.hammerspoon/init.lua <<EOF
--- Vox (local dictation)
-require("hs.ipc"); pcall(hs.ipc.cliInstall, "$BREW_PREFIX")  -- enables \`hs -c\` CLI for diagnostics
+-- Vox (local dictation) — bootguard loads Vox and rolls back broken updates
 package.path = package.path .. ";" .. os.getenv("HOME") .. "/vox/?.lua"
-require("vox")
+require("bootguard")
 EOF
 fi
 # ensure the hs CLI is linked even if cliInstall can't write its manpage

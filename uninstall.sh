@@ -20,7 +20,12 @@ fi
 
 echo "==> Stopping Vox processes..."
 pkill -f "whisper-serve[r]" 2>/dev/null
+pkill -f "speak_serve[r].py" 2>/dev/null
 pkill -f "sox.*vox-recording" 2>/dev/null
+
+echo "==> Removing engine watchdog..."
+launchctl bootout "gui/$(id -u)/com.vox.watchdog" 2>/dev/null
+rm -f "$HOME/Library/LaunchAgents/com.vox.watchdog.plist"
 
 echo "==> Unwiring Hammerspoon config..."
 INIT="$HOME/.hammerspoon/init.lua"
@@ -30,6 +35,7 @@ if [ -f "$INIT" ]; then
     -e '/hs\.ipc\.cliInstall/d' \
     -e '\|/vox/?\.lua|d' \
     -e '/require("vox")/d' \
+    -e '/require("bootguard")/d' \
     "$INIT"
   grep -q '[^[:space:]]' "$INIT" || rm -f "$INIT"
 fi

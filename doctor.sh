@@ -165,5 +165,24 @@ fi
 echo "[10] Default audio input device"
 system_profiler SPAudioDataType 2>/dev/null | awk '/Input Source|Default Input Device/{print "     " $0}' | head -6
 
+echo "[11] Deploy safety (bootguard + watchdog)"
+if grep -q 'require("bootguard")' "$HOME/.hammerspoon/init.lua" 2>/dev/null; then
+  ok "bootguard loader active — a broken update rolls back automatically"
+else
+  info "init.lua still loads vox directly — bootguard arms itself on next Vox load"
+fi
+if [ -s "$HOME/vox/.vox-lkg" ]; then
+  ok "last-known-good commit recorded ($(cut -c1-7 "$HOME/vox/.vox-lkg"))"
+else
+  info "no last-known-good recorded yet — written after the next successful load"
+fi
+if launchctl print "gui/$(id -u)/com.vox.watchdog" >/dev/null 2>&1; then
+  ok "engine watchdog loaded — Hammerspoon relaunches within 5 min if it dies"
+else
+  info "engine watchdog not loaded — installs itself on next Vox load"
+fi
+[ -s "$HOME/vox/.vox-bad-commit" ] && \
+  info "quarantined broken commit: $(cut -c1-7 "$HOME/vox/.vox-bad-commit") — updater skips it until upstream moves on"
+
 rm -rf "$T"
 echo "== done =="
