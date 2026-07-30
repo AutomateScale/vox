@@ -8,3 +8,5 @@ calibration.json
 memory/
 identity.md
 backups/
+.vox-lkg
+.vox-bad-commit

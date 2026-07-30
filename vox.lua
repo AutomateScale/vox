@@ -574,7 +574,16 @@ local function ensureSpeechServer()
   local script = HOME .. "/vox/speak_server.py"
   if not (hs.fs.attributes(pyBin) and hs.fs.attributes(script)) then return end
   if speechServerRunning() then return end
-  M.speechSrvTask = hs.task.new(pyBin, nil, { script })
+  local spawnedAt = hs.timer.secondsSinceEpoch()
+  M.speechSrvTask = hs.task.new(pyBin, function(code)
+    log("speech server exited (code " .. tostring(code) .. ")")
+    -- respawn with backoff — same contract as whisper-server; without this
+    -- a crash meant up to 15 min of silence until the heartbeat noticed
+    if hs.timer.secondsSinceEpoch() - spawnedAt > 60 then M.spkCrashes = 0 end
+    M.spkCrashes = math.min((M.spkCrashes or 0) + 1, 6)
+    timers.spkRespawn = hs.timer.doAfter(
+      math.min(300, 10 * 2 ^ (M.spkCrashes - 1)), ensureSpeechServer)
+  end, { script })
   M.speechSrvTask:start()
   log("speech server starting (model warming)")
 end
@@ -1674,8 +1683,18 @@ end
 local function ensureServer()
   if C.whisperHost ~= "127.0.0.1" then return end  -- thin client: server is remote
   if serverRunning() then return end
+  local spawnedAt = hs.timer.secondsSinceEpoch()
   M.serverTask = hs.task.new(C.whisperSrv, function(code)
     log("whisper-server exited (code " .. tostring(code) .. ")")
+    -- respawn instead of waiting to be missed: without this, dictation
+    -- limps on the slow CLI path until a self-test or hotkey press notices.
+    -- Exponential backoff so a server that can't start at all (deleted
+    -- model, bad flag) settles at one attempt / 90s instead of a tight
+    -- loop; a minute of healthy uptime resets the clock.
+    if hs.timer.secondsSinceEpoch() - spawnedAt > 60 then M.srvCrashes = 0 end
+    M.srvCrashes = math.min((M.srvCrashes or 0) + 1, 6)
+    timers.srvRespawn = hs.timer.doAfter(
+      math.min(90, 3 * 2 ^ (M.srvCrashes - 1)), ensureServer)
   end, {
     "-m", C.model, "--host", C.serverBind, "--port", tostring(C.serverPort),
     "-t", C.threads, "-l", C.language, "--prompt", fullVocabulary(),
@@ -3343,7 +3362,12 @@ local function checkForUpdates(interactive)
     "[ \"$R\" = \"https://github.com/AutomateScaleInc/vox.git\" ] || " ..
     "{ echo wrong-remote; exit 3; }; " ..
     "/usr/bin/git fetch -q origin main && " ..
-    "if [ \"$(/usr/bin/git rev-list --count HEAD..origin/main)\" = 0 ]; " ..
+    -- a commit that failed to boot (see bootguard.lua) stays quarantined
+    -- until upstream moves past it — never pull a known-broken deploy twice
+    "if [ -f .vox-bad-commit ] && " ..
+    "[ \"$(/usr/bin/git rev-parse origin/main)\" = \"$(cat .vox-bad-commit)\" ]; " ..
+    "then echo current; " ..
+    "elif [ \"$(/usr/bin/git rev-list --count HEAD..origin/main)\" = 0 ]; " ..
     "then echo current; " ..
     "else /usr/bin/git pull -q --ff-only origin main && echo updated || { " ..
     -- upstream history rewritten: self-heal, preserving any local work
@@ -3789,6 +3813,17 @@ end)
 -- spawn attempt raced with config reload
 timers.srvCheck = hs.timer.doAfter(5, ensureServer)
 
+-- Sentinel: respawn-on-exit only covers tasks THIS Lua state spawned. A
+-- server adopted across an hs.reload (it was already running, so ensure*
+-- never attached a callback) dies unsupervised — this catches that case
+-- within a minute. Both checks are a single pgrep when all is well.
+timers.srvSentinel = hs.timer.doEvery(60, function()
+  if state == "idle" then
+    ensureServer()
+    ensureSpeechServer()
+  end
+end)
+
 -- Stuck-state watchdog (Relic): if we're in "recording" or "processing" way
 -- beyond any legitimate flow (LLM callback died silently, timer misfired,
 -- forceLocalLLM taking too long on ancient hardware), force reset so the
@@ -3840,6 +3875,71 @@ M.debug = { hudShow = hudShow, hudHide = hudHide, play = play,
               return string.format("showing=%s x=%d y=%d w=%d h=%d",
                 tostring(help.canvas:isShowing()), f.x, f.y, f.w, f.h)
             end }
+
+-- ---------------- deploy safety net --------------------------
+-- Reaching this line means the whole file parsed and every subsystem above
+-- initialized — record this commit as last-known-good so bootguard.lua can
+-- roll back to it if a future update fails to load. Clean tree only: a
+-- dirty repo means local work, and we never want to reset onto that.
+M.lkgTask = hs.task.new("/bin/sh", nil, { "-c",
+  "cd \"$HOME/vox\" || exit 0; " ..
+  "[ -z \"$(/usr/bin/git status --porcelain)\" ] || exit 0; " ..
+  "/usr/bin/git rev-parse HEAD > .vox-lkg" })
+M.lkgTask:start()
+
+-- Fleet Macs update by git pull and never re-run install.sh, so vox.lua
+-- keeps the two machine-local bootstrap pieces current itself:
+-- (1) ~/.hammerspoon/init.lua -> guarded loader. Only the stock
+--     require("vox") line is swapped; a customized init.lua is preserved.
+local initPath = HOME .. "/.hammerspoon/init.lua"
+local initFile = io.open(initPath, "r")
+local initSrc = initFile and initFile:read("*a") or ""
+if initFile then initFile:close() end
+if initSrc:find('require("vox")', 1, true)
+   and not initSrc:find("bootguard", 1, true) then
+  local patched = initSrc:gsub('require%("vox"%)',
+    'require("bootguard")  -- guarded load: rolls back a broken Vox update', 1)
+  local w = io.open(initPath, "w")
+  if w then
+    w:write(patched); w:close()
+    log("init.lua upgraded to bootguard loader")
+  end
+end
+
+-- (2) a launchd watchdog that revives the engine itself: Hammerspoon
+--     crashing (or being quit) meant Vox stayed dead until a human noticed.
+--     Every 5 min: if the engine isn't running, relaunch it in background;
+--     Vox re-arms automatically on load. Removed by uninstall.sh.
+local WD_LABEL = "com.vox.watchdog"
+local WD_MARK  = "vox-watchdog-v1"
+local wdPlist  = HOME .. "/Library/LaunchAgents/" .. WD_LABEL .. ".plist"
+local wdFile = io.open(wdPlist, "r")
+local wdSrc = wdFile and wdFile:read("*a") or ""
+if wdFile then wdFile:close() end
+if not wdSrc:find(WD_MARK, 1, true) then
+  local w = io.open(wdPlist, "w")
+  if w then
+    w:write([[<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.vox.watchdog</string>
+  <!-- ]] .. WD_MARK .. [[ — installed and version-managed by vox.lua -->
+  <key>ProgramArguments</key><array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>/usr/bin/pgrep -xq Hammerspoon || /usr/bin/open -ga Hammerspoon</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+]])
+    w:close()
+    M.wdTask = hs.task.new("/bin/sh", nil, { "-c",
+      "/bin/launchctl bootout gui/$(id -u)/" .. WD_LABEL .. " 2>/dev/null; " ..
+      "/bin/launchctl bootstrap gui/$(id -u) \"" .. wdPlist .. "\"" })
+    M.wdTask:start()
+    log("engine watchdog installed (" .. WD_MARK .. ")")
+  end
+end
 
 log("Vox loaded. Hold " .. C.holdKeyName .. " to dictate.")
 hs.alert.show("🎤 Vox ready — hold " .. C.holdKeyName .. " to dictate", 2)
