@@ -668,7 +668,19 @@ local function duckDown()
     return
   end
   local dev = hs.audiodevice.defaultOutputDevice()
-  if not dev or not dev:outputVolume() then return end
+  if not dev or not dev:outputVolume() then
+    -- pro interfaces (RODECaster etc.) expose NO software volume or mute to
+    -- CoreAudio — hardware faders own it, so fading is impossible. The one
+    -- lever left is the media key: pause the video/music, resume on duckUp.
+    -- inUse gates it so an idle system doesn't get Music launched by PLAY.
+    if not duck.paused and dev and dev:inUse() then
+      duck.paused = true
+      mediaPlayPause()
+      log("duck: no volume control on " .. (dev:name() or "output")
+          .. " — pausing media instead")
+    end
+    return
+  end
   local vol = dev:outputVolume()
   if vol < 3 then return end                 -- nothing meaningful playing
   if not duck.active then                    -- don't clobber orig mid-restore
