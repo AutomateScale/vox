@@ -532,7 +532,13 @@ end
 local function noteTranscribeSuccess(secs)
   calib.mode = (C.whisperHost == "127.0.0.1") and "local" or ("remote " .. C.whisperHost)
   calib.lastLatency = math.floor(secs * 10) / 10
-  if not calib.bestLatency or calib.lastLatency < calib.bestLatency then
+  -- a 0.0 (or sub-real) reading must never become the baseline: nothing can
+  -- ever beat a bestLatency of 0, best*2 collapses the slow-threshold to its
+  -- 3.2s floor, and machines whose healthy speed is above that refresh-loop
+  -- forever. Ignore implausible readings and heal an already-poisoned best.
+  if calib.lastLatency >= 0.3
+     and (not calib.bestLatency or calib.bestLatency < 0.3
+          or calib.lastLatency < calib.bestLatency) then
     calib.bestLatency = calib.lastLatency
   end
   calib.verifiedAt, calib.verifiedRev = os.time(), currentRev
@@ -3294,16 +3300,31 @@ local function selfTest(interactive)
       -- and sat under the old threshold for hours at double latency. Slow
       -- Macs stay protected by the best*2 term (tiny-model best ~4s -> 8s).
       if C.whisperHost == "127.0.0.1" and calib.bestLatency
+         and calib.bestLatency >= 0.3
          and secs > math.max(3.2, calib.bestLatency * 2) and not M.refreshing then
-        M.refreshing = true
-        log(string.format("engine slow (%.1fs vs best %.1fs) — refreshing",
-            secs, calib.bestLatency))
-        os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
-        timers.refresh1 = hs.timer.doAfter(2, ensureServer)
-        timers.refresh2 = hs.timer.doAfter(30, function()
-          M.refreshing = false
-          selfTest(false)
-        end)
+        if M.refreshedAt
+           and hs.timer.secondsSinceEpoch() - M.refreshedAt < 600 then
+          -- we JUST refreshed and a brand-new server still tests this slow:
+          -- that's the machine's real current speed (memory pressure, cold
+          -- cache), not engine decay. Adopt it as the baseline instead of
+          -- thrashing kill/reload every 30s — the loop that burned CPU on
+          -- 8GB Macs whose healthy latency sits above the 3.2s floor.
+          calib.bestLatency = math.floor(secs * 10) / 10
+          saveCalib()
+          log(string.format(
+            "engine still %.1fs after refresh — adopting as baseline", secs))
+        else
+          M.refreshedAt = hs.timer.secondsSinceEpoch()
+          M.refreshing = true
+          log(string.format("engine slow (%.1fs vs best %.1fs) — refreshing",
+              secs, calib.bestLatency))
+          os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
+          timers.refresh1 = hs.timer.doAfter(2, ensureServer)
+          timers.refresh2 = hs.timer.doAfter(30, function()
+            M.refreshing = false
+            selfTest(false)
+          end)
+        end
       end
       if interactive then
         hs.alert.show(string.format("Vox verified ✓ %.1fs (%s)", secs,
