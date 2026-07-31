@@ -219,10 +219,25 @@ do
     end)
   end
 end
--- menubar choices that should survive restarts (only alien position so far)
+-- menubar choices survive restarts AND git updates: every pick in the menu
+-- goes through pref(), which mirrors it into hs.settings (stored in
+-- Hammerspoon's plist, outside this repo — the auto-updater can't touch it).
+-- Saved picks win over local.lua: they are the most recent expressed intent.
+-- Type-checked against the default so a stale saved value can't wedge boot.
+local PREFS = { "holdKeycode", "holdKeyName", "duckMode", "duckAudio",
+                "keepInClipboard", "llmCleanup", "translateTo",
+                "alienVoiceName", "soundTheme", "language", "memory" }
+local function pref(key, val)
+  C[key] = val
+  hs.settings.set("vox.pref." .. key, val)
+end
 do
   local saved = hs.settings.get("vox.alienPos")
   if type(saved) == "table" then C.alienPos = saved end
+  for _, k in ipairs(PREFS) do
+    local v = hs.settings.get("vox.pref." .. k)
+    if v ~= nil and type(v) == type(C[k]) then C[k] = v end
+  end
 end
 -- ------------------------------------------------------------
 
@@ -3419,21 +3434,21 @@ menubar:setMenu(function()
       end)() },
     { title = "While recording", menu = {
         { title = "Duck audio to 15%", checked = C.duckMode == "duck",
-          fn = function() C.duckMode = "duck"; hs.alert.show("Recording: duck audio", 1) end },
+          fn = function() pref("duckMode", "duck"); hs.alert.show("Recording: duck audio", 1) end },
         { title = "Mute audio (zero mic bleed)", checked = C.duckMode == "mute",
-          fn = function() C.duckMode = "mute"; hs.alert.show("Recording: mute audio", 1) end },
+          fn = function() pref("duckMode", "mute"); hs.alert.show("Recording: mute audio", 1) end },
         { title = "Pause media (podcast/music pauses + resumes)", checked = C.duckMode == "pause",
-          fn = function() C.duckMode = "pause"; hs.alert.show("Recording: pause media", 1) end },
+          fn = function() pref("duckMode", "pause"); hs.alert.show("Recording: pause media", 1) end },
       } },
     { title = "Hold key", menu = {
         { title = "Right Option", checked = C.holdKeycode == 61,
-          fn = function() C.holdKeycode = 61; C.holdKeyName = "Right Option"; hs.alert.show("Vox key: Right Option", 1) end },
+          fn = function() pref("holdKeycode", 61); pref("holdKeyName", "Right Option"); hs.alert.show("Vox key: Right Option", 1) end },
         { title = "Right Command", checked = C.holdKeycode == 54,
-          fn = function() C.holdKeycode = 54; C.holdKeyName = "Right Command"; hs.alert.show("Vox key: Right Command", 1) end },
+          fn = function() pref("holdKeycode", 54); pref("holdKeyName", "Right Command"); hs.alert.show("Vox key: Right Command", 1) end },
         { title = "Left Option", checked = C.holdKeycode == 58,
-          fn = function() C.holdKeycode = 58; C.holdKeyName = "Left Option"; hs.alert.show("Vox key: Left Option", 1) end },
+          fn = function() pref("holdKeycode", 58); pref("holdKeyName", "Left Option"); hs.alert.show("Vox key: Left Option", 1) end },
         { title = "Left Command", checked = C.holdKeycode == 55,
-          fn = function() C.holdKeycode = 55; C.holdKeyName = "Left Command"; hs.alert.show("Vox key: Left Command", 1) end },
+          fn = function() pref("holdKeycode", 55); pref("holdKeyName", "Left Command"); hs.alert.show("Vox key: Left Command", 1) end },
       } },
     { title = "Alien position (pick any combo)", menu = (function()
         local defs = {
@@ -3473,51 +3488,51 @@ menubar:setMenu(function()
           end },
         { title = "-" },
         { title = "👽 Vox (our own alien — neural + FX)", checked = C.alienVoiceName == "vox",
-          fn = function() C.alienVoiceName = "vox"; speakAlien("This is my own voice. Pretty voxy, right?") end },
+          fn = function() pref("alienVoiceName", "vox"); speakAlien("This is my own voice. Pretty voxy, right?") end },
         { title = "❤️ Heart (Warm, Silky Female — Top Neural)", checked = C.alienVoiceName == "af_heart",
-          fn = function() C.alienVoiceName = "af_heart"; speakAlien("Heart voice active.") end },
+          fn = function() pref("alienVoiceName", "af_heart"); speakAlien("Heart voice active.") end },
         { title = "🌹 Bella (Expressive, Smooth Female)", checked = C.alienVoiceName == "af_bella",
-          fn = function() C.alienVoiceName = "af_bella"; speakAlien("Bella voice active.") end },
+          fn = function() pref("alienVoiceName", "af_bella"); speakAlien("Bella voice active.") end },
         { title = "🌊 River (Calm & Atmospheric Female)", checked = C.alienVoiceName == "af_river",
-          fn = function() C.alienVoiceName = "af_river"; speakAlien("River voice active.") end },
+          fn = function() pref("alienVoiceName", "af_river"); speakAlien("River voice active.") end },
         { title = "⚡ Nova (Dynamic, Modern Female)", checked = C.alienVoiceName == "af_nova",
-          fn = function() C.alienVoiceName = "af_nova"; speakAlien("Nova voice active.") end },
+          fn = function() pref("alienVoiceName", "af_nova"); speakAlien("Nova voice active.") end },
         { title = "🕶️ Adam (Deep, Smooth Male)", checked = C.alienVoiceName == "am_adam",
-          fn = function() C.alienVoiceName = "am_adam"; speakAlien("Adam voice active.") end },
+          fn = function() pref("alienVoiceName", "am_adam"); speakAlien("Adam voice active.") end },
         { title = "🐺 Fenrir (Rich, Dark Male)", checked = C.alienVoiceName == "am_fenrir",
-          fn = function() C.alienVoiceName = "am_fenrir"; speakAlien("Fenrir voice active.") end },
+          fn = function() pref("alienVoiceName", "am_fenrir"); speakAlien("Fenrir voice active.") end },
       } },
     { title = "Keep dictation in clipboard (⌘V re-paste)", checked = C.keepInClipboard,
-      fn = function() C.keepInClipboard = not C.keepInClipboard end },
+      fn = function() pref("keepInClipboard", not C.keepInClipboard) end },
     { title = "Duck music while recording", checked = C.duckAudio,
-      fn = function() C.duckAudio = not C.duckAudio end },
+      fn = function() pref("duckAudio", not C.duckAudio) end },
     { title = "AI cleanup (slower, may reword)", checked = C.llmCleanup,
-      fn = function() C.llmCleanup = not C.llmCleanup end },
+      fn = function() pref("llmCleanup", not C.llmCleanup) end },
     { title = "Translate output", menu = {
         { title = "Off (fastest)", checked = C.translateTo == "off",
-          fn = function() C.translateTo = "off"; hs.alert.show("Vox translation: off", 1) end },
+          fn = function() pref("translateTo", "off"); hs.alert.show("Vox translation: off", 1) end },
         { title = "English", checked = C.translateTo == "English",
-          fn = function() C.translateTo = "English"; hs.alert.show("Vox translates to English", 1) end },
+          fn = function() pref("translateTo", "English"); hs.alert.show("Vox translates to English", 1) end },
         { title = "French", checked = C.translateTo == "French",
-          fn = function() C.translateTo = "French"; hs.alert.show("Vox translates to French", 1) end },
+          fn = function() pref("translateTo", "French"); hs.alert.show("Vox translates to French", 1) end },
         { title = "Spanish", checked = C.translateTo == "Spanish",
-          fn = function() C.translateTo = "Spanish"; hs.alert.show("Vox translates to Spanish", 1) end },
+          fn = function() pref("translateTo", "Spanish"); hs.alert.show("Vox translates to Spanish", 1) end },
         { title = "Dutch", checked = C.translateTo == "Dutch",
-          fn = function() C.translateTo = "Dutch"; hs.alert.show("Vox translates to Dutch", 1) end },
+          fn = function() pref("translateTo", "Dutch"); hs.alert.show("Vox translates to Dutch", 1) end },
       } },
     { title = "Sound theme", menu = {
         { title = "Sleek", checked = C.soundTheme == "sleek",
-          fn = function() C.soundTheme = "sleek"; loadSounds(); play("done") end },
+          fn = function() pref("soundTheme", "sleek"); loadSounds(); play("done") end },
         { title = "Classic", checked = C.soundTheme == "classic",
-          fn = function() C.soundTheme = "classic"; loadSounds(); play("done") end },
+          fn = function() pref("soundTheme", "classic"); loadSounds(); play("done") end },
       } },
     { title = "Language", menu = {
         { title = "English (fastest)", checked = C.language == "en",
-          fn = function() C.language = "en" end },
+          fn = function() pref("language", "en") end },
         { title = "Français", checked = C.language == "fr",
-          fn = function() C.language = "fr" end },
+          fn = function() pref("language", "fr") end },
         { title = "Auto-detect (+1s)", checked = C.language == "auto",
-          fn = function() C.language = "auto" end },
+          fn = function() pref("language", "auto") end },
       } },
     { title = "Pipeline: " .. (calib.mode or "unverified")
         .. (calib.lastLatency and (" · " .. calib.lastLatency .. "s ✓") or ""),
@@ -3543,7 +3558,7 @@ menubar:setMenu(function()
         or (availableModels[C.models.smart] and "adaptive — fast + smart"
         or "fast only (smart model not pulled)")), disabled = true },
     { title = "Remember dictations (local memory)", checked = C.memory,
-      fn = function() C.memory = not C.memory end },
+      fn = function() pref("memory", not C.memory) end },
     { title = "Recent dictations", menu = (function()
         if not C.memory then
           return { { title = "(memory is off)", disabled = true } }
