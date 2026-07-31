@@ -865,9 +865,78 @@ local function miniShow()
   end
 end
 
+-- declared before miniHide so it closes over this local, not a nil global
+local bubble = { canvas = nil, timer = nil }
+
 local function miniHide()
   if mini.timer then mini.timer:stop(); mini.timer = nil end
   if mini.canvas then mini.canvas:hide() end
+  if bubble.canvas then bubble.canvas:hide() end
+end
+
+-- ---------------- mini bubble (real-time text feedback) --------
+local BW, BH = 320, 48
+
+local function bubbleEnsure()
+  if bubble.canvas then return end
+  local c = hs.canvas.new({ x = 0, y = 0, w = BW, h = BH })
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behavior({ "canJoinAllSpaces", "stationary" })
+  
+  -- Dark glass background pill
+  c[1] = { type = "rectangle", action = "fill",
+           fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.92 },
+           roundedRectRadii = { xRadius = 12, yRadius = 12 },
+           frame = { x = 0, y = 0, w = BW, h = BH - 8 } }
+           
+  -- Neon accent border
+  c[2] = { type = "rectangle", action = "stroke",
+           strokeColor = { red = 0.22, green = 0.92, blue = 0.75, alpha = 0.75 },
+           strokeWidth = 1.2,
+           roundedRectRadii = { xRadius = 12, yRadius = 12 },
+           frame = { x = 0, y = 0, w = BW, h = BH - 8 } }
+           
+  -- Downward tail indicator pointing at alien head
+  c[3] = { type = "segments", action = "fill",
+           fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.92 },
+           coordinates = {
+             { x = BW / 2 - 8, y = BH - 8 },
+             { x = BW / 2 + 8, y = BH - 8 },
+             { x = BW / 2,     y = BH }
+           } }
+           
+  -- Real-time Text Feedback
+  c[4] = { type = "text", text = "", textSize = 12.5,
+           textColor = { red = 0.92, green = 0.98, blue = 0.95, alpha = 1 },
+           textAlignment = "center", lineBreak = "truncateTail",
+           frame = { x = 8, y = 8, w = BW - 16, h = BH - 20 } }
+           
+  bubble.canvas = c
+end
+
+local function bubbleShow(text, duration)
+  if not C.miniAlien or not text or #text == 0 then return end
+  bubbleEnsure()
+  local f = hs.screen.primaryScreen():fullFrame()
+  bubble.canvas:frame({
+    x = f.x + (f.w - BW) / 2,
+    y = f.y + f.h - 86,  -- Gently floating above alien head
+    w = BW, h = BH
+  })
+  bubble.canvas[4].text = text
+  bubble.canvas:show()
+  
+  if bubble.timer then bubble.timer:stop() end
+  if duration and duration > 0 then
+    bubble.timer = hs.timer.doAfter(duration, function()
+      if bubble.canvas then bubble.canvas:hide() end
+    end)
+  end
+end
+
+local function bubbleHide()
+  if bubble.timer then bubble.timer:stop(); bubble.timer = nil end
+  if bubble.canvas then bubble.canvas:hide() end
 end
 
 -- element indices: 1 pill · 2 head · 3/4 eyes · 5 smile · 6 antenna ·
@@ -1583,8 +1652,13 @@ local function setUI(mode)
   end
   if mode == "rec" or mode == "lock" then
     hudShow("rec"); vign.demo = false; vignShow()
-  elseif mode == "work" then hudShow("work"); vignWork()
-  else hudHide(); vignHide() end
+    bubbleShow(recMode == "ask" and "👽 Ask mode — listening..." or "🎤 Listening...", 0)
+  elseif mode == "work" then
+    hudShow("work"); vignWork()
+    bubbleShow("⚡ Transcribing...", 0)
+  else
+    hudHide(); vignHide(); bubbleHide()
+  end
 end
 
 local function reset()
@@ -1593,6 +1667,7 @@ local function reset()
   if timers.maxRec then timers.maxRec:stop() end
   if timers.stuckKey then timers.stuckKey:stop() end
   if timers.uiDelay then timers.uiDelay:stop(); timers.uiDelay = nil end
+  if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
   setUI("idle")
 end
@@ -1854,7 +1929,9 @@ local function streamAsk(question)
       local s = sentBuf:gsub("[%*_#`]", ""):gsub("%s+", " ")
                        :gsub("^%s+", ""):gsub("%s+$", "")
       sentBuf = ""
-      if #s == 0 or not C.alienVoice then return end
+      if #s == 0 then return end
+      bubbleShow("👽 " .. s, 4)
+      if not C.alienVoice then return end
       local payload = hs.json.encode({ text = s,
         voice = C.alienVoiceName or "vox", speed = C.alienVoiceSpeed or 1.0 })
       local function post(attempt)   -- server may still be warming: retry
@@ -2639,6 +2716,8 @@ local function applyVoiceCommands(text)
 end
 
 local function handleTranscript(raw, t0)
+  -- transcription made it — the processing watchdog must not fire mid-LLM
+  if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
   local text = raw:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
   text = text:gsub("%s*\n%s*", " ")            -- server returns wrapped lines
   text = applyCorrections(text)
@@ -2732,6 +2811,25 @@ end
 -- drop screen context on the follow-up dictation)
 local ocrCache = { wid = nil, ts = 0, txt = nil }
 
+-- first-touch latency killer: after idle macOS pages the whisper model out
+-- of RAM and the first dictation pays the reload tax. A tiny silent
+-- inference fired the moment a deliberate hold starts forces the page-in
+-- WHILE the user is still talking — by key-release the server is hot.
+local lastWhisperTouch = 0
+local function warmPing()
+  if C.whisperHost ~= "127.0.0.1" then return end
+  local now = hs.timer.secondsSinceEpoch()
+  if (now - lastWhisperTouch) < 120 then return end
+  lastWhisperTouch = now
+  local warmWav = tmp("warm.wav")
+  M.warmPingTask = hs.task.new("/bin/sh", nil, { "-c", string.format(
+    "[ -f %s ] || %s -n -r 16000 -c 1 -b 16 %s trim 0.0 0.3 2>/dev/null; " ..
+    "/usr/bin/curl -s --max-time 90 -F file=@%s -F temperature=0.0 " ..
+    "-F response_format=text http://127.0.0.1:%d/inference >/dev/null 2>&1",
+    warmWav, C.sox, warmWav, warmWav, C.serverPort) })
+  M.warmPingTask:start()
+end
+
 local function transcribeCLI(t0)
   M.sttTask = hs.task.new(C.whisper, function(code, out, err)
     if code ~= 0 then
@@ -2757,11 +2855,14 @@ local function transcribe()
   end
 
   local t0 = hs.timer.secondsSinceEpoch()
+  lastWhisperTouch = t0              -- any request keeps the model hot
   -- timeout scales with recording length AND machine speed: a 2-core Intel
-  -- gets ~4x realtime headroom, Apple Silicon barely needs 1x
+  -- gets ~4x realtime headroom, Apple Silicon barely needs 1x. Base is short
+  -- on ARM — a warm server answers in ~1s, and a slow first answer gets one
+  -- RETRY below instead of a 20s stare
   local durSecs  = math.max(1, (attr.size - 44) / 32000)
   local factor   = IS_ARM and 1.5 or (CORES <= 2 and 6 or 3)
-  local maxTime  = math.ceil(20 + durSecs * factor)
+  local maxTime  = math.ceil((IS_ARM and 10 or 20) + durSecs * factor)
 
   -- vocabulary for THIS dictation: saved words + what's visible on screen
   local promptStr = fullVocabulary()
@@ -2799,43 +2900,82 @@ local function transcribe()
   -- clean + normalize quiet mics, then hit the persistent server
   local langArg = (C.language ~= "auto")
       and (" -F language=" .. C.language) or ""
-  local cmd = string.format(
-    -- trailing-silence trim (reverse/silence/reverse) kills Whisper's
-    -- phantom "Yeah." hallucination on the breath after key-release.
-    -- Gentle on purpose: 0.6%/0.3s — last words trail off quietly and the
-    -- old 1.5%/0.15s ate them as "silence"; the pad keeps Whisper from
-    -- clipping the decode at the cut
-    "%s %s %s highpass 80 norm -3 reverse silence 1 0.30 0.6%% reverse" ..
-    " pad 0 0.15 2>/dev/null || cp %s %s; " ..
-    "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
-    "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
-    C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm, maxTime, C.wavNorm,
-    promptStr, langArg, C.whisperHost, C.serverPort)
+  local function buildCmd(timeLimit)
+    return string.format(
+      -- trailing-silence trim (reverse/silence/reverse) kills Whisper's
+      -- phantom "Yeah." hallucination on the breath after key-release.
+      -- Gentle on purpose: 0.6%/0.3s — last words trail off quietly and the
+      -- old 1.5%/0.15s ate them as "silence"; the pad keeps Whisper from
+      -- clipping the decode at the cut
+      "%s %s %s highpass 80 norm -3 reverse silence 1 0.30 0.6%% reverse" ..
+      " pad 0 0.15 2>/dev/null || cp %s %s; " ..
+      -- accidental-tap gate: a press that captured no real speech — raw
+      -- audio near-silent, or almost nothing left after the trim — exits 42
+      -- and is discarded instantly instead of feeding Whisper silence it
+      -- would hallucinate into "Thank you." / "Yeah."
+      "A=$(%s %s -n stat 2>&1 | /usr/bin/awk '/Maximum amplitude/{print $3}'); " ..
+      "D=$(%s --i -D %s 2>/dev/null); " ..
+      "/usr/bin/awk -v a=\"$A\" -v d=\"$D\" " ..
+      "'BEGIN{ if(a==\"\")a=1; if(d==\"\")d=9; exit (a+0<0.02 || d+0<0.45) ? 0 : 1 }'" ..
+      " && exit 42; " ..
+      "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
+      "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
+      C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm,
+      C.sox, C.wav, C.sox, C.wavNorm,
+      timeLimit, C.wavNorm,
+      promptStr, langArg, C.whisperHost, C.serverPort)
+  end
 
-  M.sttTask = hs.task.new("/bin/sh", function(code, out, err)
-    local ok = (code == 0) and out and #out:gsub("%s", "") > 0
-               and not out:find('"error"')
-    if ok then
-      noteTranscribeSuccess(hs.timer.secondsSinceEpoch() - t0)
-      handleTranscript(out, t0)
-    elseif C.whisperHost ~= "127.0.0.1" then
-      noteRemoteFail()
-      -- remote brain unreachable: fall back to the local model if we have one
-      if hs.fs.attributes(C.model) then
-        log("remote server unreachable — falling back to local whisper-cli")
-        transcribeCLI(t0)
-      else
-        hs.alert.show("Vox: transcription server " .. C.whisperHost
-          .. " unreachable — is the fast Mac awake?", 4)
+  local myGen = recGen
+  local function run(attempt)
+    M.sttTask = hs.task.new("/bin/sh", function(code, out, err)
+      if code == 42 then
+        log("accidental tap — no speech in recording, discarded quietly")
         reset()
+        return
       end
-    else
-      log("server unavailable — falling back to whisper-cli and restarting server")
+      local ok = (code == 0) and out and #out:gsub("%s", "") > 0
+                 and not out:find('"error"')
+      if ok then
+        noteTranscribeSuccess(hs.timer.secondsSinceEpoch() - t0)
+        handleTranscript(out, t0)
+      elseif C.whisperHost ~= "127.0.0.1" then
+        noteRemoteFail()
+        -- remote brain unreachable: fall back to the local model if we have one
+        if hs.fs.attributes(C.model) then
+          log("remote server unreachable — falling back to local whisper-cli")
+          transcribeCLI(t0)
+        else
+          hs.alert.show("Vox: transcription server " .. C.whisperHost
+            .. " unreachable — is the fast Mac awake?", 4)
+          reset()
+        end
+      elseif attempt == 1 and serverRunning() then
+        -- server alive but slow (model paging back into RAM after idle):
+        -- ONE retry with a longer window beats cold-loading the whole model
+        -- a second time via whisper-cli
+        log("server slow (model paging in?) — one retry with longer window")
+        run(2)
+      else
+        log("server unavailable — falling back to whisper-cli and restarting server")
+        ensureServer()
+        transcribeCLI(t0)
+      end
+    end, { "-c", buildCmd(maxTime * attempt) })
+    M.sttTask:start()
+  end
+  run(1)
+  -- hard ceiling: "thinking" may never hang the state machine. Kill the
+  -- pipeline, free the hotkey, tell the user, move on
+  timers.procWatch = hs.timer.doAfter(maxTime * 3 + 10, function()
+    timers.procWatch = nil
+    if state == "processing" and myGen == recGen then
+      if M.sttTask and M.sttTask:isRunning() then M.sttTask:terminate() end
+      hs.alert.show("Vox: transcription timed out — try again", 2)
       ensureServer()
-      transcribeCLI(t0)
+      reset()
     end
-  end, { "-c", cmd })
-  M.sttTask:start()
+  end)
 end
 
 -- ---------------- recording ----------------------------------
@@ -2893,6 +3033,7 @@ local function startRecording()
       end
       -- hold is deliberate: NOW hush a talking alien (never at raw ⌘-press —
       -- with ⌘ as hold key, every shortcut chord would cut his voice off)
+      warmPing()                 -- model pages in while the user talks
       hushAlien()
       duckDown()
       setUI(locked and "lock" or "rec")
@@ -2905,6 +3046,7 @@ local function startRecording()
     timers.uiDelay = hs.timer.doAfter(C.tapLockMax + 0.03, fanfare)
   else
     -- dedicated hold key (no shortcut ambiguity): hush + fanfare right away
+    warmPing()                   -- model pages in while the user talks
     hushAlien()
     duckDown()
     setUI("rec")
@@ -3492,6 +3634,7 @@ end
 
 local function warmUp()
   if C.whisperHost ~= "127.0.0.1" then return end
+  lastWhisperTouch = hs.timer.secondsSinceEpoch()  -- warmPing can stand down
   local warmWav = tmp("warm.wav")
   local cmd = string.format(
     "[ -f %s ] || %s -n -r 16000 -c 1 -b 16 %s" ..
