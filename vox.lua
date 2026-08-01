@@ -1695,7 +1695,7 @@ local function setUI(mode)
 end
 
 local function reset()
-  state, locked, pendingTap = "idle", false, false
+  state, locked, pendingTap, recMode = "idle", false, false, "dictate"
   duckUp()
   if timers.maxRec then timers.maxRec:stop() end
   if timers.stuckKey then timers.stuckKey:stop() end
@@ -3240,9 +3240,16 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
       setUI("lock")
     elseif state == "idle" then
       keyDownAt = hs.timer.secondsSinceEpoch()
-      -- shift already down = ask · alt already down = expand to content
-      recMode = e:getFlags().shift and "ask"
-             or (e:getFlags().alt and "expand")
+      local flags = e:getFlags()
+      local isOptHold = (C.holdKeycode == 61 or C.holdKeycode == 58)
+      local isCmdHold = (C.holdKeycode == 54 or C.holdKeycode == 55)
+      local hasShift  = flags.shift == true
+      local hasAlt    = (not isOptHold) and flags.alt == true
+      local hasCmd    = (not isCmdHold) and flags.cmd == true
+
+      -- shift + hold key = ask · extra modifier (cmd/alt) = expand
+      recMode = hasShift and "ask"
+             or ((hasAlt or hasCmd) and "expand")
              or "dictate"
       startRecording()
     end
