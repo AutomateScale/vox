@@ -1796,6 +1796,16 @@ local function insertText(text)
   -- when words get dropped we can replay the actual audio instead of
   -- guessing. Cancelled recordings are still deleted outright.
   os.rename(C.wav, tmp("last-dictation.wav")); os.remove(C.wavNorm)
+
+  if convMode and activeSendTrigger then
+    local trig = activeSendTrigger
+    activeSendTrigger = nil
+    hs.timer.doAfter(0.12, function()
+      hs.eventtap.keyStroke({}, "return", 0)     -- submit prompt to LLM
+      log("auto-submitted prompt via '" .. trig .. "' trigger — watching for LLM response")
+      watchLLMCompletion(context.winObj or hs.window.focusedWindow())
+    end)
+  end
 end
 
 -- ---------------- LLM cleanup --------------------------------
@@ -2748,6 +2758,77 @@ local function applyVoiceCommands(text)
   return text, nil
 end
 
+local convMode = false
+local activeSendTrigger = nil
+
+local function parseSendTrigger(tStr)
+  if not tStr or #tStr == 0 then return tStr, nil end
+  local t = tStr:gsub("%s+$", "")
+  local patterns = {
+    { "^(.*)%s+[Ss]end%.?$", "send" },
+    { "^(.*)%s+[Ss]end%s+[Ii]t%.?$", "send" },
+    { "^(.*)%s+[Oo]ver%.?$", "over" },
+    { "^(.*)%s+[Ee]nter%.?$", "enter" },
+    { "^(.*)%s+[Ss]ubmit%.?$", "submit" },
+    { "^(.*)%s+[Gg]o%.?$", "go" },
+  }
+  for _, p in ipairs(patterns) do
+    local m, trig = t:match(p[1]), p[2]
+    if m and #m > 0 then
+      return m, trig
+    end
+  end
+  return tStr, nil
+end
+
+local function watchLLMCompletion(win)
+  if not convMode then return end
+  local wid = win and win:id()
+  if not wid then return end
+  local ocrBin = HOME .. "/vox/ocr-bin"
+  if not hs.fs.attributes(ocrBin) then return end
+
+  if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+  local lastLen, stableCount, maxChecks = -1, 0, 40
+
+  timers.convWatch = hs.timer.doEvery(0.6, function()
+    maxChecks = maxChecks - 1
+    if not convMode or maxChecks <= 0 then
+      if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+      return
+    end
+    local tmpPng, tmpTxt = tmp("conv.png"), tmp("conv.txt")
+    M.convTask = hs.task.new("/bin/sh", function(code, out, err)
+      local cf = io.open(tmpTxt, "r")
+      if cf then
+        local txt = cf:read("*a") or ""
+        cf:close()
+        os.remove(tmpTxt)
+        local curLen = #txt:gsub("%s", "")
+        if curLen > 30 and curLen == lastLen then
+          stableCount = stableCount + 1
+          if stableCount >= 2 then
+            if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+            log("LLM response completed on screen — re-arming conversation mode")
+            play("done")
+            hs.alert.show("🔔 LLM ready — listening... (say 'send' or Fn+Option to stop)", 2.5)
+            hs.timer.doAfter(0.3, function()
+              if convMode and state == "idle" then
+                locked = true
+                startRecording()
+              end
+            end)
+          end
+        else
+          stableCount = 0
+          lastLen = curLen
+        end
+      end
+    end, { "-c", string.format("/usr/sbin/screencapture -x -l %d %s 2>/dev/null && %s %s > %s 2>/dev/null; rm -f %s", wid, tmpPng, ocrBin, tmpPng, tmpTxt, tmpPng) })
+    M.convTask:start()
+  end)
+end
+
 local function handleTranscript(raw, t0)
   -- transcription made it — the processing watchdog must not fire mid-LLM
   if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
@@ -2756,6 +2837,15 @@ local function handleTranscript(raw, t0)
   text = applyCorrections(text)
   text = cleanFillers(text)
   text = collapseRepeats(text)
+
+  if convMode then
+    local cleanedText, trig = parseSendTrigger(text)
+    if trig then
+      text = cleanedText
+      activeSendTrigger = trig
+      log("vocal send trigger detected ('" .. trig .. "') — auto-submitting prompt")
+    end
+  end
   local cmdResult
   text, cmdResult = applyVoiceCommands(text)
   if cmdResult == "undo" then
@@ -3206,6 +3296,25 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
     end
     return false
   end
+  local flags = e:getFlags()
+  if flags.fn and (flags.alt or kc == 61 or kc == 58) then
+    convMode = not convMode
+    if convMode then
+      play("start")
+      hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'send' or 'over' when done talking (Fn+Option to stop)", 2.5)
+      if state == "idle" then
+        locked = true
+        startRecording()
+      end
+    else
+      play("done")
+      hs.alert.show("Conversation Mode OFF", 1.5)
+      if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+      if state == "recording" then stopRecording() end
+    end
+    return true
+  end
+
   if kc ~= C.holdKeycode then return false end
   local pressed = e:getFlags().alt or e:getFlags().cmd  -- covers ⌥ or ⌘ keys
 
