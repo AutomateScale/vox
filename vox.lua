@@ -1730,7 +1730,7 @@ local function ensureServer()
       math.min(90, 3 * 2 ^ (M.srvCrashes - 1)), ensureServer)
   end, {
     "-m", C.model, "--host", C.serverBind, "--port", tostring(C.serverPort),
-    "-t", C.threads, "-l", C.language, "--prompt", fullVocabulary(),
+    "-t", C.threads, "-l", C.language, "-bo", "1", "-nf", "--prompt", fullVocabulary(),
     "--carry-initial-prompt",  -- keep vocabulary active past 30s of speech
   })
   M.serverTask:start()
@@ -2935,26 +2935,13 @@ local function transcribe()
       and (" -F language=" .. C.language) or ""
   local function buildCmd(timeLimit)
     return string.format(
-      -- trailing-silence trim (reverse/silence/reverse) kills Whisper's
-      -- phantom "Yeah." hallucination on the breath after key-release.
-      -- Gentle on purpose: 0.6%/0.3s — last words trail off quietly and the
-      -- old 1.5%/0.15s ate them as "silence"; the pad keeps Whisper from
-      -- clipping the decode at the cut
-      "%s %s %s highpass 80 norm -3 reverse silence 1 0.30 0.6%% reverse" ..
-      " pad 0 0.15 2>/dev/null || cp %s %s; " ..
-      -- accidental-tap gate: a press that captured no real speech — raw
-      -- audio near-silent, or almost nothing left after the trim — exits 42
-      -- and is discarded instantly instead of feeding Whisper silence it
-      -- would hallucinate into "Thank you." / "Yeah."
-      "A=$(%s %s -n stat 2>&1 | /usr/bin/awk '/Maximum amplitude/{print $3}'); " ..
-      "D=$(%s --i -D %s 2>/dev/null); " ..
-      "/usr/bin/awk -v a=\"$A\" -v d=\"$D\" " ..
-      "'BEGIN{ if(a==\"\")a=1; if(d==\"\")d=9; exit (a+0<0.001 || d+0<0.35) ? 0 : 1 }'" ..
-      " && exit 42; " ..
-      "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 " ..
+      "%s %s %s highpass 80 norm -3 silence 1 0.10 0.6%% 1 0.10 0.6%% 2>/dev/null || cp %s %s; " ..
+      "SIZE=$(/usr/bin/stat -f%%z %s 2>/dev/null || echo 0); " ..
+      "[ \"$SIZE\" -lt 1200 ] && exit 42; " ..
+      "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 -F best_of=1 -F no_fallback=true " ..
       "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
       C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm,
-      C.sox, C.wav, C.sox, C.wavNorm,
+      C.wavNorm,
       timeLimit, C.wavNorm,
       promptStr, langArg, C.whisperHost, C.serverPort)
   end
