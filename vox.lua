@@ -3564,6 +3564,23 @@ menubar:setMenu(function()
         { title = "Pause media (podcast/music pauses + resumes)", checked = C.duckMode == "pause",
           fn = function() pref("duckMode", "pause"); hs.alert.show("Recording: pause media", 1) end },
       } },
+    { title = "Hands-Free Conversation Mode (Fn+Option)", checked = convMode,
+      fn = function()
+        convMode = not convMode
+        if convMode then
+          play("start")
+          hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'send' or 'over' when done talking (Fn+Option to stop)", 2.5)
+          if state == "idle" then
+            locked = true
+            startRecording()
+          end
+        else
+          play("done")
+          hs.alert.show("Conversation Mode OFF", 1.5)
+          if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+          if state == "recording" then stopRecording() end
+        end
+      end },
     { title = "Hold key", menu = {
         { title = "Right Option", checked = C.holdKeycode == 61,
           fn = function() pref("holdKeycode", 61); pref("holdKeyName", "Right Option"); hs.alert.show("Vox key: Right Option", 1) end },
