@@ -3315,6 +3315,11 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
     return true
   end
 
+  if convMode then
+    -- In Conversation Mode, normal Option key taps do not interrupt the loop
+    return false
+  end
+
   if kc ~= C.holdKeycode then return false end
   local pressed = e:getFlags().alt or e:getFlags().cmd  -- covers ⌥ or ⌘ keys
 
