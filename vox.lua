@@ -2763,19 +2763,17 @@ local activeSendTrigger = nil
 
 local function parseSendTrigger(tStr)
   if not tStr or #tStr == 0 then return tStr, nil end
-  local t = tStr:gsub("%s+$", "")
-  local patterns = {
-    { "^(.*)%s+[Ss]end%.?$", "send" },
-    { "^(.*)%s+[Ss]end%s+[Ii]t%.?$", "send" },
-    { "^(.*)%s+[Oo]ver%.?$", "over" },
-    { "^(.*)%s+[Ee]nter%.?$", "enter" },
-    { "^(.*)%s+[Ss]ubmit%.?$", "submit" },
-    { "^(.*)%s+[Gg]o%.?$", "go" },
-  }
-  for _, p in ipairs(patterns) do
-    local m, trig = t:match(p[1]), p[2]
-    if m and #m > 0 then
-      return m, trig
+  local clean = tStr:gsub("[%s%.!%?%-%_,;]+$", "")
+  local lower = clean:lower()
+  local triggers = { "send it", "over", "send", "enter", "submit", "go", "out", "roger" }
+  for _, trig in ipairs(triggers) do
+    if lower == trig then
+      return "", trig
+    end
+    local tail = " " .. trig
+    if lower:sub(-#tail) == tail then
+      local prefix = clean:sub(1, #clean - #trig):gsub("[%s%,;%-%_]+$", "")
+      return prefix, trig
     end
   end
   return tStr, nil
@@ -2838,13 +2836,11 @@ local function handleTranscript(raw, t0)
   text = cleanFillers(text)
   text = collapseRepeats(text)
 
-  if convMode then
-    local cleanedText, trig = parseSendTrigger(text)
-    if trig then
-      text = cleanedText
-      activeSendTrigger = trig
-      log("vocal send trigger detected ('" .. trig .. "') — auto-submitting prompt")
-    end
+  local cleanedText, trig = parseSendTrigger(text)
+  if trig then
+    text = cleanedText
+    activeSendTrigger = trig
+    log("vocal send trigger detected ('" .. trig .. "') — auto-submitting prompt")
   end
   local cmdResult
   text, cmdResult = applyVoiceCommands(text)
