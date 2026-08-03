@@ -1806,14 +1806,26 @@ local function insertText(text)
   -- guessing. Cancelled recordings are still deleted outright.
   os.rename(C.wav, tmp("last-dictation.wav")); os.remove(C.wavNorm)
 
-  if convMode and activeSendTrigger then
-    local trig = activeSendTrigger
-    activeSendTrigger = nil
-    hs.timer.doAfter(0.12, function()
-      hs.eventtap.keyStroke({}, "return", 0)     -- submit prompt to LLM
-      log("auto-submitted prompt via '" .. trig .. "' trigger — watching for LLM response")
-      watchLLMCompletion(context.winObj or hs.window.focusedWindow())
-    end)
+  if convMode then
+    if activeSendTrigger then
+      local trig = activeSendTrigger
+      activeSendTrigger = nil
+      hs.timer.doAfter(0.12, function()
+        hs.eventtap.keyStroke({}, "return", 0)     -- submit prompt to LLM
+        log("auto-submitted prompt via '" .. trig .. "' trigger — watching for LLM response")
+        watchLLMCompletion(context.winObj or hs.window.focusedWindow())
+      end)
+    else
+      -- Regular hands-free dictation without send trigger:
+      -- Auto-re-arm mic after 0.4s so user can keep talking hands-free!
+      hs.timer.doAfter(0.4, function()
+        if convMode and state == "idle" then
+          log("Conversation Mode: auto-re-arming mic for next utterance")
+          locked = true
+          startRecording()
+        end
+      end)
+    end
   end
 end
 
@@ -2802,6 +2814,13 @@ local function watchLLMCompletion(win)
     maxChecks = maxChecks - 1
     if not convMode or maxChecks <= 0 then
       if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+      if convMode and state == "idle" then
+        log("LLM watch timeout — auto-re-arming conversation mode")
+        play("done")
+        hs.alert.show("🔔 Listening... (say 'send' or Fn+Option to stop)", 1.5)
+        locked = true
+        startRecording()
+      end
       return
     end
     local tmpPng, tmpTxt = tmp("conv.png"), tmp("conv.txt")
@@ -3188,7 +3207,7 @@ local function startRecording()
     local lastSize = 0
     local silenceTicks = 0
 
-    timers.convVAD = hs.timer.doEvery(0.35, function()
+    timers.convVAD = hs.timer.doEvery(0.25, function()
       if state ~= "recording" or not convMode then
         if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
         return
@@ -3196,14 +3215,14 @@ local function startRecording()
 
       local attr = hs.fs.attributes(C.wav)
       local sz = attr and attr.size or 0
-      if sz > 16000 then
+      if sz > 4000 then
         speechDetected = true
       end
 
       if speechDetected then
-        if sz == lastSize or (sz - lastSize) < 1000 then
+        if sz == lastSize or (sz - lastSize) < 800 then
           silenceTicks = silenceTicks + 1
-          if silenceTicks >= 3 then  -- ~0.9s of silence after speech
+          if silenceTicks >= 2 then  -- ~0.5s of silence after speech
             if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
             log("Conversation VAD: speech finished, auto-stopping recording to transcribe")
             stopRecording()
