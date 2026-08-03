@@ -3180,6 +3180,41 @@ local function startRecording()
       stopRecording()
     end
   end)
+  -- Conversation Mode VAD Auto-Stop: automatically detects when speech finishes
+  -- and calls stopRecording() without requiring any key press
+  if convMode then
+    if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
+    local speechDetected = false
+    local lastSize = 0
+    local silenceTicks = 0
+
+    timers.convVAD = hs.timer.doEvery(0.35, function()
+      if state ~= "recording" or not convMode then
+        if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
+        return
+      end
+
+      local attr = hs.fs.attributes(C.wav)
+      local sz = attr and attr.size or 0
+      if sz > 16000 then
+        speechDetected = true
+      end
+
+      if speechDetected then
+        if sz == lastSize or (sz - lastSize) < 1000 then
+          silenceTicks = silenceTicks + 1
+          if silenceTicks >= 3 then  -- ~0.9s of silence after speech
+            if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
+            log("Conversation VAD: speech finished, auto-stopping recording to transcribe")
+            stopRecording()
+          end
+        else
+          silenceTicks = 0
+          lastSize = sz
+        end
+      end
+    end)
+  end
   -- sticky-key watchdog: macOS sometimes drops the key-release event; if the
   -- key is no longer physically held, stop instead of recording forever
   timers.stuckKey = hs.timer.doEvery(1.0, function()
@@ -3200,6 +3235,7 @@ local function cancelRecording()
   if state ~= "recording" then return end
   state = "idle"
   recGen = recGen + 1            -- invalidates the recorder's exit callback
+  if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   if recTask and recTask:isRunning() then recTask:terminate() end
   reset()
 end
@@ -3209,6 +3245,7 @@ local function stopRecording()
   state = "processing"
   if timers.maxRec then timers.maxRec:stop() end
   if timers.stuckKey then timers.stuckKey:stop() end
+  if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   setUI("work")
   duckUp()                       -- music fades back while we transcribe
   play("stop")
