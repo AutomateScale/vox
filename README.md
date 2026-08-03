@@ -19,8 +19,8 @@ he bobs, blinks, and his antenna sways while waveform bars dance on both
 sides of him (cyan = listening, violet = thinking). The pill bounces in
 and sinks away.
 
-- **Hold Left Command (⌘)** — push-to-talk. Release = transcribe + paste (~1.5s).
-  Quick ⌘-shortcuts (⌘C, ⌘Tab…) stay silent — Vox only lights up when you hold.
+- **Hold Right Option (⌥)** (or Left Command) — push-to-talk. Release = transcribe + paste (~1.0s).
+- **Press Fn + Option** — **Hands-Free Conversation Mode**: Arms mic hands-free. Say *"send"*, *"over"*, or *"enter"* to auto-submit to any LLM or Terminal. Automatically bings 🔔 and re-arms when the LLM response finishes streaming on screen.
 - **Hold ⌘ + tap Left Shift (⇧)** — ask mode: your words become a question
   and the alien answers on screen AND out loud (voice pickable in the menu).
 - **Triple-tap** — smart reply: reads the window on screen, drafts the response.
