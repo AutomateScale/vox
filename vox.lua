@@ -3219,7 +3219,7 @@ local function startRecording()
   -- and calls stopRecording() without requiring any key press
   if convMode then
     if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-    local speechDetected = false
+    local speechArmed = false
     local lastSize = 0
     local silenceTicks = 0
 
@@ -3231,26 +3231,31 @@ local function startRecording()
 
       local ok, attr = pcall(hs.fs.attributes, C.wav)
       local sz = (ok and attr and type(attr) == "table") and (attr.size or 0) or 0
-      -- Require at least 0.6s of audio (~20,000 bytes) before arming VAD
-      if sz > 20000 then
-        speechDetected = true
-      end
 
-      if speechDetected then
-        -- Check if file size growth has stalled (< 500 bytes per 0.35s check)
-        if (sz - lastSize) < 500 then
-          silenceTicks = silenceTicks + 1
-          if silenceTicks >= 3 then  -- ~1.0s of sustained silence after sentence
-            if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-            log("Conversation VAD: sentence complete (1.0s pause) — transcribing and pasting")
-            stopRecording()
-          end
-        else
+      -- Step 1: Wait until at least 0.8s of audio (~25,000 bytes) is recorded before arming VAD
+      if not speechArmed then
+        if sz > 25000 then
+          speechArmed = true
           silenceTicks = 0
           lastSize = sz
+          log("Conversation VAD: speech detected and armed")
+        end
+        return
+      end
+
+      -- Step 2: Speech is armed — monitor for sustained 1.0s silence pause
+      local delta = sz - lastSize
+      lastSize = sz
+
+      if delta < 500 then
+        silenceTicks = silenceTicks + 1
+        if silenceTicks >= 3 then  -- ~1.05s of sustained silence after sentence
+          if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
+          log("Conversation VAD: sentence complete (1.0s pause) — transcribing and pasting")
+          stopRecording()
         end
       else
-        lastSize = sz
+        silenceTicks = 0
       end
     end)
   end
