@@ -1781,7 +1781,15 @@ local function insertText(text)
   rememberPaste(text)
   local prev = hs.pasteboard.getContents()
   hs.pasteboard.setContents(text)
-  hs.eventtap.keyStroke({ "cmd" }, "v", 0)
+  -- Clean paste: explicit key event with ONLY cmd flag (overwrites any residual hardware alt/fn flags)
+  local vCode = hs.keycodes.map["v"] or 9
+  local keyDown = hs.eventtap.event.newKeyEvent(vCode, true)
+  keyDown:setFlags({ cmd = true })
+  keyDown:post()
+  local keyUp = hs.eventtap.event.newKeyEvent(vCode, false)
+  keyUp:setFlags({ cmd = true })
+  keyUp:post()
+
   if not C.keepInClipboard then
     -- restore what the user had copied — but only if the clipboard still
     -- holds OUR text (never stomp something they copied in the meantime)
@@ -1811,7 +1819,13 @@ local function insertText(text)
       local trig = activeSendTrigger
       activeSendTrigger = nil
       hs.timer.doAfter(0.12, function()
-        hs.eventtap.keyStroke({}, "return", 0)     -- submit prompt to LLM
+        local retCode = hs.keycodes.map["return"] or 36
+        local rDown = hs.eventtap.event.newKeyEvent(retCode, true)
+        rDown:setFlags({})
+        rDown:post()
+        local rUp = hs.eventtap.event.newKeyEvent(retCode, false)
+        rUp:setFlags({})
+        rUp:post()
         log("auto-submitted prompt via '" .. trig .. "' trigger — watching for LLM response")
         watchLLMCompletion(context.winObj or hs.window.focusedWindow())
       end)
