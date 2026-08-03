@@ -3132,6 +3132,8 @@ end
 local function startRecording()
   if state ~= "idle" then return end
   state = "recording"
+  recGen = recGen + 1
+  local myGen = recGen
   captureContext()
   os.remove(C.wav)
   local soxArgs = { "--buffer", "1024", "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav }
