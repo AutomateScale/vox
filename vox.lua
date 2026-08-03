@@ -3134,14 +3134,27 @@ local function startRecording()
   state = "recording"
   captureContext()
   os.remove(C.wav)
-  recGen = recGen + 1
-  local myGen = recGen
+  local soxArgs = { "--buffer", "1024", "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav }
+  if convMode then
+    -- Native C-level Voice Activity Detection (VAD):
+    -- sox automatically exits with code 0 after 0.7s silence following speech (>0.2% amplitude)
+    table.insert(soxArgs, "silence")
+    table.insert(soxArgs, "1")
+    table.insert(soxArgs, "0.1")
+    table.insert(soxArgs, "0.2%")
+    table.insert(soxArgs, "1")
+    table.insert(soxArgs, "0.7")
+    table.insert(soxArgs, "0.2%")
+  end
+
   recTask = hs.task.new(C.sox, function(code, _, _)
-    -- only transcribe if THIS recording ended intentionally (not cancelled)
-    if state == "processing" and myGen == recGen then transcribe() end
-  end, { "--buffer", "1024",  -- flush every ~32ms so the live level meter
-                              -- (HUD bars + vignette) tracks the voice tightly
-         "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav })
+    if convMode and code == 0 and state == "recording" and myGen == recGen then
+      log("Native sox VAD silence detected — completing recording automatically")
+      stopRecording()
+    elseif state == "processing" and myGen == recGen then
+      transcribe()
+    end
+  end, soxArgs)
   recTask:start()
   -- screen-aware dictation: OCR the target window WHILE recording (free time)
   local function startCtxOCR()
@@ -3215,50 +3228,6 @@ local function startRecording()
       stopRecording()
     end
   end)
-  -- Conversation Mode VAD Auto-Stop: automatically detects when speech finishes
-  -- and calls stopRecording() without requiring any key press
-  if convMode then
-    if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-    local speechArmed = false
-    local lastSize = 0
-    local silenceTicks = 0
-
-    timers.convVAD = hs.timer.doEvery(0.35, function()
-      if state ~= "recording" or not convMode then
-        if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-        return
-      end
-
-      local ok, attr = pcall(hs.fs.attributes, C.wav)
-      local sz = (ok and attr and type(attr) == "table") and (attr.size or 0) or 0
-
-      -- Step 1: Arm VAD as soon as 0.25s of speech (~8,000 bytes) is recorded
-      if not speechArmed then
-        if sz > 8000 then
-          speechArmed = true
-          silenceTicks = 0
-          lastSize = sz
-          log("Conversation VAD: speech detected and armed")
-        end
-        return
-      end
-
-      -- Step 2: Speech is armed — monitor for sustained 0.7s silence pause
-      local delta = sz - lastSize
-      lastSize = sz
-
-      if delta < 500 then
-        silenceTicks = silenceTicks + 1
-        if silenceTicks >= 2 then  -- ~0.7s of sustained silence after sentence
-          if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-          log("Conversation VAD: sentence complete (0.7s pause) — transcribing and pasting")
-          stopRecording()
-        end
-      else
-        silenceTicks = 0
-      end
-    end)
-  end
   -- sticky-key watchdog: macOS sometimes drops the key-release event; if the
   -- key is no longer physically held, stop instead of recording forever
   timers.stuckKey = hs.timer.doEvery(1.0, function()
