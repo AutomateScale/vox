@@ -1710,6 +1710,7 @@ local function reset()
   if timers.stuckKey then timers.stuckKey:stop() end
   if timers.uiDelay then timers.uiDelay:stop(); timers.uiDelay = nil end
   if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
+  if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
   setUI("idle")
 end
@@ -1831,10 +1832,10 @@ local function insertText(text)
       end)
     else
       -- Regular pause dictation (no send keyword like "ok go"):
-      -- Immediately re-arm mic (50ms) so no words of the next sentence are ever lost!
-      hs.timer.doAfter(0.05, function()
+      -- Re-arm mic after 0.25s so Conversation Mode stays ON continuously!
+      hs.timer.doAfter(0.25, function()
         if convMode and state == "idle" then
-          log("Conversation Mode: re-armed mic hands-free")
+          log("Conversation Mode: re-arming mic hands-free")
           locked = true
           startRecording()
         end
@@ -3222,26 +3223,26 @@ local function startRecording()
     local lastSize = 0
     local silenceTicks = 0
 
-    timers.convVAD = hs.timer.doEvery(0.3, function()
+    timers.convVAD = hs.timer.doEvery(0.35, function()
       if state ~= "recording" or not convMode then
         if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
         return
       end
 
-      local attr = hs.fs.attributes(C.wav)
-      local sz = attr and attr.size or 0
-      -- Require at least 0.8s of audio (~25,000 bytes) before arming VAD
-      if sz > 25000 then
+      local ok, attr = pcall(hs.fs.attributes, C.wav)
+      local sz = (ok and attr and type(attr) == "table") and (attr.size or 0) or 0
+      -- Require at least 0.6s of audio (~20,000 bytes) before arming VAD
+      if sz > 20000 then
         speechDetected = true
       end
 
       if speechDetected then
-        -- Check if file size growth has stalled (< 600 bytes per 0.3s check)
-        if (sz - lastSize) < 600 then
+        -- Check if file size growth has stalled (< 500 bytes per 0.35s check)
+        if (sz - lastSize) < 500 then
           silenceTicks = silenceTicks + 1
-          if silenceTicks >= 3 then  -- ~0.9s of sustained silence after speech
+          if silenceTicks >= 3 then  -- ~1.0s of sustained silence after sentence
             if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-            log("Conversation VAD: sentence complete (0.9s pause) — transcribing and pasting")
+            log("Conversation VAD: sentence complete (1.0s pause) — transcribing and pasting")
             stopRecording()
           end
         else
