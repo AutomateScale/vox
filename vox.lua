@@ -1830,11 +1830,11 @@ local function insertText(text)
         watchLLMCompletion(context.winObj or hs.window.focusedWindow())
       end)
     else
-      -- Regular hands-free dictation without send trigger:
-      -- Auto-re-arm mic after 0.4s so user can keep talking hands-free!
-      hs.timer.doAfter(0.4, function()
+      -- Regular 0.5s pause dictation (no send keyword like "ok go"):
+      -- Immediately auto-re-arm mic so Conversation Mode stays ON continuously!
+      hs.timer.doAfter(0.2, function()
         if convMode and state == "idle" then
-          log("Conversation Mode: auto-re-arming mic for next utterance")
+          log("Conversation Mode: auto-re-arming mic for continuous listening")
           locked = true
           startRecording()
         end
@@ -2800,7 +2800,7 @@ local function parseSendTrigger(tStr)
   if not tStr or #tStr == 0 then return tStr, nil end
   local clean = tStr:gsub("[%s%.!%?%-%_,;]+$", "")
   local lower = clean:lower()
-  local triggers = { "send it", "over", "send", "enter", "submit", "go", "out", "roger" }
+  local triggers = { "ok go", "okay go", "ok, go", "okay, go", "send it", "over", "send", "enter", "submit", "go", "out", "roger" }
   for _, trig in ipairs(triggers) do
     if lower == trig then
       return "", trig
@@ -3221,7 +3221,7 @@ local function startRecording()
     local lastSize = 0
     local silenceTicks = 0
 
-    timers.convVAD = hs.timer.doEvery(0.25, function()
+    timers.convVAD = hs.timer.doEvery(0.18, function()
       if state ~= "recording" or not convMode then
         if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
         return
@@ -3229,16 +3229,16 @@ local function startRecording()
 
       local attr = hs.fs.attributes(C.wav)
       local sz = attr and attr.size or 0
-      if sz > 4000 then
+      if sz > 3000 then
         speechDetected = true
       end
 
       if speechDetected then
-        if sz == lastSize or (sz - lastSize) < 800 then
+        if sz == lastSize or (sz - lastSize) < 600 then
           silenceTicks = silenceTicks + 1
-          if silenceTicks >= 2 then  -- ~0.5s of silence after speech
+          if silenceTicks >= 2 then  -- ~0.45s of silence after speech
             if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-            log("Conversation VAD: speech finished, auto-stopping recording to transcribe")
+            log("Conversation VAD: 0.5s pause detected — transcribing and pasting")
             stopRecording()
           end
         else
