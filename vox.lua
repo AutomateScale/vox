@@ -1831,10 +1831,10 @@ local function insertText(text)
       end)
     else
       -- Regular pause dictation (no send keyword like "ok go"):
-      -- Auto-re-arm mic after 0.4s so Conversation Mode stays ON continuously!
-      hs.timer.doAfter(0.4, function()
+      -- Immediately re-arm mic (50ms) so no words of the next sentence are ever lost!
+      hs.timer.doAfter(0.05, function()
         if convMode and state == "idle" then
-          log("Conversation Mode: auto-re-arming mic for continuous listening")
+          log("Conversation Mode: re-armed mic hands-free")
           locked = true
           startRecording()
         end
@@ -2795,6 +2795,7 @@ end
 
 local convMode = false
 local activeSendTrigger = nil
+local convToggleTs = 0
 
 local function parseSendTrigger(tStr)
   if not tStr or #tStr == 0 then return tStr, nil end
@@ -3377,19 +3378,23 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
   end
   local flags = e:getFlags()
   if flags.fn and (flags.alt or kc == 61 or kc == 58) then
-    convMode = not convMode
-    if convMode then
-      play("start")
-      hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'send' or 'over' when done talking (Fn+Option to stop)", 2.5)
-      if state == "idle" then
-        locked = true
-        startRecording()
+    local now = hs.timer.secondsSinceEpoch()
+    if (now - convToggleTs) > 0.6 then
+      convToggleTs = now
+      convMode = not convMode
+      if convMode then
+        play("start")
+        hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'ok go' or 'send' to submit (Fn+Option to stop)", 2.5)
+        if state == "idle" then
+          locked = true
+          startRecording()
+        end
+      else
+        play("done")
+        hs.alert.show("Conversation Mode OFF", 1.5)
+        if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+        if state == "recording" then stopRecording() end
       end
-    else
-      play("done")
-      hs.alert.show("Conversation Mode OFF", 1.5)
-      if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
-      if state == "recording" then stopRecording() end
     end
     return true
   end
