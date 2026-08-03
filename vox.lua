@@ -3232,9 +3232,9 @@ local function startRecording()
       local ok, attr = pcall(hs.fs.attributes, C.wav)
       local sz = (ok and attr and type(attr) == "table") and (attr.size or 0) or 0
 
-      -- Step 1: Wait until at least 0.8s of audio (~25,000 bytes) is recorded before arming VAD
+      -- Step 1: Arm VAD as soon as 0.25s of speech (~8,000 bytes) is recorded
       if not speechArmed then
-        if sz > 25000 then
+        if sz > 8000 then
           speechArmed = true
           silenceTicks = 0
           lastSize = sz
@@ -3243,15 +3243,15 @@ local function startRecording()
         return
       end
 
-      -- Step 2: Speech is armed — monitor for sustained 1.0s silence pause
+      -- Step 2: Speech is armed — monitor for sustained 0.7s silence pause
       local delta = sz - lastSize
       lastSize = sz
 
       if delta < 500 then
         silenceTicks = silenceTicks + 1
-        if silenceTicks >= 3 then  -- ~1.05s of sustained silence after sentence
+        if silenceTicks >= 2 then  -- ~0.7s of sustained silence after sentence
           if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-          log("Conversation VAD: sentence complete (1.0s pause) — transcribing and pasting")
+          log("Conversation VAD: sentence complete (0.7s pause) — transcribing and pasting")
           stopRecording()
         end
       else
