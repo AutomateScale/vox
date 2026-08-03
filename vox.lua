@@ -1830,9 +1830,9 @@ local function insertText(text)
         watchLLMCompletion(context.winObj or hs.window.focusedWindow())
       end)
     else
-      -- Regular 0.5s pause dictation (no send keyword like "ok go"):
-      -- Immediately auto-re-arm mic so Conversation Mode stays ON continuously!
-      hs.timer.doAfter(0.2, function()
+      -- Regular pause dictation (no send keyword like "ok go"):
+      -- Auto-re-arm mic after 0.4s so Conversation Mode stays ON continuously!
+      hs.timer.doAfter(0.4, function()
         if convMode and state == "idle" then
           log("Conversation Mode: auto-re-arming mic for continuous listening")
           locked = true
@@ -3221,7 +3221,7 @@ local function startRecording()
     local lastSize = 0
     local silenceTicks = 0
 
-    timers.convVAD = hs.timer.doEvery(0.18, function()
+    timers.convVAD = hs.timer.doEvery(0.3, function()
       if state ~= "recording" or not convMode then
         if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
         return
@@ -3229,22 +3229,26 @@ local function startRecording()
 
       local attr = hs.fs.attributes(C.wav)
       local sz = attr and attr.size or 0
-      if sz > 3000 then
+      -- Require at least 0.8s of audio (~25,000 bytes) before arming VAD
+      if sz > 25000 then
         speechDetected = true
       end
 
       if speechDetected then
-        if sz == lastSize or (sz - lastSize) < 600 then
+        -- Check if file size growth has stalled (< 600 bytes per 0.3s check)
+        if (sz - lastSize) < 600 then
           silenceTicks = silenceTicks + 1
-          if silenceTicks >= 2 then  -- ~0.45s of silence after speech
+          if silenceTicks >= 3 then  -- ~0.9s of sustained silence after speech
             if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-            log("Conversation VAD: 0.5s pause detected — transcribing and pasting")
+            log("Conversation VAD: sentence complete (0.9s pause) — transcribing and pasting")
             stopRecording()
           end
         else
           silenceTicks = 0
           lastSize = sz
         end
+      else
+        lastSize = sz
       end
     end)
   end
