@@ -1254,6 +1254,15 @@ local function hudPositions()
     if not seen[key] then seen[key] = true; list[#list + 1] = { x = x, y = y } end
   end
   local pos = C.alienPos or {}
+  if pos.titlebar then
+    local ok, wf = pcall(function()
+      local w = hs.window.focusedWindow(); return w and w:frame()
+    end)
+    if ok and wf and wf.w > 120 then
+      -- flush-fit inside top titlebar of focused window
+      add(wf.x + (wf.w - CV_W) / 2, wf.y + 4)
+    end
+  end
   if pos.window then
     local ok, wf = pcall(function()
       local w = hs.window.focusedWindow(); return w and w:frame()
@@ -3594,10 +3603,11 @@ menubar:setMenu(function()
       } },
     { title = "Alien position (pick any combo)", menu = (function()
         local defs = {
-          { "window", "Pops out of the window you dictate into" },
-          { "center", "Bottom center of the screen" },
-          { "top",    "Top center of the screen" },
-          { "side",   "Right edge, mid-height" },
+          { "titlebar", "Docked flush in window titlebar" },
+          { "window",   "Pops out of the window you dictate into" },
+          { "center",   "Bottom center of the screen" },
+          { "top",      "Top center of the screen" },
+          { "side",     "Right edge, mid-height" },
         }
         local items = {}
         for _, d in ipairs(defs) do
