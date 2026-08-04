@@ -250,6 +250,12 @@ local recGen  = 0                    -- invalidates stale recorder callbacks
 local keyDownAt = 0
 local context = { app = "", title = "" }
 local recTask, menubar
+-- NOTE: startRecording/stopRecording/convCalibrate/convVadPct are GLOBALS
+-- by design. Conversation mode's re-arm loop (insertText, the LLM watcher,
+-- the VAD exit callback) calls them from ABOVE their definitions; as locals
+-- those call sites compiled against always-nil globals and crashed at fire
+-- time — which is why the hands-free loop dead-ended. Globals resolve at
+-- call time, and the main chunk is at Lua's 200-local limit anyway.
 local timers  = {}                   -- anchored refs so timers survive GC
 local duck                           -- ducking state (defined below)
 local reqId   = 0                    -- guards against late LLM responses
@@ -1711,8 +1717,22 @@ local function reset()
   if timers.uiDelay then timers.uiDelay:stop(); timers.uiDelay = nil end
   if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
+  if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
   setUI("idle")
+  -- conversation mode must survive empty/failed utterances: every reset
+  -- while the mode is ON re-arms the mic (toggle-OFF clears convMode first,
+  -- so a deliberate exit never lands here)
+  if convMode then
+    timers.convRearm = hs.timer.doAfter(0.4, function()
+      timers.convRearm = nil
+      if convMode and state == "idle" then
+        log("Conversation Mode: re-arming after empty/failed utterance")
+        locked = true
+        startRecording()
+      end
+    end)
+  end
 end
 
 -- ---------------- whisper server (keeps model in RAM) --------
@@ -2797,6 +2817,31 @@ end
 local convMode = false
 local activeSendTrigger = nil
 local convToggleTs = 0
+-- VAD silence threshold, calibrated per toggle. A fixed 0.2% assumed a
+-- near-silent mic; this room's floor measures ~0.6% RMS on the RODECaster,
+-- so "below 0.2%" never happened and the auto-stop never fired. We sample
+-- the floor for 0.6s at toggle-ON and set the threshold above it.
+convVadPct = nil
+function convCalibrate(done)
+  local floorWav = tmp("convfloor.wav")
+  M.convCalTask = hs.task.new("/bin/sh", function(_, out)
+    local rms = tonumber((out or ""):match("RMS%s+amplitude:%s+([%d%.]+)"))
+    if rms then
+      -- 4x the noise floor, clamped to a sane band
+      convVadPct = math.max(0.5, math.min(6, rms * 4 * 100))
+      log(string.format("conv VAD calibrated: floor RMS %.2f%% -> threshold %.2f%%",
+        rms * 100, convVadPct))
+    else
+      convVadPct = 1.0
+      log("conv VAD calibration failed — using 1.0% default")
+    end
+    os.remove(floorWav)
+    if done then done() end
+  end, { "-c", string.format(
+    "%s -q -d -c 1 -r 16000 -b 16 %s trim 0 0.6 2>/dev/null; %s %s -n stat 2>&1",
+    C.sox, floorWav, C.sox, floorWav) })
+  M.convCalTask:start()
+end
 
 local function parseSendTrigger(tStr)
   if not tStr or #tStr == 0 then return tStr, nil end
@@ -3129,7 +3174,7 @@ local function transcribe()
 end
 
 -- ---------------- recording ----------------------------------
-local function startRecording()
+function startRecording()  -- global by design: see note at top state vars
   if state ~= "idle" then return end
   state = "recording"
   recGen = recGen + 1
@@ -3138,15 +3183,18 @@ local function startRecording()
   os.remove(C.wav)
   local soxArgs = { "--buffer", "1024", "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav }
   if convMode then
-    -- Native C-level Voice Activity Detection (VAD):
-    -- sox automatically exits with code 0 after 0.7s silence following speech (>0.2% amplitude)
+    -- Native C-level Voice Activity Detection (VAD): sox exits with code 0
+    -- after 0.7s of "silence" following speech. The threshold is calibrated
+    -- against the room's measured noise floor at toggle-ON (a fixed 0.2%
+    -- never fired on pro interfaces whose floor sits above it).
+    local pct = string.format("%.2f%%", convVadPct or 1.0)
     table.insert(soxArgs, "silence")
     table.insert(soxArgs, "1")
     table.insert(soxArgs, "0.1")
-    table.insert(soxArgs, "0.2%")
+    table.insert(soxArgs, pct)
     table.insert(soxArgs, "1")
     table.insert(soxArgs, "0.7")
-    table.insert(soxArgs, "0.2%")
+    table.insert(soxArgs, pct)
   end
 
   recTask = hs.task.new(C.sox, function(code, _, _)
@@ -3158,6 +3206,18 @@ local function startRecording()
     end
   end, soxArgs)
   recTask:start()
+  -- conv-mode safety net: if the VAD never fires (threshold drift, device
+  -- wedge), force-complete the utterance rather than recording forever
+  if convMode then
+    if timers.convCap then timers.convCap:stop() end
+    timers.convCap = hs.timer.doAfter(25, function()
+      timers.convCap = nil
+      if convMode and state == "recording" and myGen == recGen then
+        log("conv VAD never fired within 25s — force-completing utterance")
+        stopRecording()
+      end
+    end)
+  end
   -- screen-aware dictation: OCR the target window WHILE recording (free time)
   local function startCtxOCR()
     if not (C.screenContext and CORES > 2) then return end
@@ -3255,12 +3315,13 @@ local function cancelRecording()
   reset()
 end
 
-local function stopRecording()
+function stopRecording()  -- global by design: see note at top state vars
   if state ~= "recording" then return end
   state = "processing"
   if timers.maxRec then timers.maxRec:stop() end
   if timers.stuckKey then timers.stuckKey:stop() end
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
+  if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
   setUI("work")
   duckUp()                       -- music fades back while we transcribe
   play("stop")
@@ -3362,9 +3423,16 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
       if convMode then
         play("start")
         hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'ok go' or 'send' to submit (Fn+Option to stop)", 2.5)
+        if recTask and recTask:isRunning() then recTask:terminate() end
         if state == "idle" then
-          locked = true
-          startRecording()
+          -- measure the room's noise floor first so the VAD threshold is
+          -- real for THIS mic and room, then arm
+          convCalibrate(function()
+            if convMode and state == "idle" then
+              locked = true
+              startRecording()
+            end
+          end)
         end
       else
         play("done")
@@ -3636,9 +3704,14 @@ menubar:setMenu(function()
         if convMode then
           play("start")
           hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'send' or 'over' when done talking (Fn+Option to stop)", 2.5)
+          if recTask and recTask:isRunning() then recTask:terminate() end
           if state == "idle" then
-            locked = true
-            startRecording()
+            convCalibrate(function()
+              if convMode and state == "idle" then
+                locked = true
+                startRecording()
+              end
+            end)
           end
         else
           play("done")
