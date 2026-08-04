@@ -1718,6 +1718,8 @@ local function reset()
   if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
+  if timers.soxKill then timers.soxKill:stop(); timers.soxKill = nil end
+  if timers.soxKill9 then timers.soxKill9:stop(); timers.soxKill9 = nil end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
   setUI("idle")
   -- conversation mode must survive empty/failed utterances: every reset
@@ -2877,7 +2879,9 @@ local function watchLLMCompletion(win)
       if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
       if convMode and state == "idle" then
         log("LLM watch timeout — auto-re-arming conversation mode")
-        play("done")
+        -- unmistakable "your turn" ding — distinct from Vox's own blips
+        local g = hs.sound.getByName("Glass")
+        if g then g:volume(1.0):play() else play("done") end
         hs.alert.show("🔔 Listening... (say 'send' or Fn+Option to stop)", 1.5)
         locked = true
         startRecording()
@@ -2897,7 +2901,9 @@ local function watchLLMCompletion(win)
           if stableCount >= 2 then
             if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
             log("LLM response completed on screen — re-arming conversation mode")
-            play("done")
+            -- unmistakable "your turn" ding — distinct from Vox's own blips
+            local g = hs.sound.getByName("Glass")
+            if g then g:volume(1.0):play() else play("done") end
             hs.alert.show("🔔 LLM ready — listening... (say 'send' or Fn+Option to stop)", 2.5)
             hs.timer.doAfter(0.3, function()
               if convMode and state == "idle" then
@@ -3330,6 +3336,24 @@ function stopRecording()  -- global by design: see note at top state vars
   timers.tailGrace = hs.timer.doAfter(C.tailGrace, function()
     if recTask and recTask:isRunning() then
       recTask:interrupt()        -- SIGINT lets sox finalize the WAV
+      -- conv-mode wedge: sox stuck in a coreaudio read with an un-armed VAD
+      -- gate ignores SIGINT (and even SIGTERM — observed live). Escalate
+      -- until it actually dies; its exit callback still fires on a kill and
+      -- runs transcribe() as usual, so the pipeline continues either way.
+      timers.soxKill = hs.timer.doAfter(0.7, function()
+        timers.soxKill = nil
+        if recTask and recTask:isRunning() then
+          local pid = recTask:pid()
+          recTask:terminate()
+          timers.soxKill9 = hs.timer.doAfter(0.5, function()
+            timers.soxKill9 = nil
+            if pid and recTask and recTask:isRunning() then
+              log("sox ignored TERM — SIGKILL " .. pid)
+              os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
+            end
+          end)
+        end
+      end)
     else
       transcribe()
     end
@@ -3415,7 +3439,11 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
     return false
   end
   local flags = e:getFlags()
-  if flags.fn and (flags.alt or kc == 61 or kc == 58) then
+  -- Fn+Option TOGGLE — fires only when BOTH modifiers are actually down
+  -- (a key PRESS). The old `or kc == 61/58` clause also matched the Option
+  -- RELEASE while Fn was still held, which instantly toggled the mode back
+  -- OFF — that's why conversation mode felt like it had to be held down.
+  if flags.fn and flags.alt then
     local now = hs.timer.secondsSinceEpoch()
     if (now - convToggleTs) > 0.6 then
       convToggleTs = now
