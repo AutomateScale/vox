@@ -686,8 +686,11 @@ local function mediaPlayPause()
   hs.eventtap.event.newSystemKeyEvent("PLAY", false):post()
 end
 
-local function duckDown()
+local function duckDown(force)
   if not C.duckAudio then return end
+  -- conv mode ducks ONCE at toggle-ON (force=true) — per-utterance ducking
+  -- would pause/resume the media on every single sentence of the loop
+  if convMode and not force then return end
   -- "pause": stop the podcast/music itself (media key) — nothing bleeds into
   -- the mic AND you miss nothing; it resumes the moment you stop talking
   if C.duckMode == "pause" then
@@ -719,6 +722,9 @@ local function duckDown()
 end
 
 local function duckUp()
+  -- while conv mode is live the duck stays down; toggle-OFF clears convMode
+  -- first, so its duckUp() passes this guard and restores the media
+  if convMode then return end
   if duck.paused then duck.paused = false; mediaPlayPause() end
   if not duck.active then return end
   rampVolume(duck.orig, 8, 0.06, function() duck.active = false end)
@@ -2816,9 +2822,14 @@ local function applyVoiceCommands(text)
   return text, nil
 end
 
-local convMode = false
-local activeSendTrigger = nil
-local convToggleTs = 0
+-- GLOBALS by design (same reason as startRecording/stopRecording): reset()
+-- and insertText sit EARLIER in this file and participate in the conv loop
+-- (re-arm, send-trigger submit). As locals declared here, those upstream
+-- references compiled to always-nil globals and the loop silently died
+-- after every utterance. Globals resolve at call time from anywhere.
+convMode = false
+activeSendTrigger = nil
+convToggleTs = 0
 -- VAD silence threshold, calibrated per toggle. A fixed 0.2% assumed a
 -- near-silent mic; this room's floor measures ~0.6% RMS on the RODECaster,
 -- so "below 0.2%" never happened and the auto-stop never fired. We sample
@@ -2845,7 +2856,7 @@ function convCalibrate(done)
   M.convCalTask:start()
 end
 
-local function parseSendTrigger(tStr)
+function parseSendTrigger(tStr)  -- global: see note above convMode
   if not tStr or #tStr == 0 then return tStr, nil end
   local clean = tStr:gsub("[%s%.!%?%-%_,;]+$", "")
   local lower = clean:lower()
@@ -2863,7 +2874,7 @@ local function parseSendTrigger(tStr)
   return tStr, nil
 end
 
-local function watchLLMCompletion(win)
+function watchLLMCompletion(win)  -- global: see note above convMode
   if not convMode then return end
   local wid = win and win:id()
   if not wid then return end
@@ -3196,7 +3207,10 @@ function startRecording()  -- global by design: see note at top state vars
     local pct = string.format("%.2f%%", convVadPct or 1.0)
     table.insert(soxArgs, "silence")
     table.insert(soxArgs, "1")
-    table.insert(soxArgs, "0.1")
+    -- 0.35s SUSTAINED sound to arm: Vox's own start-blip through the
+    -- speakers (~0.15s) was arming the gate, instantly "completing" an
+    -- empty recording. Speech sustains well past 0.35s; blips don't.
+    table.insert(soxArgs, "0.35")
     table.insert(soxArgs, pct)
     table.insert(soxArgs, "1")
     table.insert(soxArgs, "0.7")
@@ -3451,6 +3465,7 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
       if convMode then
         play("start")
         hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'ok go' or 'send' to submit (Fn+Option to stop)", 2.5)
+        duckDown(true)             -- pause media ONCE for the whole session
         if recTask and recTask:isRunning() then recTask:terminate() end
         if state == "idle" then
           -- measure the room's noise floor first so the VAD threshold is
@@ -3466,7 +3481,9 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
         play("done")
         hs.alert.show("Conversation Mode OFF", 1.5)
         if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+        if timers.convRearm then timers.convRearm:stop(); timers.convRearm = nil end
         if state == "recording" then stopRecording() end
+        duckUp()                 -- convMode is false now: media resumes
       end
     end
     return true
@@ -3732,6 +3749,7 @@ menubar:setMenu(function()
         if convMode then
           play("start")
           hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'send' or 'over' when done talking (Fn+Option to stop)", 2.5)
+          duckDown(true)           -- pause media ONCE for the whole session
           if recTask and recTask:isRunning() then recTask:terminate() end
           if state == "idle" then
             convCalibrate(function()
@@ -3745,7 +3763,9 @@ menubar:setMenu(function()
           play("done")
           hs.alert.show("Conversation Mode OFF", 1.5)
           if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+          if timers.convRearm then timers.convRearm:stop(); timers.convRearm = nil end
           if state == "recording" then stopRecording() end
+          duckUp()               -- convMode is false now: media resumes
         end
       end },
     { title = "Hold key", menu = {
