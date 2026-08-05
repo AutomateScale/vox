@@ -161,7 +161,8 @@ local C = {
                              -- "am_adam", "af_heart", "am_fenrir"
   alienVoiceSpeed = 1.0,
 
-  -- Voice commands: say "scratch that" to undo the last dictation;
+  -- Voice commands: "scratch that" / "delete last" / "undo" (and a dozen
+  -- other phrasings) undo the last dictation;
   -- say "new paragraph." / "new line." (as their own clause) for breaks.
   voiceCommands = true,
 
@@ -803,7 +804,14 @@ local mini = { canvas = nil, timer = nil, phase = 0,
                -- The alien is the whole interface in mini style, so his own
                -- colour and pulse have to carry the state that the pill's
                -- bar graph used to.
-               mode = "idle", level = 0 }
+               mode = "idle", level = 0, emote = nil, emoteUntil = 0 }
+
+-- Declared up here (not next to miniHide, where it used to live) because
+-- miniTick has to be able to dismiss the bubble when an emote finishes, and a
+-- local declared later would read as a nil global from inside this function.
+local bubble = { canvas = nil, timer = nil, hold = nil,
+                 dir = nil, open = false, phase = 0,
+                 targetW = 0, animStart = 0 }
 local MW, MH, MOFF = 74, 30, 24        -- canvas w/h, alien x-offset
 
 local function miniEnsure()
@@ -911,8 +919,29 @@ local function miniTick()
   -- is happening. Cyan while listening (brightening with your voice), violet
   -- while transcribing (a slow think-pulse), mint at rest. Same colour
   -- language the pill used, on a tenth of the pixels.
+  -- An emote is a short celebration after the words land, and — critically —
+  -- it is what ENDS the busy state. The pill used to hide itself at the end of
+  -- its own fade-out animation; the success path never calls setUI("idle"), it
+  -- just calls hudEmote and trusts that. With the pill gone nothing closed the
+  -- loop, so the alien stayed lit and the bubble stayed on screen forever.
+  if mini.mode == "emote" and mini.phase >= mini.emoteUntil then
+    mini.mode, mini.emote, mini.level = "idle", nil, 0
+    if mini.lvlTimer then mini.lvlTimer:stop(); mini.lvlTimer = nil end
+    if bubble.canvas then bubble.canvas:hide() end
+  end
+
   local head, glow
-  if mini.mode == "rec" then
+  if mini.mode == "emote" then
+    local k = mini.emote
+    local t = 1 - math.max(0, (mini.emoteUntil - mini.phase) / 12)
+    local flare = math.sin(math.min(1, t) * math.pi)        -- swell and settle
+    local c1 = (k == "joy")    and { red = 1.0, green = 0.88, blue = 0.42, alpha = 1 }
+            or (k == "excite") and { red = 1.0, green = 0.62, blue = 0.78, alpha = 1 }
+            or (k == "curious") and { red = 0.62, green = 0.90, blue = 1.0, alpha = 1 }
+            or                      { red = 0.62, green = 1.0,  blue = 0.86, alpha = 1 }
+    head = { c1, { red = c1.red * 0.62, green = c1.green * 0.78, blue = c1.blue * 0.72, alpha = 1 } }
+    glow = 0.6 + flare * 0.4
+  elseif mini.mode == "rec" then
     local lv = math.min(1, mini.level * 3.2)
     head = { { red = 0.55 + lv * 0.3, green = 0.95, blue = 1.0, alpha = 1 },
              { red = 0.20, green = 0.72 + lv * 0.2, blue = 0.95, alpha = 1 } }
@@ -949,78 +978,161 @@ local function miniShow()
   end
 end
 
--- declared before miniHide so it closes over this local, not a nil global
-local bubble = { canvas = nil, timer = nil }
-
 local function miniHide()
   if mini.timer then mini.timer:stop(); mini.timer = nil end
   if mini.canvas then mini.canvas:hide() end
   if bubble.canvas then bubble.canvas:hide() end
 end
 
--- ---------------- mini bubble (real-time text feedback) --------
-local BW, BH = 320, 48
+-- ---------------- mini bubble: a thought-blob that morphs ------
+-- The bubble used to be a fixed 320x48 slab that appeared and vanished with no
+-- transition, the same width whether it said "Listening..." or a full
+-- sentence. Now it measures the words, grows out of the alien's head, holds at
+-- exactly the width it needs, and shrinks back into him — so it reads as HIS
+-- thought rather than a notification that happens to be nearby.
+-- One table rather than eight locals: the main chunk is close to Lua's
+-- 200-local ceiling and separate constants tipped it over.
+--
+-- The blob is drawn into a canvas sized to the widest it will ever get, and
+-- only the ELEMENT frames move. Resizing an hs.canvas window every frame is
+-- visibly steppy; resizing a shape inside a stable window is smooth.
+local BUB = { H = 30, PADX = 22, MINW = 96, MAXW = 460, TXT = 12.5 }
+BUB.CVW, BUB.CVH = BUB.MAXW + 40, BUB.H + 34
+
+function BUB.measure(text)
+  local ok, sz = pcall(hs.drawing.getTextDrawingSize, text,
+                       { font = { size = BUB.TXT }, paragraphStyle = { alignment = "center" } })
+  local w = (ok and sz and sz.w) and sz.w or (#text * 7)
+  return math.max(BUB.MINW, math.min(BUB.MAXW, w + BUB.PADX * 2))
+end
 
 local function bubbleEnsure()
   if bubble.canvas then return end
-  local c = hs.canvas.new({ x = 0, y = 0, w = BW, h = BH })
+  local c = hs.canvas.new({ x = 0, y = 0, w = BUB.CVW, h = BUB.CVH })
   c:level(hs.canvas.windowLevels.overlay)
   c:behavior({ "canJoinAllSpaces", "stationary" })
-  
-  -- Dark glass background pill
+  c:clickActivating(false)
+
+  -- 1 body · 2 rim · 3/4 the two thought-dots that trail down to his head
   c[1] = { type = "rectangle", action = "fill",
            fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.92 },
-           roundedRectRadii = { xRadius = 12, yRadius = 12 },
-           frame = { x = 0, y = 0, w = BW, h = BH - 8 } }
-           
-  -- Neon accent border
+           roundedRectRadii = { xRadius = BUB.H / 2, yRadius = BUB.H / 2 },
+           frame = { x = 0, y = 0, w = BUB.MINW, h = BUB.H } }
   c[2] = { type = "rectangle", action = "stroke",
            strokeColor = { red = 0.22, green = 0.92, blue = 0.75, alpha = 0.75 },
            strokeWidth = 1.2,
-           roundedRectRadii = { xRadius = 12, yRadius = 12 },
-           frame = { x = 0, y = 0, w = BW, h = BH - 8 } }
-           
-  -- Downward tail indicator pointing at alien head
-  c[3] = { type = "segments", action = "fill",
-           fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.92 },
-           coordinates = {
-             { x = BW / 2 - 8, y = BH - 8 },
-             { x = BW / 2 + 8, y = BH - 8 },
-             { x = BW / 2,     y = BH }
-           } }
-           
-  -- Real-time Text Feedback
-  c[4] = { type = "text", text = "", textSize = 12.5,
+           roundedRectRadii = { xRadius = BUB.H / 2, yRadius = BUB.H / 2 },
+           frame = { x = 0, y = 0, w = BUB.MINW, h = BUB.H } }
+  -- Dots instead of a hard tail: a tail welds the bubble to a fixed point,
+  -- whereas dots read as the thought still rising off him and let the body
+  -- drift without the join looking broken.
+  c[3] = { type = "circle", action = "fill",
+           fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.9 },
+           center = { x = BUB.CVW / 2, y = BUB.H + 9 }, radius = 4 }
+  c[4] = { type = "circle", action = "fill",
+           fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.85 },
+           center = { x = BUB.CVW / 2, y = BUB.H + 19 }, radius = 2.4 }
+  c[5] = { type = "text", text = "", textSize = BUB.TXT,
            textColor = { red = 0.92, green = 0.98, blue = 0.95, alpha = 1 },
            textAlignment = "center", lineBreak = "truncateTail",
-           frame = { x = 8, y = 8, w = BW - 16, h = BH - 20 } }
-           
+           frame = { x = 0, y = 7, w = BUB.MINW, h = BUB.H - 12 } }
   bubble.canvas = c
+end
+
+-- easeOutBack: overshoots then settles. The overshoot is what makes it feel
+-- like a blob inflating rather than a box being resized.
+function BUB.ease(t)
+  local c1, c3 = 1.70158, 2.70158
+  local u = t - 1
+  return 1 + c3 * u * u * u + c1 * u * u
+end
+
+function BUB.layout(prog, wobblePhase)
+  local c = bubble.canvas
+  if not c then return end
+  local eased = bubble.dir == "out" and (1 - prog) or BUB.ease(prog)
+  eased = math.max(0.001, eased)
+
+  -- Width leads, height follows a touch behind, so it unfurls sideways out of
+  -- him instead of scaling up like a photograph.
+  local w = BUB.MINW + (bubble.targetW - BUB.MINW) * math.min(1, eased)
+  w = math.max(18, w * (0.42 + 0.58 * eased))
+  local h = BUB.H * (0.5 + 0.5 * math.min(1, eased))
+
+  -- A slow squash/stretch keeps it alive while it sits there — a thought
+  -- breathing, not a tooltip parked on screen.
+  local wob = math.sin(wobblePhase * 0.09) * 0.9
+  local x = (BUB.CVW - w) / 2
+  local y = 6 - wob
+
+  c[1].frame = { x = x, y = y, w = w, h = h + wob }
+  c[2].frame = { x = x, y = y, w = w, h = h + wob }
+  c[1].roundedRectRadii = { xRadius = h / 2, yRadius = h / 2 }
+  c[2].roundedRectRadii = { xRadius = h / 2, yRadius = h / 2 }
+  c[5].frame = { x = x, y = y + (h - BUB.TXT * 1.35) / 2 + 1, w = w, h = BUB.TXT * 1.5 }
+  c[5].textColor = { red = 0.92, green = 0.98, blue = 0.95, alpha = math.max(0, eased * 1.4 - 0.4) }
+
+  -- Dots pop in after the body, so the thought looks like it rose off him.
+  local d1 = math.max(0, math.min(1, (eased - 0.25) / 0.5))
+  local d2 = math.max(0, math.min(1, (eased - 0.55) / 0.45))
+  c[3].radius = 4 * d1
+  c[4].radius = 2.4 * d2
+  c[3].center = { x = BUB.CVW / 2, y = y + h + 8 }
+  c[4].center = { x = BUB.CVW / 2, y = y + h + 17 }
+  c:alpha(math.min(1, eased * 1.25))
+end
+
+function BUB.tick()
+  if not bubble.canvas then return end
+  bubble.phase = (bubble.phase or 0) + 1
+  local now = hs.timer.secondsSinceEpoch()
+  local t = math.min(1, (now - (bubble.animStart or now)) / 0.26)
+  BUB.layout(t, bubble.phase)
+  if bubble.dir == "out" and t >= 1 then
+    bubble.canvas:hide()
+    if bubble.timer then bubble.timer:stop(); bubble.timer = nil end
+  end
 end
 
 local function bubbleShow(text, duration)
   if not C.miniAlien or not text or #text == 0 then return end
   bubbleEnsure()
   local f = hs.screen.primaryScreen():fullFrame()
-  bubble.canvas:frame({
-    x = f.x + (f.w - BW) / 2,
-    y = f.y + f.h - 86,  -- Gently floating above alien head
-    w = BW, h = BH
-  })
-  bubble.canvas[4].text = text
+  bubble.canvas:frame({ x = f.x + (f.w - BUB.CVW) / 2,
+                        y = f.y + f.h - 34 - BUB.CVH + 6,
+                        w = BUB.CVW, h = BUB.CVH })
+  bubble.canvas[5].text = text
+  bubble.targetW = BUB.measure(text)
+
+  -- Re-showing while already open re-flows to the new width instead of
+  -- replaying the entrance, so consecutive messages morph into each other.
+  if bubble.dir ~= "in" or not bubble.open then
+    bubble.animStart = hs.timer.secondsSinceEpoch()
+  end
+  bubble.dir, bubble.open = "in", true
   bubble.canvas:show()
-  
-  if bubble.timer then bubble.timer:stop() end
+  if not bubble.timer then
+    bubble.timer = hs.timer.doEvery(0.03, safeTick("bubbleTick", BUB.tick))
+  end
+
+  if bubble.hold then bubble.hold:stop(); bubble.hold = nil end
   if duration and duration > 0 then
-    bubble.timer = hs.timer.doAfter(duration, function()
-      if bubble.canvas then bubble.canvas:hide() end
-    end)
+    bubble.hold = hs.timer.doAfter(duration, function() bubbleHide() end)
   end
 end
 
-local function bubbleHide()
-  if bubble.timer then bubble.timer:stop(); bubble.timer = nil end
-  if bubble.canvas then bubble.canvas:hide() end
+function bubbleHide()
+  if bubble.hold then bubble.hold:stop(); bubble.hold = nil end
+  if not bubble.canvas or not bubble.open then
+    if bubble.canvas then bubble.canvas:hide() end
+    return
+  end
+  -- Shrink back into him rather than blinking out.
+  bubble.dir, bubble.open = "out", false
+  bubble.animStart = hs.timer.secondsSinceEpoch()
+  if not bubble.timer then
+    bubble.timer = hs.timer.doEvery(0.03, safeTick("bubbleTick", BUB.tick))
+  end
 end
 
 -- element indices: 1 pill · 2 head · 3/4 eyes · 5 smile · 6 antenna ·
@@ -1435,6 +1547,18 @@ end
 
 -- brief post-transcript reaction: the alien responds to what you said
 local function hudEmote(kind)
+  -- In mini style this is the ONLY thing that ends a dictation: the success
+  -- path sets state to idle but never calls setUI("idle"), so hudHide and
+  -- bubbleHide are never reached. The emote's expiry in miniTick is what
+  -- returns the alien to rest and clears the bubble.
+  if C.hudStyle == "mini" and C.miniAlien then
+    mini.mode, mini.emote = "emote", kind or "done"
+    mini.emoteUntil = mini.phase + ((kind == "done") and 8 or 14)   -- 250ms ticks
+    if mini.lvlTimer then mini.lvlTimer:stop(); mini.lvlTimer = nil end
+    mini.level = 0
+    miniShow()
+    return
+  end
   if not (hud.visible and hud.canvas) then return end
   hud.mode, hud.emote = "emote", kind or "done"
   hud.emoteStart = hud.phase
@@ -2861,7 +2985,21 @@ local function applyVoiceCommands(text)
   local bare = text:lower():gsub("^[%p%s]+", ""):gsub("[%p%s]+$", ""):gsub("%s+", " ")
   log("Voice command parsed: bare='" .. bare .. "' (raw='" .. text .. "')")
 
-  if bare == "scratch that" or bare == "undo that" or bare == "delete that" or bare == "scratch" or bare == "undo" then
+  -- Undo the last dictation. Matched as a SET of phrasings rather than one
+  -- blessed wording, because nobody remembers which one the software wanted —
+  -- "delete last" was the obvious way to say it and was the one thing missing.
+  local UNDO_PHRASES = {
+    ["scratch that"] = true, ["scratch"] = true, ["scratch last"] = true,
+    ["undo that"] = true,    ["undo"] = true,    ["undo last"] = true,
+    ["delete that"] = true,  ["delete last"] = true,
+    ["delete the last"] = true, ["delete last one"] = true,
+    ["delete the last one"] = true, ["delete last sentence"] = true,
+    ["delete the last sentence"] = true, ["delete last line"] = true,
+    ["remove that"] = true,  ["remove last"] = true,
+    ["nevermind"] = true,    ["never mind"] = true,
+    ["forget that"] = true,  ["cancel that"] = true,
+  }
+  if UNDO_PHRASES[bare] then
     return "", "undo"
   end
 
