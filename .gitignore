@@ -10,3 +10,6 @@ identity.md
 backups/
 .vox-lkg
 .vox-bad-commit
+.ollama-pull.done
+dist/
+__pycache__/

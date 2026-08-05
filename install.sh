@@ -82,21 +82,60 @@ else
 fi
 
 echo "==> [3/6] Ollama models (OPTIONAL — dictation works without them)..."
+# These are the biggest downloads in the whole install (up to ~7GB) and NOTHING
+# in the core dictation path needs them. Running them in the foreground meant a
+# user on hotel wifi stared at a progress bar for 40 minutes before they could
+# say a single word. They now run detached: dictation is live in ~2 minutes and
+# the LLM features light up on their own as each model lands.
 brew services start ollama >/dev/null 2>&1 || true
-sleep 5
-if ! ollama pull llama3.2:3b; then
-  echo "    ⚠️  Ollama pull failed (network?). Basic dictation still works; LLM cleanup /"
-  echo "        translation stay off until you run:  ollama pull llama3.2:3b"
-fi
-# tiny embedding model — gives the memory meaning-based recall (~274MB, all Macs)
-ollama pull nomic-embed-text || echo "    (skipped — memory uses word-match until you: ollama pull nomic-embed-text)"
-# smart model for translation/content/complex replies — only on Macs with RAM to spare
+
+# Model list is built per-machine, then handed to one background worker.
+# ARRAY, not a space-joined string: an unquoted string expansion relies on
+# word-splitting, which zsh does NOT do by default — under zsh all three names
+# arrive as a single argv and every pull "fails". An array is unambiguous.
+OLLAMA_MODELS=(llama3.2:3b nomic-embed-text)
 if [ "$(sysctl -n hw.memsize)" -ge 12884901888 ]; then
-  echo "    pulling the smart model (~4.7GB) for translation + content work..."
-  ollama pull qwen2.5:7b || echo "    (skipped — Vox stays on the fast model until you: ollama pull qwen2.5:7b)"
+  OLLAMA_MODELS+=(qwen2.5:7b)                 # translation + content work (~4.7GB)
 else
   echo "    <12GB RAM — staying on the fast model only (right call for this Mac)"
 fi
+
+PULL_LOG="$REPO/.ollama-pull.log"
+PULL_STAMP="$REPO/.ollama-pull.done"
+rm -f "$PULL_STAMP"
+
+# Detached worker: retries each model up to 3 times (ollama resumes partial
+# blobs on its own, so a retry costs only what was actually lost). setsid-style
+# nohup so closing the Terminal window can't orphan-kill the download.
+nohup bash -c '
+  REPO="$1"; shift
+  LOG="$REPO/.ollama-pull.log"
+  : > "$LOG"
+  # Ollama needs a moment after brew services start before it accepts pulls.
+  for _ in $(seq 1 30); do
+    ollama list >/dev/null 2>&1 && break
+    sleep 2
+  done
+  failed=""
+  for m in "$@"; do
+    ok=0
+    for attempt in 1 2 3; do
+      echo "[$(date +%H:%M:%S)] pulling $m (attempt $attempt/3)" >> "$LOG"
+      if ollama pull "$m" >> "$LOG" 2>&1; then ok=1; break; fi
+      sleep 5
+    done
+    [ "$ok" = 1 ] || failed="$failed $m"
+  done
+  if [ -n "$failed" ]; then
+    echo "INCOMPLETE:$failed" > "$REPO/.ollama-pull.done"
+  else
+    echo "OK" > "$REPO/.ollama-pull.done"
+  fi
+' _ "$REPO" "${OLLAMA_MODELS[@]}" >/dev/null 2>&1 &
+
+echo "    ⬇️  Downloading in the BACKGROUND: ${OLLAMA_MODELS[*]}"
+echo "    Dictation does NOT wait for these — keep installing."
+echo "    Progress:  tail -f ~/vox/.ollama-pull.log"
 
 echo "==> [4/6] Fallback UI sounds..."
 mkdir -p "$REPO/sounds/classic"
@@ -169,6 +208,24 @@ I'll detect it and relaunch Vox
 automatically — you do NOT need to relaunch by hand.
 EOF
 
+# Name the hold key by READING the config rather than hardcoding it. This line
+# said "RIGHT OPTION" long after the default moved to Left Command (55), so new
+# users granted both permissions, pressed the documented key, got nothing, and
+# concluded Vox was broken. Derive it and it can never drift again.
+hold_key_name() {
+  local kc
+  kc="$(sed -n 's/^[[:space:]]*holdKeycode[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+        "$REPO/vox.lua" 2>/dev/null | head -1)"
+  case "$kc" in
+    55) echo "LEFT COMMAND (⌘)"   ;;
+    54) echo "RIGHT COMMAND (⌘)"  ;;
+    61) echo "RIGHT OPTION (⌥)"   ;;
+    58) echo "LEFT OPTION (⌥)"    ;;
+    *)  echo "your hold key (see the menu-bar alien → Hold key)" ;;
+  esac
+}
+HOLD_KEY="$(hold_key_name)"
+
 echo
 printf "Waiting for the Accessibility grant"
 granted=0
@@ -192,13 +249,13 @@ if [ "$granted" = 1 ]; then
   "$HS" -c "$MIC_CMD" >/dev/null 2>&1 || true
   sleep 3
   rm -f /tmp/vox-micprompt.wav
-  echo "✅ Vox is armed. HOLD RIGHT OPTION (⌥) and speak. Release to paste."
+  echo "✅ Vox is armed. HOLD $HOLD_KEY and speak. Release to paste."
 else
-  cat <<'EOF'
+  cat <<EOF
 ⏳ Didn't detect the grant yet — no problem. When you're ready:
    1. System Settings > Privacy & Security > Accessibility > enable Hammerspoon
    2. Relaunch:  killall Hammerspoon; open -a Hammerspoon
-Then HOLD RIGHT OPTION (⌥) and speak.
+Then HOLD $HOLD_KEY and speak.
 EOF
 fi
 
@@ -206,10 +263,24 @@ echo
 echo "==> Final health check (doctor)..."
 bash "$REPO/doctor.sh" || true
 
-cat <<'EOF'
+cat <<EOF
 
 Microphone: macOS prompts the first time you record. If it doesn't, enable
 Hammerspoon under System Settings > Privacy & Security > Microphone.
 
 The Vox menu-bar icon is the green alien. Enjoy.
 EOF
+
+# --- Background model downloads: say where they stand ---------------
+if [ -f "$PULL_STAMP" ]; then
+  case "$(cat "$PULL_STAMP")" in
+    OK) echo "✅ AI models finished downloading — cleanup, translation and Q&A are live." ;;
+    INCOMPLETE:*)
+      echo "⚠️  Some AI models didn't finish: $(cut -d: -f2 <"$PULL_STAMP")"
+      echo "    Dictation works. Retry anytime:  bash ~/vox/install.sh" ;;
+  esac
+else
+  echo "⬇️  AI models are STILL DOWNLOADING in the background — that's fine."
+  echo "    Dictation works right now. Cleanup/translation/Q&A switch on by themselves."
+  echo "    Watch:  tail -f ~/vox/.ollama-pull.log"
+fi
