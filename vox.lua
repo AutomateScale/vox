@@ -186,6 +186,8 @@ local C = {
   -- Smart ducking: fade playing audio down (not off) while recording,
   -- ramp it back when done. Cleaner mic signal without killing the vibe.
   duckAudio   = true,
+  convLive    = false,               -- experimental: live word-by-word typing
+  alienPlayByPlay = true,            -- the alien narrates sends/handoffs (conv mode)
   duckLevel   = 0.15,                -- audio drops to 15% while recording
   duckMode    = "duck",              -- "duck" | "mute" | "pause" (pause media)
 
@@ -231,7 +233,7 @@ end
 -- Hammerspoon's plist, outside this repo — the auto-updater can't touch it).
 -- Saved picks win over local.lua: they are the most recent expressed intent.
 -- Type-checked against the default so a stale saved value can't wedge boot.
-local PREFS = { "holdKeycode", "holdKeyName", "duckMode", "duckAudio",
+local PREFS = { "holdKeycode", "holdKeyName", "duckMode", "duckAudio", "convLive", "alienPlayByPlay",
                 "keepInClipboard", "llmCleanup", "translateTo",
                 "alienVoiceName", "soundTheme", "language", "memory" }
 local function pref(key, val)
@@ -667,6 +669,49 @@ local function speakAlien(text)
         speakFallback(clean, voice, speed)
       end
     end)
+end
+
+-- ---------------- alien play-by-play (conv mode) -------------
+-- The funny angel on your shoulder. He ONLY speaks while the conv mic is
+-- PARKED — if he talked over a live mic, Vox would faithfully type his
+-- own jokes, and nobody needs that feedback loop.
+ALIEN_QUIPS = {
+  sent = {
+    "Boom. Sent. Go stretch or something.",
+    "Shipped it. Let the silicon sweat now.",
+    "Off it goes. I'd cross my fingers if I had bones.",
+    "Sent, boss. The robot's thinking — you're winning.",
+    "And it's away. Beautiful form on that one.",
+  },
+  ready = {
+    "Answer's up. You're on, champ.",
+    "Robot's done talking. Go get 'em.",
+    "Your turn. Make it spicy.",
+    "Green light. Talk to me.",
+    "Mic's coming back hot. Do your thing.",
+  },
+  timeout = {
+    "That took forever and I got bored. Mic's yours.",
+    "I stopped watching. Talk whenever, boss.",
+  },
+}
+convMuteUntil = 0       -- while now < this, tick treats audio as non-speech
+convMutePurge = false   -- after the window, drop the captured playback bytes
+function alienQuip(kind)
+  if not C.alienPlayByPlay then return end
+  local pool = ALIEN_QUIPS[kind]
+  if not pool then return end
+  convMuteUntil = hs.timer.secondsSinceEpoch() + 3.0
+  convMutePurge = true
+  speakAlien(pool[math.random(#pool)])
+end
+-- ding over a LIVE mic: bell plays, tick ignores it via the mute window
+function dingNow(msg)
+  convMuteUntil = math.max(convMuteUntil, hs.timer.secondsSinceEpoch() + 2.0)
+  convMutePurge = true
+  local g = hs.sound.getByName("Glass")
+  if g then g:volume(1.0):play() else play("done") end
+  if msg then hs.alert.show(msg, 2.0) end
 end
 
 -- ---------------- smart audio ducking -------------------------
@@ -2045,7 +2090,8 @@ local function insertText(text)
         rUp:setFlags({}); rUp:post()
         log("auto-submitted via '" .. trig .. "' — watching for LLM")
         watchLLMCompletion(hs.window.focusedWindow())
-        convPause()
+        alienQuip("sent")          -- mic stays LIVE; quip rides the mute window
+        hs.alert.show("📨 Sent — still listening. Bell = reply landed.", 3)
       end)
     end
     return
@@ -3191,8 +3237,14 @@ function watchLLMCompletion(win)  -- global: see note above convMode
     if not convMode or maxChecks <= 0 then
       if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
       if convMode and state == "idle" then
-        log("LLM watch timeout — re-arming, ding follows mic verification")
-        armThenDing("🔔 Listening... (say 'send' or Fn+Option to stop)")
+        log("LLM watch timeout — bell (mic never left)")
+        alienQuip("timeout")
+        hs.timer.doAfter(C.alienPlayByPlay and 2.0 or 0.05, function()
+          dingNow("🔔 Still listening.")
+          if convMode and state == "idle" then
+            armThenDing("🔔 Listening...")
+          end
+        end)
       end
       return
     end
@@ -3209,8 +3261,14 @@ function watchLLMCompletion(win)  -- global: see note above convMode
           if stableCount >= 2 and not watchDone then
             watchDone = true          -- in-flight OCR callbacks double-fire
             if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
-            log("LLM response completed on screen — re-arming, ding follows mic verification")
-            armThenDing("🔔 LLM ready — listening... (say 'send' or Fn+Option to stop)")
+            log("LLM response completed — bell (mic never left)")
+            alienQuip("ready")
+            hs.timer.doAfter(C.alienPlayByPlay and 2.0 or 0.05, function()
+              dingNow("🔔 Reply's in — mic is live.")
+              if convMode and state == "idle" then   -- edge: mic somehow off
+                armThenDing("🔔 Listening...")
+              end
+            end)
           end
         else
           stableCount = 0
@@ -3336,7 +3394,9 @@ function convExtract()
   convChunkStart = size
   local chunk = tmp("conv-chunk-" .. tostring(size) .. ".wav")
   M.extractTask = hs.task.new("/bin/sh", function(code)
-    if code == 0 then convTranscribe(chunk) else os.remove(chunk) end
+    if code == 0 then
+      if C.convLive then convTranscribeLive(chunk) else convTranscribe(chunk) end
+    else os.remove(chunk) end
   end, { "-c", string.format(
     "/usr/bin/tail -c +%d %s | /usr/bin/head -c %d | " ..
     "%s -t raw -r 16000 -e signed -b 16 -c 1 - %s",
@@ -3365,6 +3425,7 @@ function convPause()
   log("conv mic parked while LLM answers — ding re-arms it")
   -- the park is otherwise invisible and reads as "it died" — say it
   hs.alert.show("⏸ Sent — mic off while the reply writes.\nDing = talk again.", 4)
+  alienQuip("sent")
 end
 
 -- Cut the current conv recording into a chunk and restart the mic.
@@ -3448,10 +3509,122 @@ function convTranscribe(chunk)
         rUp:setFlags({}); rUp:post()
         log("conv: auto-submitted via '" .. trig .. "' — watching for LLM")
         watchLLMCompletion(hs.window.focusedWindow())
-        convPause()
+        alienQuip("sent")          -- mic stays LIVE; quip rides the mute window
+        hs.alert.show("📨 Sent — still listening. Bell = reply landed.", 3)
       end)
     end
   end, { "-c", cmd })
+  M.convSttTask:start()
+end
+
+-- ---------------- live word-by-word typing (experimental) -----
+-- Types partial hypotheses as you speak and REVISES them with backspaces
+-- as whisper refines — iPhone-dictation feel over the continuous stream.
+-- Only the last ~90 chars are revisable (commit horizon); earlier text is
+-- frozen so the line stabilizes left-to-right behind the voice.
+convTypedBuf = ""
+convPartialBusy = false
+convPartialTs = 0
+
+function liveSync(hyp, final)
+  if hyp == nil then return end
+  hyp = hyp:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if #hyp == 0 and not final then return end
+  local typed = convTypedBuf
+  local commitLen = math.max(0, #typed - 90)
+  if commitLen > 0 and hyp:sub(1, commitLen) ~= typed:sub(1, commitLen) then
+    -- hypothesis rewrote text beyond the horizon: extend-only, never churn
+    if #hyp <= #typed then return end
+    local toType = hyp:sub(#typed + 1)
+    hs.eventtap.keyStrokes(toType)
+    convTypedBuf = typed .. toType
+    return
+  end
+  local maxi = math.min(#typed, #hyp)
+  local lcp = commitLen
+  while lcp < maxi and typed:sub(lcp + 1, lcp + 1) == hyp:sub(lcp + 1, lcp + 1) do
+    lcp = lcp + 1
+  end
+  -- never split a UTF-8 sequence: retreat to a char boundary
+  while lcp > commitLen do
+    local byt = typed:byte(lcp + 1)
+    if byt and byt >= 0x80 and byt < 0xC0 then lcp = lcp - 1 else break end
+  end
+  local toType = hyp:sub(lcp + 1)
+  local eraseChars = (lcp < #typed) and (utf8.len(typed, lcp + 1) or (#typed - lcp)) or 0
+  for _ = 1, eraseChars do hs.eventtap.keyStroke({}, "delete", 0) end
+  if #toType > 0 then hs.eventtap.keyStrokes(toType) end
+  convTypedBuf = typed:sub(1, lcp) .. toType
+end
+
+function convPartial()
+  if convPartialBusy then return end
+  local a = hs.fs.attributes(C.wav)
+  local size = a and a.size or 0
+  local len = size - convChunkStart
+  if len < 8000 or len > 640000 then return end   -- 0.25s .. 20s window
+  convPartialBusy = true
+  convPartialTs = hs.timer.secondsSinceEpoch()
+  local pw = tmp("conv-partial.wav")
+  local prompt = ((convLastTail or "") .. " "):gsub('[\\"$`]', "")
+  M.partialTask = hs.task.new("/bin/sh", function(code, out)
+    convPartialBusy = false
+    os.remove(pw)
+    if code ~= 0 or not out then return end
+    if not (convMode and C.convLive and state == "recording") then return end
+    local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
+                    :gsub("^%s+", ""):gsub("%s+$", "")
+    if text:match("^[%(%[].*[%)%]]%.?$") or text:match("^[%.%s…]+$") then return end
+    liveSync(text, false)
+  end, { "-c", string.format(
+    "/usr/bin/tail -c +%d %s | /usr/bin/head -c %d | " ..
+    "%s -t raw -r 16000 -e signed -b 16 -c 1 - %s && " ..
+    "/usr/bin/curl -s --max-time 6 -F file=@%s -F temperature=0.0 " ..
+    "-F prompt=\"%s\" -F response_format=text http://%s:%d/inference",
+    convChunkStart + 1, C.wav, len, C.sox, pw, pw, prompt,
+    C.whisperHost, C.serverPort) })
+  M.partialTask:start()
+end
+
+function convTranscribeLive(chunk)
+  local prompt = (fullVocabulary() .. " " .. (convLastTail or "")):gsub('[\\"$`]', "")
+  M.convSttTask = hs.task.new("/bin/sh", function(code, out)
+    os.remove(chunk)
+    if code ~= 0 or not out or #out:gsub("%s", "") == 0 or out:find('"error"') then
+      convTypedBuf = ""             -- chunk stands as typed; move on
+      return
+    end
+    local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
+                    :gsub("^%s+", ""):gsub("%s+$", "")
+    if text:match("^[%(%[].*[%)%]]%.?$") or text:match("^[%.%s…]+$") then
+      liveSync("", true)            -- junk: erase the revisable tail
+      convTypedBuf = ""
+      return
+    end
+    text = applyCorrections(text)
+    local cleaned, trig = parseSendTrigger(text)
+    liveSync(cleaned, true)
+    if #cleaned > 0 then
+      convLastTail = cleaned:sub(-160)
+      hs.eventtap.keyStrokes(" ")
+    end
+    convTypedBuf = ""
+    log("live chunk final: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
+    if trig then
+      hs.timer.doAfter(0.15, function()
+        local retCode = hs.keycodes.map["return"] or 36
+        local rD = hs.eventtap.event.newKeyEvent(retCode, true); rD:setFlags({}); rD:post()
+        local rU = hs.eventtap.event.newKeyEvent(retCode, false); rU:setFlags({}); rU:post()
+        log("live: auto-submitted via '" .. trig .. "'")
+        watchLLMCompletion(hs.window.focusedWindow())
+        alienQuip("sent")          -- mic stays LIVE; quip rides the mute window
+        hs.alert.show("📨 Sent — still listening. Bell = reply landed.", 3)
+      end)
+    end
+  end, { "-c", string.format(
+    "/usr/bin/curl -s --max-time 20 -F file=@%s -F temperature=0.0 " ..
+    "-F prompt=\"%s\" -F response_format=text http://%s:%d/inference",
+    chunk, prompt, C.whisperHost, C.serverPort) })
   M.convSttTask:start()
 end
 
@@ -3693,6 +3866,12 @@ function startRecording()  -- global by design: see note at top state vars
         if not (convMode and state == "recording" and myTickGen == recGen) then return end
         local peak = tonumber((out or ""):match("Maximum%s+amplitude:%s+([%d%.]+)")) or 0
         local thr = (convVadPct or 0.5) / 100
+        if hs.timer.secondsSinceEpoch() < (convMuteUntil or 0) then
+          peak = 0                    -- our own bell/quip audio: not speech
+        elseif convMutePurge then
+          convMutePurge = false
+          if not hadSpeech then convChunkStart = size end  -- drop playback bytes
+        end
         if peak >= thr then
           hadSpeech = true
           silentTicks = 0
@@ -3706,6 +3885,11 @@ function startRecording()  -- global by design: see note at top state vars
             convExtract()                       -- stream keeps rolling
             hadSpeech, silentTicks = false, 0
             return
+          end
+        end
+        if C.convLive and hadSpeech then
+          if (hs.timer.secondsSinceEpoch() - convPartialTs) > 1.1 then
+            convPartial()
           end
         end
         local chunkSecs = (size - convChunkStart) / 32000
@@ -4258,6 +4442,16 @@ menubar:setMenu(function()
         { title = "Pause media (podcast/music pauses + resumes)", checked = C.duckMode == "pause",
           fn = function() pref("duckMode", "pause"); hs.alert.show("Recording: pause media", 1) end },
       } },
+    { title = "Alien play-by-play (conv mode)", checked = C.alienPlayByPlay,
+      fn = function()
+        pref("alienPlayByPlay", not C.alienPlayByPlay)
+        hs.alert.show("Alien play-by-play: " .. (C.alienPlayByPlay and "ON" or "OFF"), 1.5)
+      end },
+    { title = "Live word-by-word typing (experimental)", checked = C.convLive,
+      fn = function()
+        pref("convLive", not C.convLive)
+        hs.alert.show("Live word-by-word typing: " .. (C.convLive and "ON" or "OFF"), 1.5)
+      end },
     { title = "Hands-Free Conversation Mode (Fn+Option)", checked = convMode,
       fn = function()
         convMode = not convMode
