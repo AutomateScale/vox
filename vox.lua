@@ -2863,6 +2863,7 @@ activeSendTrigger = nil
 convToggleTs = 0
 convLastTail = nil        -- previous chunk's text tail: whisper decode context
 convHealStrikes = 0       -- consecutive stall-heals: drives restart backoff
+convChunkStart = 44       -- byte offset where the NEXT chunk begins in C.wav
 -- VAD silence threshold, calibrated per toggle. A fixed 0.2% assumed a
 -- near-silent mic; this room's floor measures ~0.6% RMS on the RODECaster,
 -- so "below 0.2%" never happened and the auto-stop never fired. We sample
@@ -3095,6 +3096,28 @@ end
 -- chunk file while the live recorder keeps rolling on C.wav. Touches no
 -- recording state, no timers, no reset() — a failed chunk just logs and
 -- dies; the loop never notices. Global (see note above convMode).
+-- Extract the finished chunk from the CONTINUOUSLY-RUNNING recording by
+-- byte range — the recorder is NEVER restarted per chunk. Restarting per
+-- sentence rolled the stall dice on this flaky device every few seconds
+-- (observed: a stall every 10-20s, each eating the user's words). Now the
+-- dice roll once per session; the stream just rolls on.
+function convExtract()
+  local a = hs.fs.attributes(C.wav)
+  local size = a and a.size or 0
+  local len = size - convChunkStart
+  if len < 12000 then convChunkStart = size return end   -- <0.4s: nothing real
+  local from = convChunkStart
+  convChunkStart = size
+  local chunk = tmp("conv-chunk-" .. tostring(size) .. ".wav")
+  M.extractTask = hs.task.new("/bin/sh", function(code)
+    if code == 0 then convTranscribe(chunk) else os.remove(chunk) end
+  end, { "-c", string.format(
+    "/usr/bin/tail -c +%d %s | /usr/bin/head -c %d | " ..
+    "%s -t raw -r 16000 -e signed -b 16 -c 1 - %s",
+    from + 1, C.wav, len, C.sox, chunk) })
+  M.extractTask:start()
+end
+
 -- Park the conv mic entirely (no chunk kept). Used the moment a send
 -- trigger fires: while the LLM answers, the watcher hammers screenshots
 -- and the ding plays through the SAME flaky device — capture during that
@@ -3409,6 +3432,7 @@ function startRecording()  -- global by design: see note at top state vars
   -- (discard) so chunks never carry long dead lead-ins; 90s of nonstop
   -- sound (music/monologue) force-cuts with transcription.
   if convMode then
+    convChunkStart = 44          -- fresh stream file: chunk offset resets
     if timers.convTick then timers.convTick:stop() end
     local hadSpeech, silentTicks, lastSize, stallTicks, busy =
       false, 0, 0, 0, false
@@ -3447,18 +3471,26 @@ function startRecording()  -- global by design: see note at top state vars
         elseif hadSpeech then
           silentTicks = silentTicks + 1
           if silentTicks >= 3 then
-            log(string.format("pause detected (peak %.2f%% < %.2f%%) — cutting chunk",
+            log(string.format("pause detected (peak %.2f%% < %.2f%%) — extracting chunk",
               peak * 100, thr * 100))
-            convHandoff(false)
+            convExtract()                       -- stream keeps rolling
+            hadSpeech, silentTicks = false, 0
             return
           end
         end
-        local secs = (size - 44) / 32000
-        if not hadSpeech and secs > 20 then
-          convHandoff(true)                     -- recycle a silent file
-        elseif secs > 90 then
-          log("90s continuous sound — force-cutting chunk")
-          convHandoff(false)
+        local chunkSecs = (size - convChunkStart) / 32000
+        if not hadSpeech and chunkSecs > 20 then
+          convChunkStart = size                 -- drop dead air, zero cost
+        elseif chunkSecs > 90 then
+          log("90s continuous sound — force-extracting chunk")
+          convExtract()
+          hadSpeech, silentTicks = false, 0
+        end
+        -- session file cap: ~10 min of continuous stream -> one quiet
+        -- restart at a silent moment (the only restart left in the loop)
+        if size > 19000000 and not hadSpeech then
+          log("stream file at ~10min — recycling recorder at a quiet moment")
+          convHandoff(true)
         end
       end, { "-c", string.format(
         "/usr/bin/tail -c 14400 %s | %s -t raw -r 16000 -e signed -b 16 -c 1 - -n stat 2>&1",
