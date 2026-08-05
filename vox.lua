@@ -1806,6 +1806,13 @@ local function insertText(text)
      and lastPasteTail and lastPasteTail:find("[%.!%?…;:,%)\"']")
      and text:find("^[%w\"'%(%[]") then
     text = " " .. text
+  elseif convMode and lastPasteApp == context.app
+     and lastPasteTail and lastPasteTail:find("%w")
+     and text:find("^[%w\"'%(%[]") then
+    -- conv chunks cut MID-SENTENCE: previous chunk often ends on a bare
+    -- word ("...conversation, which") — without this bridge the next
+    -- chunk glues on ("whichCool")
+    text = " " .. text
   end
   lastPasteTail, lastPasteApp = text:sub(-1), context.app
 
@@ -1849,6 +1856,7 @@ local function insertText(text)
         rUp:setFlags({}); rUp:post()
         log("auto-submitted via '" .. trig .. "' — watching for LLM")
         watchLLMCompletion(hs.window.focusedWindow())
+        convPause()
       end)
     end
     return
@@ -2853,6 +2861,8 @@ end
 convMode = false
 activeSendTrigger = nil
 convToggleTs = 0
+convLastTail = nil        -- previous chunk's text tail: whisper decode context
+convHealStrikes = 0       -- consecutive stall-heals: drives restart backoff
 -- VAD silence threshold, calibrated per toggle. A fixed 0.2% assumed a
 -- near-silent mic; this room's floor measures ~0.6% RMS on the RODECaster,
 -- so "below 0.2%" never happened and the auto-stop never fired. We sample
@@ -2927,8 +2937,12 @@ function watchLLMCompletion(win)  -- global: see note above convMode
         local g = hs.sound.getByName("Glass")
         if g then g:volume(1.0):play() else play("done") end
         hs.alert.show("🔔 Listening... (say 'send' or Fn+Option to stop)", 1.5)
-        locked = true
-        startRecording()
+        hs.timer.doAfter(0.6, function()
+          if convMode and state == "idle" then
+            locked = true
+            startRecording()
+          end
+        end)
       end
       return
     end
@@ -3066,6 +3080,27 @@ end
 -- chunk file while the live recorder keeps rolling on C.wav. Touches no
 -- recording state, no timers, no reset() — a failed chunk just logs and
 -- dies; the loop never notices. Global (see note above convMode).
+-- Park the conv mic entirely (no chunk kept). Used the moment a send
+-- trigger fires: while the LLM answers, the watcher hammers screenshots
+-- and the ding plays through the SAME flaky device — capture during that
+-- window just stall-spirals (observed: 8 heals in 27s post-send). The
+-- watcher's completion/timeout re-arm brings the mic back after the ding.
+function convPause()
+  if not (convMode and state == "recording") then return end
+  recGen = recGen + 1
+  if timers.convTick then timers.convTick:stop(); timers.convTick = nil end
+  local pid = recTask and recTask:isRunning() and recTask:pid() or nil
+  if recTask and recTask:isRunning() then recTask:interrupt() end
+  if pid then
+    hs.timer.doAfter(0.5, function()
+      os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
+    end)
+  end
+  os.remove(C.wav)
+  state = "idle"
+  log("conv mic parked while LLM answers — ding re-arms it")
+end
+
 -- Cut the current conv recording into a chunk and restart the mic.
 -- Bumps recGen FIRST so the dying recorder's exit callback is inert, gives
 -- sox a beat to finalize the WAV after SIGINT (with a guaranteed kill
@@ -3082,7 +3117,8 @@ function convHandoff(discard)
       os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
     end)
   end
-  timers.convHandoff = hs.timer.doAfter(0.25, function()
+  local beat = 0.15 + math.min((convHealStrikes or 0) * 0.5, 3)
+  timers.convHandoff = hs.timer.doAfter(beat, function()
     timers.convHandoff = nil
     if not convMode then                 -- toggled off mid-handoff
       os.remove(C.wav)
@@ -3100,7 +3136,10 @@ end
 
 function convTranscribe(chunk)
   local norm = chunk .. "-n.wav"
-  local promptStr = fullVocabulary():gsub('[\\"$`]', "")
+  -- carry the previous chunk's tail as decode context: whisper continues
+  -- "...the one conversation, which" far more accurately than starting cold
+  local promptStr = (fullVocabulary() .. " "
+    .. (convLastTail or "")):gsub('[\\"$`]', "")
   local cmd = string.format(
     "%s %s %s highpass 80 norm -3 silence 1 0.1 0.6%% reverse" ..
     " silence 1 0.30 0.6%% reverse pad 0 0.15 2>/dev/null || cp %s %s; " ..
@@ -3131,6 +3170,7 @@ function convTranscribe(chunk)
     text = cleanFillers(text)
     text = collapseRepeats(text)
     local cleaned, trig = parseSendTrigger(text)
+    if #cleaned > 0 then convLastTail = cleaned:sub(-160) end
     log("conv chunk: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
     if #cleaned > 0 then insertText(cleaned) end
     if trig then
@@ -3142,6 +3182,7 @@ function convTranscribe(chunk)
         rUp:setFlags({}); rUp:post()
         log("conv: auto-submitted via '" .. trig .. "' — watching for LLM")
         watchLLMCompletion(hs.window.focusedWindow())
+        convPause()
       end)
     end
   end, { "-c", cmd })
@@ -3369,9 +3410,12 @@ function startRecording()  -- global by design: see note at top state vars
       -- even pure silence writes bytes every ~32ms, so 1.6s without a
       -- single byte = the stream has stalled (this RODECaster stalls
       -- OFTEN — observed twice a minute). Cold device opens get 4s grace.
+      if stallTicks == 0 and size > 44 then convHealStrikes = 0 end
       local stallLimit = (size <= 44) and 10 or 4
       if stallTicks >= stallLimit then
-        log("conv recorder DEAF (stream stalled) — healing")
+        convHealStrikes = (convHealStrikes or 0) + 1
+        log("conv recorder DEAF (stream stalled) — healing (strike "
+            .. convHealStrikes .. ")")
         convHandoff(true)
         return
       end
