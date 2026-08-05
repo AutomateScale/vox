@@ -1724,6 +1724,7 @@ local function reset()
   if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
+  if timers.convDeaf then timers.convDeaf:stop(); timers.convDeaf = nil end
   if timers.soxKill then timers.soxKill:stop(); timers.soxKill = nil end
   if timers.soxKill9 then timers.soxKill9:stop(); timers.soxKill9 = nil end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
@@ -3354,6 +3355,50 @@ function startRecording()  -- global by design: see note at top state vars
       stopRecording()
     end
     timers.convCap = hs.timer.doAfter(25, capCheck)
+    -- DEAF-MIC DETECTOR: gapless re-arms occasionally hand sox a wedged
+    -- coreaudio stream that delivers NOTHING — indistinguishable from a
+    -- quiet user by file size alone (the unarmed gate withholds all
+    -- output either way). So while the gate is unarmed, a 0.4s probe
+    -- samples the room every ~6s: room sound + empty recorder = wedge.
+    -- Kill it (TERM then KILL — wedged sox ignores TERM) and restart.
+    local function deafProbe()
+      timers.convDeaf = nil
+      if not (convMode and state == "recording" and myGen == recGen) then return end
+      local a = hs.fs.attributes(C.wav)
+      if a and a.size > 4096 then return end  -- armed: VAD owns it now
+      local pw = tmp("deafprobe.wav")
+      os.remove(pw)
+      M.deafTask = hs.task.new("/bin/sh", function(_, out)
+        os.remove(pw)
+        if not (convMode and state == "recording" and myGen == recGen) then return end
+        local rms = tonumber((out or ""):match("RMS%s+amplitude:%s+([%d%.]+)")) or 0
+        local thr = (convVadPct or 0.5) / 100
+        local b = hs.fs.attributes(C.wav)
+        if rms >= thr and (not b or b.size < 4096) then
+          log(string.format(
+            "DEAF recorder: room at %.2f%% but mic heard nothing — restarting",
+            rms * 100))
+          local pid = recTask and recTask:pid()
+          recGen = recGen + 1               -- invalidate wedged callback
+          if recTask and recTask:isRunning() then recTask:terminate() end
+          if pid then
+            hs.timer.doAfter(0.4, function()
+              os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
+            end)
+          end
+          state = "idle"
+          locked = true
+          startRecording()
+          return
+        end
+        timers.convDeaf = hs.timer.doAfter(6, deafProbe)
+      end, { "-c", string.format(
+        "%s -q -d -c 1 -r 16000 -b 16 %s trim 0 0.4 2>/dev/null; %s %s -n stat 2>&1",
+        C.sox, pw, C.sox, pw) })
+      M.deafTask:start()
+    end
+    if timers.convDeaf then timers.convDeaf:stop() end
+    timers.convDeaf = hs.timer.doAfter(6, deafProbe)
   end
   -- screen-aware dictation: OCR the target window WHILE recording (free time)
   local function startCtxOCR()
@@ -3452,7 +3497,16 @@ local function cancelRecording()
   state = "idle"
   recGen = recGen + 1            -- invalidates the recorder's exit callback
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
-  if recTask and recTask:isRunning() then recTask:terminate() end
+  if recTask and recTask:isRunning() then
+    local pid = recTask:pid()
+    recTask:terminate()
+    -- wedged sox (unarmed VAD gate) ignores TERM — make death certain
+    if pid then
+      hs.timer.doAfter(0.5, function()
+        os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
+      end)
+    end
+  end
   reset()
 end
 
@@ -3463,6 +3517,7 @@ function stopRecording()  -- global by design: see note at top state vars
   if timers.stuckKey then timers.stuckKey:stop() end
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
+  if timers.convDeaf then timers.convDeaf:stop(); timers.convDeaf = nil end
   setUI("work")
   duckUp()                       -- music fades back while we transcribe
   play("stop")
