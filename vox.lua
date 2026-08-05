@@ -131,6 +131,12 @@ local C = {
   -- Tiny idle alien: a minimal, mostly-still cutie at the bottom edge when
   -- Vox is idle. Click him to start/stop a hands-free dictation.
   miniAlien = true,
+  -- "mini": the little alien stays put and shows every state itself —
+  -- listening, thinking, done — so nothing new appears over your work.
+  -- "pill": the original 150x70 bar-graph pill that replaced him while
+  -- recording. It reads well in a demo and is a lot of screen the rest of
+  -- the time.
+  hudStyle  = "mini",
 
   -- Where the recording alien pops up — a SET, pick any combo from the
   -- menubar (persisted): window = he rises out of the window you're
@@ -792,7 +798,12 @@ end
 -- buttons: C = speak-to-content, P = absorb the screen into memory.
 -- Click the alien himself for hands-free dictation.
 local mini = { canvas = nil, timer = nil, phase = 0,
-               nextBlink = 20, blinkUntil = 0, act = {} }
+               nextBlink = 20, blinkUntil = 0, act = {},
+               -- "idle" | "rec" (listening) | "work" (transcribing).
+               -- The alien is the whole interface in mini style, so his own
+               -- colour and pulse have to carry the state that the pill's
+               -- bar graph used to.
+               mode = "idle", level = 0 }
 local MW, MH, MOFF = 74, 30, 24        -- canvas w/h, alien x-offset
 
 local function miniEnsure()
@@ -894,10 +905,38 @@ local function miniTick()
   c[8].fillColor = { red = 1, green = 1, blue = 1, alpha = ga }
   c[7].frame = { x = MOFF + 10.7 + lookX, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
   c[8].frame = { x = MOFF + 15.7 + lookX, y = ey + eh * 0.15, w = 1.2, h = 1.4 }
+
+  -- ---- state, shown on the alien himself --------------------------------
+  -- In mini style he never steps aside for the pill, so he has to say what
+  -- is happening. Cyan while listening (brightening with your voice), violet
+  -- while transcribing (a slow think-pulse), mint at rest. Same colour
+  -- language the pill used, on a tenth of the pixels.
+  local head, glow
+  if mini.mode == "rec" then
+    local lv = math.min(1, mini.level * 3.2)
+    head = { { red = 0.55 + lv * 0.3, green = 0.95, blue = 1.0, alpha = 1 },
+             { red = 0.20, green = 0.72 + lv * 0.2, blue = 0.95, alpha = 1 } }
+    glow = 0.85 + lv * 0.15
+  elseif mini.mode == "work" then
+    local pulse = 0.5 + 0.5 * math.sin(mini.phase * 0.22)
+    head = { { red = 0.85, green = 0.72, blue = 1.0, alpha = 1 },
+             { red = 0.55, green = 0.36 + pulse * 0.12, blue = 0.95, alpha = 1 } }
+    glow = 0.72 + pulse * 0.2
+  else
+    head = { { red = 0.72, green = 1.0,  blue = 0.88, alpha = 1 },
+             { red = 0.40, green = 0.90, blue = 0.66, alpha = 1 } }
+    glow = 0.55                       -- unobtrusive when there is nothing to say
+  end
+  c[1].fillGradientColors = head
+  c[5].strokeColor = head[1]
+  c[6].fillColor = head[1]
+  c:alpha(glow)
 end
 
 local function miniShow()
-  if not C.miniAlien or hud.visible then return end
+  if not C.miniAlien then return end
+  -- Only stand aside for the pill when the pill is actually in use.
+  if C.hudStyle ~= "mini" and hud.visible then return end
   miniEnsure()
   -- primary screen, always: mainScreen() follows keyboard focus, which on
   -- multi-monitor setups strands the alien on whatever display had focus
@@ -1310,6 +1349,26 @@ local function hudMirrorsBuild(positions)
 end
 
 local function hudShow(mode)
+  -- Mini style: the alien keeps the stage and changes colour instead of a
+  -- 150x70 panel appearing over whatever you were looking at. This is the
+  -- default because the pill's real estate cost is paid on every single
+  -- dictation, while its extra detail — an 8-bar level meter — is something
+  -- the alien's own brightness already conveys.
+  if C.hudStyle == "mini" and C.miniAlien then
+    mini.mode = mode
+    miniShow()
+    if not mini.timer then
+      mini.timer = hs.timer.doEvery(0.25, safeTick("miniTick", miniTick))
+    end
+    -- Sample the mic often enough for the glow to track the voice; the mini
+    -- tick alone (250ms) is too coarse to read as responsive.
+    if not mini.lvlTimer then
+      mini.lvlTimer = hs.timer.doEvery(0.08, safeTick("miniLevel", function()
+        mini.level = (mini.mode == "rec") and micLevel() or 0
+      end))
+    end
+    return
+  end
   miniHide()
   hudEnsure()
   hud.mode = mode
@@ -1337,6 +1396,12 @@ local function hudShow(mode)
 end
 
 local function hudHide()
+  if C.hudStyle == "mini" and C.miniAlien then
+    mini.mode, mini.level = "idle", 0
+    if mini.lvlTimer then mini.lvlTimer:stop(); mini.lvlTimer = nil end
+    miniShow()
+    return
+  end
   if not hud.visible then
     if hud.timer then hud.timer:stop(); hud.timer = nil end
     if hud.canvas then hud.canvas:hide() end
@@ -4117,6 +4182,18 @@ menubar:setMenu(function()
       fn = function()
         C.miniAlien = not C.miniAlien
         if C.miniAlien then miniShow() else miniHide() end
+      end },
+    { title = "Big pill while recording (instead of just the alien)",
+      checked = C.hudStyle ~= "mini",
+      fn = function()
+        C.hudStyle = (C.hudStyle == "mini") and "pill" or "mini"
+        -- Tear down whichever overlay is now wrong so the change is visible
+        -- immediately rather than at the next dictation.
+        hudHide(); miniHide()
+        mini.mode, mini.level = "idle", 0
+        if C.miniAlien then miniShow() end
+        hs.alert.show(C.hudStyle == "mini"
+          and "Vox: state shows on the alien" or "Vox: big pill while recording", 1.5)
       end },
     { title = "Alien voice playback (Kokoro Neural AI)", menu = {
         { title = "Voice output (on/off)", checked = C.alienVoice,
