@@ -3395,7 +3395,10 @@ function convExtract()
   local chunk = tmp("conv-chunk-" .. tostring(size) .. ".wav")
   M.extractTask = hs.task.new("/bin/sh", function(code)
     if code == 0 then
-      if C.convLive then convTranscribeLive(chunk) else convTranscribe(chunk) end
+      if C.convLive then
+        convFinalPending = true     -- hold partials until this final lands
+        convTranscribeLive(chunk)
+      else convTranscribe(chunk) end
     else os.remove(chunk) end
   end, { "-c", string.format(
     "/usr/bin/tail -c +%d %s | /usr/bin/head -c %d | " ..
@@ -3531,16 +3534,9 @@ convPartialTs = 0
 -- revision horizon): ellipsis litter, no-space boundary echoes
 -- ("paragraph?paragraph?"), fillers, spacing — then revise the screen
 -- with one unlimited-depth diff before the Return fires.
-function convSweep()
-  local t = convLedger .. convTypedBuf
-  if #t == 0 then return end
-  local c = t
-  c = c:gsub("%s*%.%.%.+%s*", " ")
-  c = c:gsub("%s*…+%s*", " ")
-  c = c:gsub("(%a[%w']*%p)%1", "%1")        -- "word?word?" boundary echo
-  c = cleanFillers(c)
-  c = c:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-  if c == t then return end
+-- revise on-screen text from `t` to `c` with one unlimited-depth diff
+function screenRevise(t, c)
+  if t == c then return end
   local maxi = math.min(#t, #c)
   local lcp = 0
   while lcp < maxi and t:sub(lcp + 1, lcp + 1) == c:sub(lcp + 1, lcp + 1) do
@@ -3554,8 +3550,59 @@ function convSweep()
   for _ = 1, eraseChars do hs.eventtap.keyStroke({}, "delete", 0) end
   local toType = c:sub(lcp + 1)
   if #toType > 0 then hs.eventtap.keyStrokes(toType) end
-  log(string.format("deep sweep: %d chars cleaned", eraseChars))
+end
+
+-- Deep sweep, two passes: (1) instant regex hygiene, (2) a fast local-LLM
+-- SEMANTIC pass — "deep-sea sweep" becomes "deep sweep" because the model
+-- reads context ("just think about it" — Adam). The Return fires via cb()
+-- once, whether the LLM answers, fails, or times out at 5s.
+function convSweep(cb)
+  cb = cb or function() end
+  local t = convLedger .. convTypedBuf
+  if #t == 0 then cb() return end
+  local c = t
+  c = c:gsub("%s*%.%.%.+%s*", " ")
+  c = c:gsub("%s*…+%s*", " ")
+  c = c:gsub("(%a[%w']*%p)%1", "%1")        -- "word?word?" boundary echo
+  c = cleanFillers(c)
+  c = c:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if c ~= t then
+    screenRevise(t, c)
+    log(string.format("deep sweep: regex pass revised %d -> %d chars", #t, #c))
+  end
   convLedger, convTypedBuf = c, ""
+  if not ollamaIsLocal() or #c < 20 or #c > 1500 then cb() return end
+  local done = false
+  local function finish()
+    if not done then done = true; cb() end
+  end
+  timers.sweepTimeout = hs.timer.doAfter(5, finish)
+  hs.http.asyncPost(C.ollamaUrl, hs.json.encode({
+    model = C.models.fast, stream = false,
+    options = { temperature = 0, num_predict = 500 },
+    prompt = "Fix ONLY obvious speech-to-text transcription errors in the dictation below: "
+      .. "mistranscribed words that don't fit the context, duplicated false starts, stray artifacts. "
+      .. "Keep the speaker's exact wording, tone, slang and profanity. Never rephrase, summarize, "
+      .. "censor, or add words. Reply with ONLY the corrected text and nothing else.\n\nDICTATION:\n" .. c,
+  }), { ["Content-Type"] = "application/json" }, function(status, body)
+    if timers.sweepTimeout then timers.sweepTimeout:stop(); timers.sweepTimeout = nil end
+    if not done and status == 200 then
+      local ok, j = pcall(hs.json.decode, body)
+      local fixed = ok and j and j.response or nil
+      if fixed then
+        fixed = fixed:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+        local cur = convLedger
+        if #fixed > 0 and fixed ~= cur
+           and #fixed > math.floor(#cur * 0.5)
+           and #fixed < math.floor(#cur * 1.6) then
+          screenRevise(cur, fixed)
+          convLedger = fixed
+          log("deep sweep: semantic pass applied")
+        end
+      end
+    end
+    finish()
+  end)
 end
 
 function liveSync(hyp, final)
@@ -3589,8 +3636,9 @@ function liveSync(hyp, final)
   convTypedBuf = typed:sub(1, lcp) .. toType
 end
 
+convFinalPending = false
 function convPartial()
-  if convPartialBusy then return end
+  if convPartialBusy or convFinalPending then return end
   local a = hs.fs.attributes(C.wav)
   local size = a and a.size or 0
   local len = size - convChunkStart
@@ -3624,6 +3672,7 @@ function convTranscribeLive(chunk)
   local prompt = (fullVocabulary() .. " " .. (convLastTail or "")):gsub('[\\"$`]', "")
   M.convSttTask = hs.task.new("/bin/sh", function(code, out)
     os.remove(chunk)
+    convFinalPending = false        -- partials may flow again
     if code ~= 0 or not out or #out:gsub("%s", "") == 0 or out:find('"error"') then
       convLedger = convLedger .. convTypedBuf   -- stands as typed
       convTypedBuf = ""
@@ -3652,15 +3701,16 @@ function convTranscribeLive(chunk)
     log("live chunk final: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
     if trig then
       hs.timer.doAfter(0.15, function()
-        convSweep()                 -- the whole-paragraph cleanup pass
-        local retCode = hs.keycodes.map["return"] or 36
-        local rD = hs.eventtap.event.newKeyEvent(retCode, true); rD:setFlags({}); rD:post()
-        local rU = hs.eventtap.event.newKeyEvent(retCode, false); rU:setFlags({}); rU:post()
-        convLedger = ""             -- sent: fresh paragraph
-        log("live: auto-submitted via '" .. trig .. "'")
-        watchLLMCompletion(hs.window.focusedWindow())
-        alienQuip("sent")          -- mic stays LIVE; quip rides the mute window
-        hs.alert.show("📨 Sent — still listening. Bell = reply landed.", 3)
+        convSweep(function()        -- regex + semantic passes, then submit
+          local retCode = hs.keycodes.map["return"] or 36
+          local rD = hs.eventtap.event.newKeyEvent(retCode, true); rD:setFlags({}); rD:post()
+          local rU = hs.eventtap.event.newKeyEvent(retCode, false); rU:setFlags({}); rU:post()
+          convLedger = ""           -- sent: fresh paragraph
+          log("live: auto-submitted via '" .. trig .. "'")
+          watchLLMCompletion(hs.window.focusedWindow())
+          alienQuip("sent")         -- mic stays LIVE; quip rides the mute window
+          hs.alert.show("📨 Sent — still listening. Bell = reply landed.", 3)
+        end)
       end)
     end
   end, { "-c", string.format(
