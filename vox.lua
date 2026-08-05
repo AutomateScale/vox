@@ -2890,6 +2890,14 @@ function parseSendTrigger(tStr)  -- global: see note above convMode
     local tail = " " .. trig
     if lower:sub(-#tail) == tail then
       local prefix = clean:sub(1, #clean - #trig):gsub("[%s%,;%-%_]+$", "")
+      -- "Okay send" should submit WITHOUT pasting the "Okay": when all
+      -- that precedes the trigger is verbal filler, erase it entirely
+      local bare = prefix:lower():gsub("%p", ""):gsub("^%s+", ""):gsub("%s+$", "")
+      if bare == "" or bare == "ok" or bare == "okay" or bare == "alright"
+         or bare == "all right" or bare == "yeah" or bare == "yep"
+         or bare == "um" or bare == "uh" or bare == "so" or bare == "and" then
+        return "", trig
+      end
       return prefix, trig
     end
   end
@@ -3317,17 +3325,31 @@ function startRecording()  -- global by design: see note at top state vars
     end
   end, soxArgs)
   recTask:start()
-  -- conv-mode safety net: if the VAD never fires (threshold drift, device
-  -- wedge), force-complete the utterance rather than recording forever
+  -- conv-mode safety net, quietness-aware: an UNARMED gate (file still
+  -- empty) means the user is just quiet — reading, thinking. Listening is
+  -- free, so keep listening instead of churning a noisy kill cycle every
+  -- 25s. Only continuous SOUND that never pauses (music, saturated mic)
+  -- gets force-completed, and only after ~75s so long monologues survive.
   if convMode then
     if timers.convCap then timers.convCap:stop() end
-    timers.convCap = hs.timer.doAfter(25, function()
+    local capStrikes = 0
+    local function capCheck()
       timers.convCap = nil
-      if convMode and state == "recording" and myGen == recGen then
-        log("conv VAD never fired within 25s — force-completing utterance")
-        stopRecording()
+      if not (convMode and state == "recording" and myGen == recGen) then return end
+      local a = hs.fs.attributes(C.wav)
+      if not a or a.size < 4096 then
+        timers.convCap = hs.timer.doAfter(25, capCheck)  -- quiet: listen on
+        return
       end
-    end)
+      capStrikes = capStrikes + 1
+      if capStrikes < 3 then
+        timers.convCap = hs.timer.doAfter(25, capCheck)  -- talking: let them finish
+        return
+      end
+      log("conv recorder saturated (~75s continuous sound) — force-completing")
+      stopRecording()
+    end
+    timers.convCap = hs.timer.doAfter(25, capCheck)
   end
   -- screen-aware dictation: OCR the target window WHILE recording (free time)
   local function startCtxOCR()
