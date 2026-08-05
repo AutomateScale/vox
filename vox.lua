@@ -3289,7 +3289,9 @@ function startRecording()  -- global by design: see note at top state vars
     -- after 0.7s of "silence" following speech. The threshold is calibrated
     -- against the room's measured noise floor at toggle-ON (a fixed 0.2%
     -- never fired on pro interfaces whose floor sits above it).
-    local pct = string.format("%.2f%%", convVadPct or 1.0)
+    -- uncalibrated fallback 0.5%: calibrated sessions on this rig land
+    -- 0.4-0.67%, so 1.0% was deaf to quiet short commands like "ok send"
+    local pct = string.format("%.2f%%", convVadPct or 0.5)
     table.insert(soxArgs, "silence")
     table.insert(soxArgs, "1")
     -- 0.1s sustained sound to arm: short punchy commands ("ok send" is two
@@ -3585,7 +3587,17 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
         play("start")
         hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'ok go' or 'send' to submit (Fn+Option to stop)", 2.5)
         duckDown(true)             -- pause media ONCE for the whole session
-        if recTask and recTask:isRunning() then recTask:terminate() end
+        -- Option-first chord order starts a plain hold-to-talk recording a
+        -- few ms before the toggle lands. CANCEL it properly (recGen bump
+        -- invalidates its exit callback) — a bare terminate() left state
+        -- 'recording', which SKIPPED calibration and armed the session on
+        -- a wrong default threshold. convMode flips off around the cancel
+        -- so reset()'s conv re-arm can't race the calibrated arm below.
+        if state == "recording" then
+          convMode = false
+          cancelRecording()
+          convMode = true
+        end
         if state == "idle" then
           -- measure the room's noise floor first so the VAD threshold is
           -- real for THIS mic and room, then arm
@@ -3869,7 +3881,11 @@ menubar:setMenu(function()
           play("start")
           hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'send' or 'over' when done talking (Fn+Option to stop)", 2.5)
           duckDown(true)           -- pause media ONCE for the whole session
-          if recTask and recTask:isRunning() then recTask:terminate() end
+          if state == "recording" then  -- stale hold-rec: cancel cleanly
+            convMode = false
+            cancelRecording()
+            convMode = true
+          end
           if state == "idle" then
             convCalibrate(function()
               if convMode and state == "idle" then
