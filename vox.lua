@@ -3694,7 +3694,9 @@ function startRecording()  -- global by design: see note at top state vars
           silentTicks = 0
         elseif hadSpeech then
           silentTicks = silentTicks + 1
-          if silentTicks >= 3 then
+          -- 2 ticks (~0.8s) — snappier phrase turnaround; the continuous
+          -- stream + decode-context carry keep accuracy through short cuts
+          if silentTicks >= 2 then
             log(string.format("pause detected (peak %.2f%% < %.2f%%) — extracting chunk",
               peak * 100, thr * 100))
             convExtract()                       -- stream keeps rolling
