@@ -2917,6 +2917,38 @@ function parseSendTrigger(tStr)  -- global: see note above convMode
   return tStr, nil
 end
 
+-- Re-arm the conv mic and ding ONLY once audio bytes are verifiably
+-- flowing — a stillborn recorder (common on this device) used to eat the
+-- user's first sentences right after a ding that promised "I'm listening".
+function armThenDing(msg)
+  if not (convMode and state == "idle") then return end
+  locked = true
+  startRecording()
+  local tries = 0
+  local function check()
+    timers.armDing = nil
+    if not convMode then return end
+    local a = hs.fs.attributes(C.wav)
+    if a and a.size > 44 then
+      local g = hs.sound.getByName("Glass")
+      if g then g:volume(1.0):play() else play("done") end
+      hs.alert.show(msg, 2.0)
+      log("mic verified live — ding")
+      return
+    end
+    tries = tries + 1
+    if tries < 10 then
+      timers.armDing = hs.timer.doAfter(0.5, check)   -- tick heals meanwhile
+    else
+      log("mic still not flowing after 5s — dinging anyway (heal continues)")
+      local g = hs.sound.getByName("Glass")
+      if g then g:volume(1.0):play() else play("done") end
+      hs.alert.show(msg, 2.0)
+    end
+  end
+  timers.armDing = hs.timer.doAfter(0.6, check)
+end
+
 function watchLLMCompletion(win)  -- global: see note above convMode
   if not convMode then return end
   local wid = win and win:id()
@@ -2925,24 +2957,15 @@ function watchLLMCompletion(win)  -- global: see note above convMode
   if not hs.fs.attributes(ocrBin) then return end
 
   if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
-  local lastLen, stableCount, maxChecks = -1, 0, 40
+  local lastLen, stableCount, maxChecks, watchDone = -1, 0, 40, false
 
   timers.convWatch = hs.timer.doEvery(0.6, function()
     maxChecks = maxChecks - 1
     if not convMode or maxChecks <= 0 then
       if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
       if convMode and state == "idle" then
-        log("LLM watch timeout — auto-re-arming conversation mode")
-        -- unmistakable "your turn" ding — distinct from Vox's own blips
-        local g = hs.sound.getByName("Glass")
-        if g then g:volume(1.0):play() else play("done") end
-        hs.alert.show("🔔 Listening... (say 'send' or Fn+Option to stop)", 1.5)
-        hs.timer.doAfter(0.6, function()
-          if convMode and state == "idle" then
-            locked = true
-            startRecording()
-          end
-        end)
+        log("LLM watch timeout — re-arming, ding follows mic verification")
+        armThenDing("🔔 Listening... (say 'send' or Fn+Option to stop)")
       end
       return
     end
@@ -2956,19 +2979,11 @@ function watchLLMCompletion(win)  -- global: see note above convMode
         local curLen = #txt:gsub("%s", "")
         if curLen > 30 and curLen == lastLen then
           stableCount = stableCount + 1
-          if stableCount >= 2 then
+          if stableCount >= 2 and not watchDone then
+            watchDone = true          -- in-flight OCR callbacks double-fire
             if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
-            log("LLM response completed on screen — re-arming conversation mode")
-            -- unmistakable "your turn" ding — distinct from Vox's own blips
-            local g = hs.sound.getByName("Glass")
-            if g then g:volume(1.0):play() else play("done") end
-            hs.alert.show("🔔 LLM ready — listening... (say 'send' or Fn+Option to stop)", 2.5)
-            hs.timer.doAfter(0.3, function()
-              if convMode and state == "idle" then
-                locked = true
-                startRecording()
-              end
-            end)
+            log("LLM response completed on screen — re-arming, ding follows mic verification")
+            armThenDing("🔔 LLM ready — listening... (say 'send' or Fn+Option to stop)")
           end
         else
           stableCount = 0
@@ -3411,7 +3426,7 @@ function startRecording()  -- global by design: see note at top state vars
       -- single byte = the stream has stalled (this RODECaster stalls
       -- OFTEN — observed twice a minute). Cold device opens get 4s grace.
       if stallTicks == 0 and size > 44 then convHealStrikes = 0 end
-      local stallLimit = (size <= 44) and 10 or 4
+      local stallLimit = (size <= 44) and 6 or 4
       if stallTicks >= stallLimit then
         convHealStrikes = (convHealStrikes or 0) + 1
         log("conv recorder DEAF (stream stalled) — healing (strike "
