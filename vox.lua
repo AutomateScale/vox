@@ -1828,9 +1828,30 @@ local function insertText(text)
       end
     end)
   end
-  play("done")
   rememberText(text, nextMemMode)         -- the alien remembers
   nextMemMode = "dictate"
+  if convMode and state == "recording" then
+    -- gapless conversation flow: the mic is LIVE while this paste lands.
+    -- Do NOT idle the state machine, beep the speakers (the mic hears
+    -- them), hide the recording UI, or touch C.wav — that's the recorder's
+    -- open file, not our finished chunk.
+    hudEmote(detectEmotion(text))
+    if activeSendTrigger then          -- serial-path utterance ended "ok go"
+      local trig = activeSendTrigger
+      activeSendTrigger = nil
+      hs.timer.doAfter(0.25, function()
+        local retCode = hs.keycodes.map["return"] or 36
+        local rDown = hs.eventtap.event.newKeyEvent(retCode, true)
+        rDown:setFlags({}); rDown:post()
+        local rUp = hs.eventtap.event.newKeyEvent(retCode, false)
+        rUp:setFlags({}); rUp:post()
+        log("auto-submitted via '" .. trig .. "' — watching for LLM")
+        watchLLMCompletion(hs.window.focusedWindow())
+      end)
+    end
+    return
+  end
+  play("done")
   -- idle everything, but let the alien react to what you said first
   state, locked, pendingTap = "idle", false, false
   duckUp()
@@ -2840,8 +2861,9 @@ function convCalibrate(done)
   M.convCalTask = hs.task.new("/bin/sh", function(_, out)
     local rms = tonumber((out or ""):match("RMS%s+amplitude:%s+([%d%.]+)"))
     if rms then
-      -- 4x the noise floor, clamped to a sane band
-      convVadPct = math.max(0.5, math.min(6, rms * 4 * 100))
+      -- 2.5x the noise floor, clamped to a sane band (4x treated quiet
+      -- speech as silence on the low-gain RODECaster — chopped mid-word)
+      convVadPct = math.max(0.4, math.min(6, rms * 2.5 * 100))
       log(string.format("conv VAD calibrated: floor RMS %.2f%% -> threshold %.2f%%",
         rms * 100, convVadPct))
     else
@@ -3028,6 +3050,60 @@ local function handleTranscript(raw, t0)
   end
 end
 
+-- ---------------- conversation-mode chunk pipeline ------------
+-- Side-band transcription for the gapless loop: operates on a STASHED
+-- chunk file while the live recorder keeps rolling on C.wav. Touches no
+-- recording state, no timers, no reset() — a failed chunk just logs and
+-- dies; the loop never notices. Global (see note above convMode).
+function convTranscribe(chunk)
+  local norm = chunk .. "-n.wav"
+  local promptStr = fullVocabulary():gsub('[\\"$`]', "")
+  local cmd = string.format(
+    "%s %s %s highpass 80 norm -3 2>/dev/null || cp %s %s; " ..
+    "SIZE=$(/usr/bin/stat -f%%z %s 2>/dev/null || echo 0); " ..
+    "[ \"$SIZE\" -lt 8000 ] && exit 42; " ..
+    "/usr/bin/curl -s --max-time 30 -F file=@%s -F temperature=0.0 " ..
+    "-F prompt=\"%s\" -F response_format=text http://%s:%d/inference",
+    C.sox, chunk, norm, chunk, norm, norm, norm,
+    promptStr, C.whisperHost, C.serverPort)
+  M.convSttTask = hs.task.new("/bin/sh", function(code, out)
+    os.remove(chunk); os.remove(norm)
+    if code == 42 then log("conv chunk: silence, skipped") return end
+    if code ~= 0 or not out or #out:gsub("%s", "") == 0
+       or out:find('"error"') then
+      log("conv chunk transcription failed (code " .. tostring(code) .. ")")
+      return
+    end
+    local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
+                    :gsub("^%s+", ""):gsub("%s+$", "")
+    -- drop non-speech annotations: whisper renders dings/music the mic
+    -- overhears as "(bell dings)" / "[Music]" / "..." — never paste those
+    if #text == 0 or text:match("^[%(%[].*[%)%]]%.?$")
+       or text:match("^[%.%s…]+$") then
+      log("conv chunk: non-speech (" .. text:sub(1, 30) .. "), skipped")
+      return
+    end
+    text = applyCorrections(text)
+    text = cleanFillers(text)
+    text = collapseRepeats(text)
+    local cleaned, trig = parseSendTrigger(text)
+    log("conv chunk: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
+    if #cleaned > 0 then insertText(cleaned) end
+    if trig then
+      hs.timer.doAfter(#cleaned > 0 and 0.25 or 0.05, function()
+        local retCode = hs.keycodes.map["return"] or 36
+        local rDown = hs.eventtap.event.newKeyEvent(retCode, true)
+        rDown:setFlags({}); rDown:post()
+        local rUp = hs.eventtap.event.newKeyEvent(retCode, false)
+        rUp:setFlags({}); rUp:post()
+        log("conv: auto-submitted via '" .. trig .. "' — watching for LLM")
+        watchLLMCompletion(hs.window.focusedWindow())
+      end)
+    end
+  end, { "-c", cmd })
+  M.convSttTask:start()
+end
+
 -- slow path: only used if the server is down (also restarts it)
 -- screen-OCR cache: rapid consecutive dictations into the SAME window reuse
 -- the words instead of re-screenshotting + re-OCRing every time (Gemini's
@@ -3207,20 +3283,35 @@ function startRecording()  -- global by design: see note at top state vars
     local pct = string.format("%.2f%%", convVadPct or 1.0)
     table.insert(soxArgs, "silence")
     table.insert(soxArgs, "1")
-    -- 0.35s SUSTAINED sound to arm: Vox's own start-blip through the
-    -- speakers (~0.15s) was arming the gate, instantly "completing" an
-    -- empty recording. Speech sustains well past 0.35s; blips don't.
-    table.insert(soxArgs, "0.35")
+    -- 0.2s sustained sound to arm (loop beeps are silenced now, so this
+    -- only needs to reject clicks — and eats less of the first word).
+    -- 1.2s of quiet ends a chunk: 0.7s chopped mid-THOUGHT constantly;
+    -- natural thinking pauses need more room, and the gapless handoff
+    -- means a longer window costs nothing in lost speech.
+    table.insert(soxArgs, "0.2")
     table.insert(soxArgs, pct)
     table.insert(soxArgs, "1")
-    table.insert(soxArgs, "0.7")
+    table.insert(soxArgs, "1.2")
     table.insert(soxArgs, pct)
   end
 
   recTask = hs.task.new(C.sox, function(code, _, _)
     if convMode and code == 0 and state == "recording" and myGen == recGen then
-      log("Native sox VAD silence detected — completing recording automatically")
-      stopRecording()
+      -- GAPLESS HANDOFF: the pause ended this chunk. The old serial flow
+      -- (stop -> transcribe -> paste -> re-arm) left the mic DEAF for the
+      -- whole 2-3s pipeline — everything said in that window was lost,
+      -- which read as "it only got a fraction of what I said". Now the
+      -- finished chunk is stashed and transcribed IN PARALLEL while the
+      -- mic re-arms within ~50ms. The recording UI never drops.
+      log("VAD chunk complete — gapless re-arm, transcribing in parallel")
+      if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
+      local chunk = tmp("conv-chunk-" .. tostring(myGen) .. ".wav")
+      os.remove(chunk)
+      os.rename(C.wav, chunk)
+      state = "idle"
+      locked = true
+      startRecording()
+      convTranscribe(chunk)
     elseif state == "processing" and myGen == recGen then
       transcribe()
     end
@@ -3294,9 +3385,13 @@ function startRecording()  -- global by design: see note at top state vars
     warmPing()                   -- model pages in while the user talks
     hushAlien()
     duckDown()
-    setUI("rec")
-    play("start")
-    startCtxOCR()
+    setUI(convMode and "lock" or "rec")
+    if not convMode then
+      -- conv re-arms are SILENT and skip per-chunk screen OCR: the mic
+      -- would hear the beep, and a screenshot every sentence is churn
+      play("start")
+      startCtxOCR()
+    end
     if recMode == "ask" then
       hs.alert.show("👽 ask mode — Vox will answer out loud", 1.2)
     end
