@@ -1034,7 +1034,7 @@ local function bubbleEnsure()
            center = { x = BUB.CVW / 2, y = BUB.H + 19 }, radius = 2.4 }
   c[5] = { type = "text", text = "", textSize = BUB.TXT,
            textColor = { red = 0.92, green = 0.98, blue = 0.95, alpha = 1 },
-           textAlignment = "center", lineBreak = "truncateTail",
+           textAlignment = "center", textLineBreak = "truncateTail",
            frame = { x = 0, y = 7, w = BUB.MINW, h = BUB.H - 12 } }
   bubble.canvas = c
 end
