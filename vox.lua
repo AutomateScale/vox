@@ -3592,12 +3592,30 @@ function convSweep(cb)
       if fixed then
         fixed = fixed:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
         local cur = convLedger
-        if #fixed > 0 and fixed ~= cur
+        -- content guards: models sometimes REWRITE instead of correct.
+        -- (a) any CJK/Hangul/Cyrillic script = hallucination, reject.
+        -- (b) >=75% of the speaker's words must survive, or reject.
+        local foreign = fixed:find("[\208-\214\228-\237]") ~= nil
+        local keep, total = 0, 0
+        if not foreign then
+          local fixedSet = {}
+          for w in fixed:lower():gmatch("[%w']+") do fixedSet[w] = true end
+          for w in cur:lower():gmatch("[%w']+") do
+            total = total + 1
+            if fixedSet[w] then keep = keep + 1 end
+          end
+        end
+        if not foreign and total > 0 and (keep / total) >= 0.75
+           and #fixed > 0 and fixed ~= cur
            and #fixed > math.floor(#cur * 0.5)
            and #fixed < math.floor(#cur * 1.6) then
           screenRevise(cur, fixed)
           convLedger = fixed
           log("deep sweep: semantic pass applied")
+        elseif fixed ~= cur then
+          log(string.format(
+            "deep sweep: semantic pass REJECTED (foreign=%s overlap=%.0f%%)",
+            tostring(foreign), total > 0 and keep / total * 100 or 0))
         end
       end
     end
@@ -3662,7 +3680,7 @@ function convPartial()
     "/usr/bin/tail -c +%d %s | /usr/bin/head -c %d | " ..
     "%s -t raw -r 16000 -e signed -b 16 -c 1 - %s && " ..
     "/usr/bin/curl -s --max-time 6 -F file=@%s -F temperature=0.0 " ..
-    "-F prompt=\"%s\" -F response_format=text http://%s:%d/inference",
+    "-F language=en -F prompt=\"%s\" -F response_format=text http://%s:%d/inference",
     convChunkStart + 1, C.wav, len, C.sox, pw, pw, prompt,
     C.whisperHost, C.serverPort) })
   M.partialTask:start()
@@ -3701,11 +3719,13 @@ function convTranscribeLive(chunk)
     log("live chunk final: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
     if trig then
       hs.timer.doAfter(0.15, function()
+        convFinalPending = true     -- no partial typing during sweep/submit
         convSweep(function()        -- regex + semantic passes, then submit
           local retCode = hs.keycodes.map["return"] or 36
           local rD = hs.eventtap.event.newKeyEvent(retCode, true); rD:setFlags({}); rD:post()
           local rU = hs.eventtap.event.newKeyEvent(retCode, false); rU:setFlags({}); rU:post()
           convLedger = ""           -- sent: fresh paragraph
+          convFinalPending = false  -- partials may flow again
           log("live: auto-submitted via '" .. trig .. "'")
           watchLLMCompletion(hs.window.focusedWindow())
           alienQuip("sent")         -- mic stays LIVE; quip rides the mute window
@@ -3715,7 +3735,7 @@ function convTranscribeLive(chunk)
     end
   end, { "-c", string.format(
     "/usr/bin/curl -s --max-time 20 -F file=@%s -F temperature=0.0 " ..
-    "-F prompt=\"%s\" -F response_format=text http://%s:%d/inference",
+    "-F language=en -F prompt=\"%s\" -F response_format=text http://%s:%d/inference",
     chunk, prompt, C.whisperHost, C.serverPort) })
   M.convSttTask:start()
 end
