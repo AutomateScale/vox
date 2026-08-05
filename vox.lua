@@ -3119,8 +3119,10 @@ function parseSendTrigger(tStr)  -- global: see note above convMode
   if not tStr or #tStr == 0 then return tStr, nil end
   local clean = tStr:gsub("[%s%.!%?%-%_,;]+$", "")
   local lower = clean:lower()
-  -- includes whisper's merged renderings ("ok send" often arrives "oksend")
-  local triggers = { "ok send", "okay send", "oksend", "okaysend", "ok go", "okay go", "ok, go", "okay, go", "okgo", "okaygo", "send it", "over", "send", "enter", "submit", "go", "out", "roger" }
+  -- Deliberate phrases ONLY. "out"/"over"/"go"/"enter" were pruned after
+  -- "...how that's gonna be playing OUT" auto-submitted mid-thought —
+  -- common sentence-enders must never be submit commands.
+  local triggers = { "ok send", "okay send", "oksend", "okaysend", "ok go", "okay go", "ok, go", "okay, go", "okgo", "okaygo", "send it", "send", "submit", "roger" }
   for _, trig in ipairs(triggers) do
     if lower == trig then
       return "", trig
@@ -3361,6 +3363,8 @@ function convPause()
   os.remove(C.wav)
   state = "idle"
   log("conv mic parked while LLM answers — ding re-arms it")
+  -- the park is otherwise invisible and reads as "it died" — say it
+  hs.alert.show("⏸ Sent — mic off while the reply writes.\nDing = talk again.", 4)
 end
 
 -- Cut the current conv recording into a chunk and restart the mic.
