@@ -2882,7 +2882,8 @@ function parseSendTrigger(tStr)  -- global: see note above convMode
   if not tStr or #tStr == 0 then return tStr, nil end
   local clean = tStr:gsub("[%s%.!%?%-%_,;]+$", "")
   local lower = clean:lower()
-  local triggers = { "ok go", "okay go", "ok, go", "okay, go", "send it", "over", "send", "enter", "submit", "go", "out", "roger" }
+  -- includes whisper's merged renderings ("ok send" often arrives "oksend")
+  local triggers = { "ok send", "okay send", "oksend", "okaysend", "ok go", "okay go", "ok, go", "okay, go", "okgo", "okaygo", "send it", "over", "send", "enter", "submit", "go", "out", "roger" }
   for _, trig in ipairs(triggers) do
     if lower == trig then
       return "", trig
@@ -3291,12 +3292,13 @@ function startRecording()  -- global by design: see note at top state vars
     local pct = string.format("%.2f%%", convVadPct or 1.0)
     table.insert(soxArgs, "silence")
     table.insert(soxArgs, "1")
-    -- 0.2s sustained sound to arm (loop beeps are silenced now, so this
-    -- only needs to reject clicks — and eats less of the first word).
-    -- 1.2s of quiet ends a chunk: 0.7s chopped mid-THOUGHT constantly;
-    -- natural thinking pauses need more room, and the gapless handoff
-    -- means a longer window costs nothing in lost speech.
-    table.insert(soxArgs, "0.2")
+    -- 0.1s sustained sound to arm: short punchy commands ("ok send" is two
+    -- ~0.15s words) never opened a 0.2s gate — the user's submit was simply
+    -- ignored. A false arm is cheap (the size gate + junk filter eat it
+    -- downstream); a missed command is expensive. 1.2s of quiet ends a
+    -- chunk: 0.7s chopped mid-THOUGHT constantly, and the gapless handoff
+    -- makes the longer window free.
+    table.insert(soxArgs, "0.1")
     table.insert(soxArgs, pct)
     table.insert(soxArgs, "1")
     table.insert(soxArgs, "1.2")
