@@ -1725,6 +1725,7 @@ local function reset()
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
   if timers.convDeaf then timers.convDeaf:stop(); timers.convDeaf = nil end
+  if timers.convTick then timers.convTick:stop(); timers.convTick = nil end
   if timers.soxKill then timers.soxKill:stop(); timers.soxKill = nil end
   if timers.soxKill9 then timers.soxKill9:stop(); timers.soxKill9 = nil end
   os.remove(C.wav); os.remove(C.wavNorm)  -- privacy: no voice residue on disk
@@ -1831,7 +1832,7 @@ local function insertText(text)
   end
   rememberText(text, nextMemMode)         -- the alien remembers
   nextMemMode = "dictate"
-  if convMode and state == "recording" then
+  if convMode then
     -- gapless conversation flow: the mic is LIVE while this paste lands.
     -- Do NOT idle the state machine, beep the speakers (the mic hears
     -- them), hide the recording UI, or touch C.wav — that's the recorder's
@@ -3065,11 +3066,44 @@ end
 -- chunk file while the live recorder keeps rolling on C.wav. Touches no
 -- recording state, no timers, no reset() — a failed chunk just logs and
 -- dies; the loop never notices. Global (see note above convMode).
+-- Cut the current conv recording into a chunk and restart the mic.
+-- Bumps recGen FIRST so the dying recorder's exit callback is inert, gives
+-- sox a beat to finalize the WAV after SIGINT (with a guaranteed kill
+-- behind it), then stashes the file, re-arms, and transcribes in parallel.
+-- discard=true throws the audio away (silent recycle / deaf heal).
+function convHandoff(discard)
+  if not (convMode and state == "recording") then return end
+  recGen = recGen + 1
+  if timers.convTick then timers.convTick:stop(); timers.convTick = nil end
+  local pid = recTask and recTask:isRunning() and recTask:pid() or nil
+  if recTask and recTask:isRunning() then recTask:interrupt() end
+  if pid then
+    hs.timer.doAfter(0.6, function()
+      os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
+    end)
+  end
+  timers.convHandoff = hs.timer.doAfter(0.25, function()
+    timers.convHandoff = nil
+    if not convMode then                 -- toggled off mid-handoff
+      os.remove(C.wav)
+      return
+    end
+    local chunk = tmp("conv-chunk-" .. tostring(recGen) .. ".wav")
+    os.remove(chunk)
+    os.rename(C.wav, chunk)
+    state = "idle"
+    locked = true
+    startRecording()
+    if discard then os.remove(chunk) else convTranscribe(chunk) end
+  end)
+end
+
 function convTranscribe(chunk)
   local norm = chunk .. "-n.wav"
   local promptStr = fullVocabulary():gsub('[\\"$`]', "")
   local cmd = string.format(
-    "%s %s %s highpass 80 norm -3 2>/dev/null || cp %s %s; " ..
+    "%s %s %s highpass 80 norm -3 silence 1 0.1 0.6%% reverse" ..
+    " silence 1 0.30 0.6%% reverse pad 0 0.15 2>/dev/null || cp %s %s; " ..
     "SIZE=$(/usr/bin/stat -f%%z %s 2>/dev/null || echo 0); " ..
     "[ \"$SIZE\" -lt 8000 ] && exit 42; " ..
     "/usr/bin/curl -s --max-time 30 -F file=@%s -F temperature=0.0 " ..
@@ -3284,121 +3318,94 @@ function startRecording()  -- global by design: see note at top state vars
   local myGen = recGen
   captureContext()
   os.remove(C.wav)
+  -- PLAIN capture always — including conversation mode. sox's silence
+  -- effect on a live coreaudio stream proved rotten on this rig: it wedged
+  -- pre-arm, wedged post-arm, ignored TERM, and its deafness was
+  -- indistinguishable from a quiet user. Normal hold-to-talk (plain
+  -- capture) has been rock solid all along, so conv mode now records the
+  -- exact same way and the pause detection lives in Lua (convTick below),
+  -- where every decision is observable and loggable.
   local soxArgs = { "--buffer", "1024", "-q", "-d", "-c", "1", "-r", "16000", "-b", "16", C.wav }
-  if convMode then
-    -- Native C-level Voice Activity Detection (VAD): sox exits with code 0
-    -- after 0.7s of "silence" following speech. The threshold is calibrated
-    -- against the room's measured noise floor at toggle-ON (a fixed 0.2%
-    -- never fired on pro interfaces whose floor sits above it).
-    -- uncalibrated fallback 0.5%: calibrated sessions on this rig land
-    -- 0.4-0.67%, so 1.0% was deaf to quiet short commands like "ok send"
-    local pct = string.format("%.2f%%", convVadPct or 0.5)
-    table.insert(soxArgs, "silence")
-    table.insert(soxArgs, "1")
-    -- 0.1s sustained sound to arm: short punchy commands ("ok send" is two
-    -- ~0.15s words) never opened a 0.2s gate — the user's submit was simply
-    -- ignored. A false arm is cheap (the size gate + junk filter eat it
-    -- downstream); a missed command is expensive. 1.2s of quiet ends a
-    -- chunk: 0.7s chopped mid-THOUGHT constantly, and the gapless handoff
-    -- makes the longer window free.
-    table.insert(soxArgs, "0.1")
-    table.insert(soxArgs, pct)
-    table.insert(soxArgs, "1")
-    table.insert(soxArgs, "1.2")
-    table.insert(soxArgs, pct)
-  end
 
   recTask = hs.task.new(C.sox, function(code, _, _)
-    if convMode and code == 0 and state == "recording" and myGen == recGen then
-      -- GAPLESS HANDOFF: the pause ended this chunk. The old serial flow
-      -- (stop -> transcribe -> paste -> re-arm) left the mic DEAF for the
-      -- whole 2-3s pipeline — everything said in that window was lost,
-      -- which read as "it only got a fraction of what I said". Now the
-      -- finished chunk is stashed and transcribed IN PARALLEL while the
-      -- mic re-arms within ~50ms. The recording UI never drops.
-      log("VAD chunk complete — gapless re-arm, transcribing in parallel")
-      if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
-      local chunk = tmp("conv-chunk-" .. tostring(myGen) .. ".wav")
-      os.remove(chunk)
-      os.rename(C.wav, chunk)
+    if convMode and state == "recording" and myGen == recGen then
+      -- conv chunks end via convHandoff() (which bumps recGen first), so a
+      -- gen-matching exit here means the recorder DIED on its own — restart
+      log("conv recorder died unexpectedly (code " .. tostring(code) .. ") — restarting")
       state = "idle"
       locked = true
-      startRecording()
-      convTranscribe(chunk)
+      timers.convRestart = hs.timer.doAfter(0.2, function()
+        timers.convRestart = nil
+        if convMode and state == "idle" then startRecording() end
+      end)
     elseif state == "processing" and myGen == recGen then
       transcribe()
     end
   end, soxArgs)
   recTask:start()
-  -- conv-mode safety net, quietness-aware: an UNARMED gate (file still
-  -- empty) means the user is just quiet — reading, thinking. Listening is
-  -- free, so keep listening instead of churning a noisy kill cycle every
-  -- 25s. Only continuous SOUND that never pauses (music, saturated mic)
-  -- gets force-completed, and only after ~75s so long monologues survive.
+  -- CONV TICK: Lua-side pause detection over the plain capture. Every
+  -- 0.4s, peak-analyze the last 0.45s of audio (raw tail pipe — no wav
+  -- header games on a growing file). Speech = peak over the calibrated
+  -- threshold. 3 quiet ticks (~1.2s) after speech = chunk boundary ->
+  -- convHandoff. Plain capture writes bytes CONSTANTLY (silence included),
+  -- so a recorder that stops growing for ~3s is deterministically DEAF —
+  -- no probabilistic room-probing needed. Silent 20s files recycle
+  -- (discard) so chunks never carry long dead lead-ins; 90s of nonstop
+  -- sound (music/monologue) force-cuts with transcription.
   if convMode then
-    if timers.convCap then timers.convCap:stop() end
-    local capStrikes = 0
-    local function capCheck()
-      timers.convCap = nil
-      if not (convMode and state == "recording" and myGen == recGen) then return end
-      local a = hs.fs.attributes(C.wav)
-      if not a or a.size < 4096 then
-        timers.convCap = hs.timer.doAfter(25, capCheck)  -- quiet: listen on
+    if timers.convTick then timers.convTick:stop() end
+    local hadSpeech, silentTicks, lastSize, stallTicks, busy =
+      false, 0, 0, 0, false
+    local myTickGen = recGen
+    timers.convTick = hs.timer.doEvery(0.4, function()
+      if not (convMode and state == "recording" and myTickGen == recGen) then
+        if timers.convTick then timers.convTick:stop(); timers.convTick = nil end
         return
       end
-      capStrikes = capStrikes + 1
-      if capStrikes < 3 then
-        timers.convCap = hs.timer.doAfter(25, capCheck)  -- talking: let them finish
+      local a = hs.fs.attributes(C.wav)
+      local size = a and a.size or 0
+      if size == lastSize then stallTicks = stallTicks + 1 else stallTicks = 0 end
+      lastSize = size
+      -- even pure silence writes bytes every ~32ms, so 1.6s without a
+      -- single byte = the stream has stalled (this RODECaster stalls
+      -- OFTEN — observed twice a minute). Cold device opens get 4s grace.
+      local stallLimit = (size <= 44) and 10 or 4
+      if stallTicks >= stallLimit then
+        log("conv recorder DEAF (stream stalled) — healing")
+        convHandoff(true)
         return
       end
-      log("conv recorder saturated (~75s continuous sound) — force-completing")
-      stopRecording()
-    end
-    timers.convCap = hs.timer.doAfter(25, capCheck)
-    -- DEAF-MIC DETECTOR: gapless re-arms occasionally hand sox a wedged
-    -- coreaudio stream that delivers NOTHING — indistinguishable from a
-    -- quiet user by file size alone (the unarmed gate withholds all
-    -- output either way). So while the gate is unarmed, a 0.4s probe
-    -- samples the room every ~6s: room sound + empty recorder = wedge.
-    -- Kill it (TERM then KILL — wedged sox ignores TERM) and restart.
-    local function deafProbe()
-      timers.convDeaf = nil
-      if not (convMode and state == "recording" and myGen == recGen) then return end
-      local a = hs.fs.attributes(C.wav)
-      if a and a.size > 4096 then return end  -- armed: VAD owns it now
-      local pw = tmp("deafprobe.wav")
-      os.remove(pw)
-      M.deafTask = hs.task.new("/bin/sh", function(_, out)
-        os.remove(pw)
-        if not (convMode and state == "recording" and myGen == recGen) then return end
-        local rms = tonumber((out or ""):match("RMS%s+amplitude:%s+([%d%.]+)")) or 0
+      if size < 14500 or busy then return end
+      busy = true
+      M.tickTask = hs.task.new("/bin/sh", function(_, out)
+        busy = false
+        if not (convMode and state == "recording" and myTickGen == recGen) then return end
+        local peak = tonumber((out or ""):match("Maximum%s+amplitude:%s+([%d%.]+)")) or 0
         local thr = (convVadPct or 0.5) / 100
-        local b = hs.fs.attributes(C.wav)
-        if rms >= thr and (not b or b.size < 4096) then
-          log(string.format(
-            "DEAF recorder: room at %.2f%% but mic heard nothing — restarting",
-            rms * 100))
-          local pid = recTask and recTask:pid()
-          recGen = recGen + 1               -- invalidate wedged callback
-          if recTask and recTask:isRunning() then recTask:terminate() end
-          if pid then
-            hs.timer.doAfter(0.4, function()
-              os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
-            end)
+        if peak >= thr then
+          hadSpeech = true
+          silentTicks = 0
+        elseif hadSpeech then
+          silentTicks = silentTicks + 1
+          if silentTicks >= 3 then
+            log(string.format("pause detected (peak %.2f%% < %.2f%%) — cutting chunk",
+              peak * 100, thr * 100))
+            convHandoff(false)
+            return
           end
-          state = "idle"
-          locked = true
-          startRecording()
-          return
         end
-        timers.convDeaf = hs.timer.doAfter(6, deafProbe)
+        local secs = (size - 44) / 32000
+        if not hadSpeech and secs > 20 then
+          convHandoff(true)                     -- recycle a silent file
+        elseif secs > 90 then
+          log("90s continuous sound — force-cutting chunk")
+          convHandoff(false)
+        end
       end, { "-c", string.format(
-        "%s -q -d -c 1 -r 16000 -b 16 %s trim 0 0.4 2>/dev/null; %s %s -n stat 2>&1",
-        C.sox, pw, C.sox, pw) })
-      M.deafTask:start()
-    end
-    if timers.convDeaf then timers.convDeaf:stop() end
-    timers.convDeaf = hs.timer.doAfter(6, deafProbe)
+        "/usr/bin/tail -c 14400 %s | %s -t raw -r 16000 -e signed -b 16 -c 1 - -n stat 2>&1",
+        C.wav, C.sox) })
+      M.tickTask:start()
+    end)
   end
   -- screen-aware dictation: OCR the target window WHILE recording (free time)
   local function startCtxOCR()
@@ -3518,6 +3525,7 @@ function stopRecording()  -- global by design: see note at top state vars
   if timers.convVAD then timers.convVAD:stop(); timers.convVAD = nil end
   if timers.convCap then timers.convCap:stop(); timers.convCap = nil end
   if timers.convDeaf then timers.convDeaf:stop(); timers.convDeaf = nil end
+  if timers.convTick then timers.convTick:stop(); timers.convTick = nil end
   setUI("work")
   duckUp()                       -- music fades back while we transcribe
   play("stop")
