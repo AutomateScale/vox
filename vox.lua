@@ -3523,8 +3523,40 @@ end
 -- Only the last ~90 chars are revisable (commit horizon); earlier text is
 -- frozen so the line stabilizes left-to-right behind the voice.
 convTypedBuf = ""
+convLedger = ""          -- everything typed on screen since the last send
 convPartialBusy = false
 convPartialTs = 0
+
+-- DEEP SWEEP: on send, re-clean the WHOLE paragraph (past the 90-char
+-- revision horizon): ellipsis litter, no-space boundary echoes
+-- ("paragraph?paragraph?"), fillers, spacing — then revise the screen
+-- with one unlimited-depth diff before the Return fires.
+function convSweep()
+  local t = convLedger .. convTypedBuf
+  if #t == 0 then return end
+  local c = t
+  c = c:gsub("%s*%.%.%.+%s*", " ")
+  c = c:gsub("%s*…+%s*", " ")
+  c = c:gsub("(%a[%w']*%p)%1", "%1")        -- "word?word?" boundary echo
+  c = cleanFillers(c)
+  c = c:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+  if c == t then return end
+  local maxi = math.min(#t, #c)
+  local lcp = 0
+  while lcp < maxi and t:sub(lcp + 1, lcp + 1) == c:sub(lcp + 1, lcp + 1) do
+    lcp = lcp + 1
+  end
+  while lcp > 0 do
+    local byt = t:byte(lcp + 1)
+    if byt and byt >= 0x80 and byt < 0xC0 then lcp = lcp - 1 else break end
+  end
+  local eraseChars = (lcp < #t) and (utf8.len(t, lcp + 1) or (#t - lcp)) or 0
+  for _ = 1, eraseChars do hs.eventtap.keyStroke({}, "delete", 0) end
+  local toType = c:sub(lcp + 1)
+  if #toType > 0 then hs.eventtap.keyStrokes(toType) end
+  log(string.format("deep sweep: %d chars cleaned", eraseChars))
+  convLedger, convTypedBuf = c, ""
+end
 
 function liveSync(hyp, final)
   if hyp == nil then return end
@@ -3575,6 +3607,8 @@ function convPartial()
     local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
                     :gsub("^%s+", ""):gsub("%s+$", "")
     if text:match("^[%(%[].*[%)%]]%.?$") or text:match("^[%.%s…]+$") then return end
+    -- whisper renders thinking-breaths as "..." — never type them
+    text = text:gsub("%s*%.%.%.+", ""):gsub("%s*…+", ""):gsub("%s+", " ")
     liveSync(text, false)
   end, { "-c", string.format(
     "/usr/bin/tail -c +%d %s | /usr/bin/head -c %d | " ..
@@ -3591,30 +3625,38 @@ function convTranscribeLive(chunk)
   M.convSttTask = hs.task.new("/bin/sh", function(code, out)
     os.remove(chunk)
     if code ~= 0 or not out or #out:gsub("%s", "") == 0 or out:find('"error"') then
-      convTypedBuf = ""             -- chunk stands as typed; move on
+      convLedger = convLedger .. convTypedBuf   -- stands as typed
+      convTypedBuf = ""
       return
     end
     local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
                     :gsub("^%s+", ""):gsub("%s+$", "")
     if text:match("^[%(%[].*[%)%]]%.?$") or text:match("^[%.%s…]+$") then
       liveSync("", true)            -- junk: erase the revisable tail
+      convLedger = convLedger .. convTypedBuf
       convTypedBuf = ""
       return
     end
     text = applyCorrections(text)
+    text = text:gsub("%s*%.%.%.+", ""):gsub("%s*…+", ""):gsub("%s+", " ")
     local cleaned, trig = parseSendTrigger(text)
     liveSync(cleaned, true)
     if #cleaned > 0 then
       convLastTail = cleaned:sub(-160)
       hs.eventtap.keyStrokes(" ")
+      convLedger = convLedger .. convTypedBuf .. " "
+    else
+      convLedger = convLedger .. convTypedBuf
     end
     convTypedBuf = ""
     log("live chunk final: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
     if trig then
       hs.timer.doAfter(0.15, function()
+        convSweep()                 -- the whole-paragraph cleanup pass
         local retCode = hs.keycodes.map["return"] or 36
         local rD = hs.eventtap.event.newKeyEvent(retCode, true); rD:setFlags({}); rD:post()
         local rU = hs.eventtap.event.newKeyEvent(retCode, false); rU:setFlags({}); rU:post()
+        convLedger = ""             -- sent: fresh paragraph
         log("live: auto-submitted via '" .. trig .. "'")
         watchLLMCompletion(hs.window.focusedWindow())
         alienQuip("sent")          -- mic stays LIVE; quip rides the mute window
@@ -4151,6 +4193,7 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
     if (now - convToggleTs) > 0.6 then
       convToggleTs = now
       convMode = not convMode
+      convLedger, convTypedBuf = "", ""
       if convMode then
         play("start")
         hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'ok go' or 'send' to submit (Fn+Option to stop)", 2.5)
