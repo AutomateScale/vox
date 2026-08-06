@@ -4209,14 +4209,23 @@ function startRecording()  -- global by design: see note at top state vars
   end)
   -- sticky-key watchdog: macOS sometimes drops the key-release event; if the
   -- key is no longer physically held, stop instead of recording forever
+  local stuckMisses = 0
   timers.stuckKey = hs.timer.doEvery(1.0, function()
     if state == "recording" and not locked and not pendingTap then
       local mods = hs.eventtap.checkKeyboardModifiers()
       local held = ((C.holdKeycode == 61 or C.holdKeycode == 58) and mods.alt)
                 or ((C.holdKeycode == 54 or C.holdKeycode == 55) and mods.cmd)
       if not held and (hs.timer.secondsSinceEpoch() - keyDownAt) > 1.2 then
-        log("missed key-release detected — stopping recording")
-        stopRecording()
+        -- some apps (secure input, Electron quirks) make the modifier
+        -- read flake for a beat — ONE miss must never kill a live
+        -- dictation mid-sentence. Three consecutive misses = real.
+        stuckMisses = stuckMisses + 1
+        if stuckMisses >= 3 then
+          log("missed key-release x3 (" .. context.app .. ") — stopping recording")
+          stopRecording()
+        end
+      else
+        stuckMisses = 0
       end
     end
   end)
@@ -4453,7 +4462,24 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
   else -- released
     if state == "recording" and not locked then
       if (hs.timer.secondsSinceEpoch() - keyDownAt) >= C.tapLockMax then
-        stopRecording()          -- normal push-to-talk release
+        -- PHANTOM-RELEASE DEBOUNCE: some apps synthesize flagsChanged
+        -- events while the key is still physically down — Vox would cut
+        -- off mid-sentence (never in Terminal, often elsewhere). Verify
+        -- the modifier is genuinely up before stopping; if it's still
+        -- held, ignore the ghost. A real missed release is caught by the
+        -- stuck-key watchdog within ~3s.
+        timers.relCheck = hs.timer.doAfter(0.12, function()
+          timers.relCheck = nil
+          if state ~= "recording" or locked then return end
+          local mods = hs.eventtap.checkKeyboardModifiers()
+          local stillHeld = ((C.holdKeycode == 61 or C.holdKeycode == 58) and mods.alt)
+                         or ((C.holdKeycode == 54 or C.holdKeycode == 55) and mods.cmd)
+          if stillHeld then
+            log("phantom key-release ignored (" .. context.app .. ")")
+            return
+          end
+          stopRecording()        -- normal push-to-talk release
+        end)
       else
         -- quick tap: recording continues briefly awaiting a second tap
         -- (double-tap = hands-free lock); no second tap = discard quietly
