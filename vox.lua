@@ -265,6 +265,9 @@ local recTask, menubar
 -- those call sites compiled against always-nil globals and crashed at fire
 -- time — which is why the hands-free loop dead-ended. Globals resolve at
 -- call time, and the main chunk is at Lua's 200-local limit anyway.
+startRecording = function() end
+stopRecording  = function() end
+
 local timers  = {}                   -- anchored refs so timers survive GC
 local duck                           -- ducking state (defined below)
 local reqId   = 0                    -- guards against late LLM responses
