@@ -699,11 +699,17 @@ ALIEN_QUIPS = {
 -- the "transcription" of ambiguous audio — Vox then types its own brand
 -- cheat-sheet ("AutomateScale, GoHighLevel, GHL, ..."). Verbatim-substring
 -- or >=90% token containment (5+ words) = echo, discard.
-function isPromptEcho(text, prompt)
+function isPromptEcho(text, prompt, wordBag)
   if not text or #text < 12 or not prompt or #prompt == 0 then return false end
   local function norm(s) return (" " .. s:lower():gsub("[%s%p]+", " ") .. " ") end
   local t, p = norm(text), norm(prompt)
   if p:find(t, 1, true) then return true end
+  -- token-containment is ONLY safe against sentence prompts (the previous
+  -- chunk's tail). Against a BAG-OF-WORDS prompt (the vocabulary, which
+  -- includes every word Vox has LEARNED from the user) it false-positives
+  -- on any long dictation about familiar topics — real speech was being
+  -- discarded as "echo". Verbatim-substring is the only vocab-safe check.
+  if wordBag then return false end
   local pset = {}
   for w in p:gmatch("%S+") do pset[w] = true end
   local hit, tot = 0, 0
@@ -3306,7 +3312,7 @@ local function handleTranscript(raw, t0)
   -- transcription made it — the processing watchdog must not fire mid-LLM
   if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
   local text = raw:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
-  if isPromptEcho(text, fullVocabulary()) then
+  if isPromptEcho(text, fullVocabulary(), true) then
     log("dictation: PROMPT ECHO discarded (" .. text:sub(1, 40) .. ")")
     reset()
     return
@@ -3548,7 +3554,7 @@ function convTranscribe(chunk)
       log("conv chunk: non-speech (" .. text:sub(1, 30) .. "), skipped")
       return
     end
-    if isPromptEcho(text, promptStr) then
+    if isPromptEcho(text, promptStr, true) then
       log("conv chunk: PROMPT ECHO discarded (" .. text:sub(1, 40) .. ")")
       return
     end
@@ -3777,7 +3783,7 @@ function convTranscribeLive(chunk)
       convTypedBuf = ""
       return
     end
-    if isPromptEcho(text, prompt) then
+    if isPromptEcho(text, prompt, true) then
       log("live final: PROMPT ECHO discarded (" .. text:sub(1, 40) .. ")")
       convLedger = convLedger .. convTypedBuf
       convTypedBuf = ""
