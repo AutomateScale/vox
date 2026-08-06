@@ -6,6 +6,23 @@ agent systems. Vox home: **[automatescale.com/vox](https://automatescale.com/vox
 Press-and-hold dictation that runs 100% on your Mac. No cloud, no subscription,
 no surprise platform updates. You own every line of it.
 
+## vs. the subscription apps
+
+|  | **Vox** | Wispr Flow | Willow Voice | Aqua Voice |
+|---|---|---|---|---|
+| Price | **Free, forever** | $15/mo (free: 2k words/wk) | $15/mo | $8/mo |
+| Your voice goes | **Nowhere — 100% local** | Their cloud | Their cloud | Their cloud |
+| Open source | **MIT** | No | No | No |
+| Hands-free conversation loop | **Yes** — talk, auto-send, bell, repeat | No | No | No |
+| Live word-by-word w/ revisions | **Yes** | No | No | Real-time display |
+| Personal memory + knowledge graph | **Yes, local, browsable** | No | Style memory | Custom dictionary |
+| Voice actions (apps, screenshots…) | **Yes, deterministic** | Text edits only | No | No |
+| Works offline | **Yes** | No | No | No |
+| Platforms | macOS | Mac/Win/iOS/Android | Mac/Win | Mac/Win |
+
+*Competitor pricing/features as of August 2026 from public pages — tell us if
+they've changed; an honest comparison is the only useful kind.*
+
 ## How it works
 
 ```
@@ -20,7 +37,22 @@ sides of him (cyan = listening, violet = thinking). The pill bounces in
 and sinks away.
 
 - **Hold Right Option (⌥)** (or Left Command) — push-to-talk. Release = transcribe + paste (~1.0s).
-- **Press Fn + Option** — **Hands-Free Conversation Mode**: Arms mic hands-free. Say *"send"*, *"over"*, or *"enter"* to auto-submit to any LLM or Terminal. Automatically bings 🔔 and re-arms when the LLM response finishes streaming on screen.
+- **Press Fn + Option** — **Hands-Free Conversation Mode**: toggle once and just
+  talk. Every natural pause pastes automatically and the mic keeps listening —
+  no keys, ever. Say *"send"* / *"ok send"* / *"ok go"* and Vox submits, watches
+  the reply render, and rings a bell 🔔 the moment it's verified listening again.
+  The mic stays hot while the LLM thinks. Optional **alien play-by-play**
+  narrates the loop ("Boom. Sent. Go stretch or something.").
+- **Live word-by-word typing** (experimental, menubar toggle) — words appear
+  ~1s behind your voice and get *revised in place* as Whisper refines them
+  with context — iPhone-dictation feel, in any app. Text stabilizes
+  left-to-right while you keep talking.
+- **The deep sweep** — on "send", the whole paragraph gets one more pass:
+  artifacts stripped, false starts collapsed, then a local LLM fixes obvious
+  mishears from context ("deep-sea sweep" → "deep sweep") under strict
+  never-rephrase guards. Self-healing capture underneath: continuous-stream
+  recording, byte-level stall detection, zombie reaping, engine wake-and-retry
+  on every chunk.
 - **Hold ⌘ + tap Left Shift (⇧)** — ask mode: your words become a question
   and the alien answers on screen AND out loud (voice pickable in the menu).
 - **Triple-tap** — smart reply: reads the window on screen, drafts the response.
