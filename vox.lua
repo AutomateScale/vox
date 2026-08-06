@@ -3239,7 +3239,8 @@ function watchLLMCompletion(win)  -- global: see note above convMode
       if convMode and state == "idle" then
         log("LLM watch timeout — bell (mic never left)")
         alienQuip("timeout")
-        hs.timer.doAfter(C.alienPlayByPlay and 2.0 or 0.05, function()
+        timers.dingDelay = hs.timer.doAfter(C.alienPlayByPlay and 2.0 or 0.05, function()
+          timers.dingDelay = nil
           dingNow("🔔 Still listening.")
           if convMode and state == "idle" then
             armThenDing("🔔 Listening...")
@@ -3263,7 +3264,8 @@ function watchLLMCompletion(win)  -- global: see note above convMode
             if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
             log("LLM response completed — bell (mic never left)")
             alienQuip("ready")
-            hs.timer.doAfter(C.alienPlayByPlay and 2.0 or 0.05, function()
+            timers.dingDelay = hs.timer.doAfter(C.alienPlayByPlay and 2.0 or 0.05, function()
+          timers.dingDelay = nil
               dingNow("🔔 Reply's in — mic is live.")
               if convMode and state == "idle" then   -- edge: mic somehow off
                 armThenDing("🔔 Listening...")
@@ -3385,7 +3387,9 @@ end
 -- sentence rolled the stall dice on this flaky device every few seconds
 -- (observed: a stall every 10-20s, each eating the user's words). Now the
 -- dice roll once per session; the stream just rolls on.
+convLastActivity = 0
 function convExtract()
+  convLastActivity = hs.timer.secondsSinceEpoch()
   local a = hs.fs.attributes(C.wav)
   local size = a and a.size or 0
   local len = size - convChunkStart
@@ -3419,7 +3423,8 @@ function convPause()
   local pid = recTask and recTask:isRunning() and recTask:pid() or nil
   if recTask and recTask:isRunning() then recTask:interrupt() end
   if pid then
-    hs.timer.doAfter(0.5, function()
+    timers["kill" .. pid] = hs.timer.doAfter(0.5, function()
+      timers["kill" .. pid] = nil
       os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
     end)
   end
@@ -3443,7 +3448,8 @@ function convHandoff(discard)
   local pid = recTask and recTask:isRunning() and recTask:pid() or nil
   if recTask and recTask:isRunning() then recTask:interrupt() end
   if pid then
-    hs.timer.doAfter(0.6, function()
+    timers["kill" .. pid] = hs.timer.doAfter(0.6, function()
+      timers["kill" .. pid] = nil
       os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
     end)
   end
@@ -3504,7 +3510,8 @@ function convTranscribe(chunk)
     log("conv chunk: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
     if #cleaned > 0 then insertText(cleaned) end
     if trig then
-      hs.timer.doAfter(#cleaned > 0 and 0.25 or 0.05, function()
+      timers.convSubmit = hs.timer.doAfter(#cleaned > 0 and 0.25 or 0.05, function()
+        timers.convSubmit = nil
         local retCode = hs.keycodes.map["return"] or 36
         local rDown = hs.eventtap.event.newKeyEvent(retCode, true)
         rDown:setFlags({}); rDown:post()
@@ -3718,7 +3725,8 @@ function convTranscribeLive(chunk)
     convTypedBuf = ""
     log("live chunk final: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
     if trig then
-      hs.timer.doAfter(0.15, function()
+      timers.convSubmit = hs.timer.doAfter(0.15, function()
+        timers.convSubmit = nil
         convFinalPending = true     -- no partial typing during sweep/submit
         convSweep(function()        -- regex + semantic passes, then submit
           local retCode = hs.keycodes.map["return"] or 36
@@ -3910,6 +3918,12 @@ function startRecording()  -- global by design: see note at top state vars
   local myGen = recGen
   captureContext()
   os.remove(C.wav)
+  -- ZOMBIE REAPER: exactly ONE recorder may exist. Un-anchored kill timers
+  -- were GC'd before firing (the classic Hammerspoon gotcha this file's
+  -- footer warns about) and wedged sox processes stacked up overnight —
+  -- five of them once interleaved garbage into the same wav. Sweep clean
+  -- before every spawn.
+  os.execute("/usr/bin/pkill -9 -f 'sox.*" .. C.wav .. "' 2>/dev/null")
   -- PLAIN capture always — including conversation mode. sox's silence
   -- effect on a live coreaudio stream proved rotten on this rig: it wedged
   -- pre-arm, wedged post-arm, ignored TERM, and its deafness was
@@ -3946,6 +3960,7 @@ function startRecording()  -- global by design: see note at top state vars
   -- sound (music/monologue) force-cuts with transcription.
   if convMode then
     convChunkStart = 44          -- fresh stream file: chunk offset resets
+    if (convLastActivity or 0) == 0 then convLastActivity = hs.timer.secondsSinceEpoch() end
     if timers.convTick then timers.convTick:stop() end
     local hadSpeech, silentTicks, lastSize, stallTicks, busy =
       false, 0, 0, 0, false
@@ -3953,6 +3968,20 @@ function startRecording()  -- global by design: see note at top state vars
     timers.convTick = hs.timer.doEvery(0.4, function()
       if not (convMode and state == "recording" and myTickGen == recGen) then
         if timers.convTick then timers.convTick:stop(); timers.convTick = nil end
+        return
+      end
+      -- overnight hygiene: 30 min without a single chunk = nobody's here.
+      if (hs.timer.secondsSinceEpoch() - (convLastActivity or 0)) > 1800 then
+        log("conv mode idle 30min — auto-off")
+        convMode = false
+        if timers.convTick then timers.convTick:stop(); timers.convTick = nil end
+        recGen = recGen + 1
+        if recTask and recTask:isRunning() then recTask:terminate() end
+        os.execute("/usr/bin/pkill -9 -f 'sox.*" .. C.wav .. "' 2>/dev/null")
+        state = "idle"
+        duckUp()
+        setUI("idle")
+        hs.alert.show("👽 Conversation mode auto-off (30 min idle)", 3)
         return
       end
       local a = hs.fs.attributes(C.wav)
@@ -4126,7 +4155,8 @@ local function cancelRecording()
     recTask:terminate()
     -- wedged sox (unarmed VAD gate) ignores TERM — make death certain
     if pid then
-      hs.timer.doAfter(0.5, function()
+      timers["kill" .. pid] = hs.timer.doAfter(0.5, function()
+        timers["kill" .. pid] = nil
         os.execute("/bin/kill -9 " .. pid .. " 2>/dev/null")
       end)
     end
@@ -4264,6 +4294,7 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
       convToggleTs = now
       convMode = not convMode
       convLedger, convTypedBuf = "", ""
+      convLastActivity = hs.timer.secondsSinceEpoch()
       if convMode then
         play("start")
         hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'ok go' or 'send' to submit (Fn+Option to stop)", 2.5)
