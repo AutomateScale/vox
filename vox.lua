@@ -695,6 +695,26 @@ ALIEN_QUIPS = {
     "I stopped watching. Talk whenever, boss.",
   },
 }
+-- PROMPT-ECHO GUARD: whisper sometimes parrots its context prompt back as
+-- the "transcription" of ambiguous audio — Vox then types its own brand
+-- cheat-sheet ("AutomateScale, GoHighLevel, GHL, ..."). Verbatim-substring
+-- or >=90% token containment (5+ words) = echo, discard.
+function isPromptEcho(text, prompt)
+  if not text or #text < 12 or not prompt or #prompt == 0 then return false end
+  local function norm(s) return (" " .. s:lower():gsub("[%s%p]+", " ") .. " ") end
+  local t, p = norm(text), norm(prompt)
+  if p:find(t, 1, true) then return true end
+  local pset = {}
+  for w in p:gmatch("%S+") do pset[w] = true end
+  local hit, tot = 0, 0
+  for w in t:gmatch("%S+") do
+    tot = tot + 1
+    if pset[w] then hit = hit + 1 end
+  end
+  return tot >= 5 and (hit / tot) >= 0.9
+end
+
+convRetried = {}        -- chunk paths that already got their one retry
 convMuteUntil = 0       -- while now < this, tick treats audio as non-speech
 convMutePurge = false   -- after the window, drop the captured playback bytes
 function alienQuip(kind)
@@ -3286,6 +3306,11 @@ local function handleTranscript(raw, t0)
   -- transcription made it — the processing watchdog must not fire mid-LLM
   if timers.procWatch then timers.procWatch:stop(); timers.procWatch = nil end
   local text = raw:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if isPromptEcho(text, fullVocabulary()) then
+    log("dictation: PROMPT ECHO discarded (" .. text:sub(1, 40) .. ")")
+    reset()
+    return
+  end
   text = text:gsub("%s*\n%s*", " ")            -- server returns wrapped lines
   text = applyCorrections(text)
   text = cleanFillers(text)
@@ -3486,13 +3511,34 @@ function convTranscribe(chunk)
     C.sox, chunk, norm, chunk, norm, norm, norm,
     promptStr, C.whisperHost, C.serverPort)
   M.convSttTask = hs.task.new("/bin/sh", function(code, out)
-    os.remove(chunk); os.remove(norm)
-    if code == 42 then log("conv chunk: silence, skipped") return end
-    if code ~= 0 or not out or #out:gsub("%s", "") == 0
-       or out:find('"error"') then
-      log("conv chunk transcription failed (code " .. tostring(code) .. ")")
+    if code == 42 then
+      os.remove(chunk); os.remove(norm)
+      log("conv chunk: silence, skipped")
       return
     end
+    if code ~= 0 or not out or #out:gsub("%s", "") == 0
+       or out:find('"error"') then
+      -- BRAIN RESILIENCE: the serial path retries and falls back; chunks
+      -- must too, or a cold/dead whisper-server silently eats every chunk
+      -- ("only works when I toggle off"). Wake the server, retry once.
+      if not convRetried[chunk] then
+        convRetried[chunk] = true
+        log("conv chunk transcribe failed — waking engine, retry in 3s")
+        ensureServer()
+        timers.convRetry = hs.timer.doAfter(3, function()
+          timers.convRetry = nil
+          convTranscribe(chunk)
+        end)
+        return
+      end
+      convRetried[chunk] = nil
+      os.remove(chunk); os.remove(norm)
+      log("conv chunk LOST after retry (code " .. tostring(code) .. ")")
+      hs.alert.show("⚠️ Vox: transcription engine down — chunk lost", 3)
+      return
+    end
+    convRetried[chunk] = nil
+    os.remove(chunk); os.remove(norm)
     local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
                     :gsub("^%s+", ""):gsub("%s+$", "")
     -- drop non-speech annotations: whisper renders dings/music the mic
@@ -3500,6 +3546,10 @@ function convTranscribe(chunk)
     if #text == 0 or text:match("^[%(%[].*[%)%]]%.?$")
        or text:match("^[%.%s…]+$") then
       log("conv chunk: non-speech (" .. text:sub(1, 30) .. "), skipped")
+      return
+    end
+    if isPromptEcho(text, promptStr) then
+      log("conv chunk: PROMPT ECHO discarded (" .. text:sub(1, 40) .. ")")
       return
     end
     text = applyCorrections(text)
@@ -3675,11 +3725,12 @@ function convPartial()
   M.partialTask = hs.task.new("/bin/sh", function(code, out)
     convPartialBusy = false
     os.remove(pw)
-    if code ~= 0 or not out then return end
+    if code ~= 0 or not out then ensureServer() return end
     if not (convMode and C.convLive and state == "recording") then return end
     local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
                     :gsub("^%s+", ""):gsub("%s+$", "")
     if text:match("^[%(%[].*[%)%]]%.?$") or text:match("^[%.%s…]+$") then return end
+    if isPromptEcho(text, convLastTail) then return end  -- tail echo
     -- whisper renders thinking-breaths as "..." — never type them
     text = text:gsub("%s*%.%.%.+", ""):gsub("%s*…+", ""):gsub("%s+", " ")
     liveSync(text, false)
@@ -3696,17 +3747,38 @@ end
 function convTranscribeLive(chunk)
   local prompt = (fullVocabulary() .. " " .. (convLastTail or "")):gsub('[\\"$`]', "")
   M.convSttTask = hs.task.new("/bin/sh", function(code, out)
-    os.remove(chunk)
-    convFinalPending = false        -- partials may flow again
     if code ~= 0 or not out or #out:gsub("%s", "") == 0 or out:find('"error"') then
+      if not convRetried[chunk] then
+        convRetried[chunk] = true
+        log("live final transcribe failed — waking engine, retry in 3s")
+        ensureServer()
+        timers.convRetry = hs.timer.doAfter(3, function()
+          timers.convRetry = nil
+          convTranscribeLive(chunk)
+        end)
+        return
+      end
+      convRetried[chunk] = nil
+      os.remove(chunk)
+      convFinalPending = false
       convLedger = convLedger .. convTypedBuf   -- stands as typed
       convTypedBuf = ""
+      hs.alert.show("⚠️ Vox: engine down — text kept as typed, not swept", 3)
       return
     end
+    convRetried[chunk] = nil
+    os.remove(chunk)
+    convFinalPending = false        -- partials may flow again
     local text = out:gsub("%[BLANK_AUDIO%]", ""):gsub("%s*\n%s*", " ")
                     :gsub("^%s+", ""):gsub("%s+$", "")
     if text:match("^[%(%[].*[%)%]]%.?$") or text:match("^[%.%s…]+$") then
       liveSync("", true)            -- junk: erase the revisable tail
+      convLedger = convLedger .. convTypedBuf
+      convTypedBuf = ""
+      return
+    end
+    if isPromptEcho(text, prompt) then
+      log("live final: PROMPT ECHO discarded (" .. text:sub(1, 40) .. ")")
       convLedger = convLedger .. convTypedBuf
       convTypedBuf = ""
       return
@@ -4299,6 +4371,7 @@ local flagTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functi
         play("start")
         hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'ok go' or 'send' to submit (Fn+Option to stop)", 2.5)
         duckDown(true)             -- pause media ONCE for the whole session
+        ensureServer()             -- wake the BRAIN too, not just the mic
         -- Option-first chord order starts a plain hold-to-talk recording a
         -- few ms before the toggle lands. CANCEL it properly (recGen bump
         -- invalidates its exit callback) — a bare terminate() left state
@@ -4603,6 +4676,7 @@ menubar:setMenu(function()
           play("start")
           hs.alert.show("👽 Hands-Free Conversation Mode ON\nSay 'send' or 'over' when done talking (Fn+Option to stop)", 2.5)
           duckDown(true)           -- pause media ONCE for the whole session
+          ensureServer()
           if state == "recording" then  -- stale hold-rec: cancel cleanly
             convMode = false
             cancelRecording()
