@@ -91,7 +91,19 @@ and sinks away.
 - **Music ducking** — playing audio fades to 35% while you dictate and ramps
   back the moment you release. Toggle in the menu.
 
-## Using Claude Code or Cursor?
+## Conversation Mode: Built for Vibe Coding
+
+Vibe coding is pairing with AI assistants (Antigravity, Cursor, Claude Code, Windsurf) at the speed of thought. **Hands-Free Conversation Mode (`Fn + Option`)** transforms your Mac into a voice-driven coding cockpit:
+
+1. **Uninterrupted Flow**: Toggle Conversation Mode once (`Fn + Option`) and talk naturally. Vox captures your voice and automatically pastes text into your prompt window during speech pauses—no holding keys.
+2. **Hands-Free Prompt Dispatch**: Say **`"send"`**, **`"ok send"`**, or **`"ok go"`** to automatically submit your prompt to the AI agent.
+3. **The Hot-Mic Loop & Audio Bell 🔔**:
+   - The microphone stays hot while the AI agent generates code or runs shell commands.
+   - The moment your AI assistant finishes its turn, Vox plays a clear audio bell 🔔 to let you know it's ready for your next instruction.
+   - Review code diffs and dictate your next feature request without touching the keyboard.
+4. **Context-Aware Deep Sweep & Local Memory**: On dispatch, Vox runs a deep-sweep cleanup pass that collapses stutters, strips false starts, and enforces exact technical spelling (`Supabase`, `GHL`, `RAG`, `Tailwind`, `TypeScript`, `Next.js`) via your local dictionary (`local.lua`).
+
+## Using Antigravity, Cursor, or Claude Code?
 
 Just tell your AI coding assistant:
 
