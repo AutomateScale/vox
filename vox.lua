@@ -2052,21 +2052,31 @@ function startScreenRecording()
     end
   end
 
-  -- 2. Launch ffmpeg process
+  -- 2. Launch ffmpeg process targeting active screen
   local ffmpegBin = C.ffmpeg or "/usr/local/bin/ffmpeg"
   if not hs.fs.attributes(ffmpegBin) then ffmpegBin = "/opt/homebrew/bin/ffmpeg" end
   if not hs.fs.attributes(ffmpegBin) then ffmpegBin = "/usr/bin/ffmpeg" end
 
+  local activeScreen = hs.mouse.getCurrentScreen() or hs.screen.mainScreen()
+  local allScreens = hs.screen.allScreens()
+  local targetScreenIndex = 1
+  for idx, scr in ipairs(allScreens) do
+    if scr:id() == activeScreen:id() then
+      targetScreenIndex = idx
+      break
+    end
+  end
+
+  local screenDeviceInput = tostring(targetScreenIndex) .. ":none"
+
   local args = {
     "-f", "avfoundation",
     "-pixel_format", "nv12",
-    "-i", "1:0",
+    "-i", screenDeviceInput,
     "-vf", "scale=2560:-2",
     "-c:v", "h264_videotoolbox",
     "-allow_sw", "1",
     "-b:v", "6M",
-    "-c:a", "aac",
-    "-b:a", "192k",
     "-movflags", "+frag_keyframe+empty_moov",
     "-y",
     screenRec.outputPath

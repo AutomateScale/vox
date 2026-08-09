@@ -303,11 +303,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
                 
+                // Pure Baseline Noise Gate (-0.015 bias only, leaves 100% of baseline quality, skin tones, and edge gradient untouched)
+                let noiseGate = CIFilter(name: "CIColorMatrix")
+                noiseGate?.setValue(scaledMask, forKey: kCIInputImageKey)
+                noiseGate?.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+                noiseGate?.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.015), forKey: "inputAVector")
+                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.015), forKey: "inputBiasVector")
+                let cleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+
                 // Natural Edge Feathering (1.0px Gaussian Blur)
                 let blurFilter = CIFilter(name: "CIGaussianBlur")
-                blurFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
+                blurFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
                 blurFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
-                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
                 
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
