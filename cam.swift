@@ -232,29 +232,35 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                 
-                // 1. Soft Sub-Pixel Edge Anti-Aliasing (Gaussian Blur)
-                let blurFilter = CIFilter(name: "CIGaussianBlur")
-                blurFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
-                blurFilter?.setValue(2.0, forKey: kCIInputRadiusKey)
-                let blurredMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                // 1. Subtle 1px Edge Contraction (Strips room background fringe/halo)
+                let erodeFilter = CIFilter(name: "CIMorphologyMinimum")
+                erodeFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
+                erodeFilter?.setValue(1, forKey: kCIInputRadiusKey)
+                let erodedMask = erodeFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
                 
-                // 2. Alpha Contrast Curve — Eliminates perimeter flashing & background noise
+                // 2. Soft Sub-Pixel Edge Feathering
+                let blurFilter = CIFilter(name: "CIGaussianBlur")
+                blurFilter?.setValue(erodedMask, forKey: kCIInputImageKey)
+                blurFilter?.setValue(1.2, forKey: kCIInputRadiusKey)
+                let blurredMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? erodedMask
+                
+                // 3. Smooth Natural Edge Response (Avoids harsh pixel stepping)
                 let matrixFilter = CIFilter(name: "CIColorMatrix")
                 matrixFilter?.setValue(blurredMask, forKey: kCIInputImageKey)
-                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: 2.2), forKey: "inputAVector")
-                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.18), forKey: "inputBiasVector")
+                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.4), forKey: "inputAVector")
+                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.05), forKey: "inputBiasVector")
                 let contrastMask = matrixFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? blurredMask
                 
-                // 3. Temporal Anti-Flicker Inter-Frame Smoothing (0.75 current / 0.25 previous EMA)
+                // 4. Inter-Frame Temporal Anti-Flicker (0.8 current / 0.2 previous EMA)
                 var smoothMask = contrastMask
                 if let prevMask = self.previousMask {
                     let currAlpha = CIFilter(name: "CIColorMatrix")
                     currAlpha?.setValue(contrastMask, forKey: kCIInputImageKey)
-                    currAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.75), forKey: "inputAVector")
+                    currAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.8), forKey: "inputAVector")
                     
                     let prevAlpha = CIFilter(name: "CIColorMatrix")
                     prevAlpha?.setValue(prevMask, forKey: kCIInputImageKey)
-                    prevAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.25), forKey: "inputAVector")
+                    prevAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.2), forKey: "inputAVector")
                     
                     let addFilter = CIFilter(name: "CIAdditionCompositing")
                     addFilter?.setValue(currAlpha?.outputImage, forKey: kCIInputImageKey)
