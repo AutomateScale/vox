@@ -5028,6 +5028,8 @@ if C.autoUpdate then
 end
 
 -- ---------------- menubar ------------------------------------
+if M and M.menubar then pcall(function() M.menubar:delete() end); M.menubar = nil end
+if menubar then pcall(function() menubar:delete() end); menubar = nil end
 menubar = hs.menubar.new()
 menubar:setIcon(icons.idle, true)
 menubar:setMenu(function()
