@@ -49,7 +49,6 @@ class ResizableCutoutView: NSView {
     
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
-            // Double-click to cycle size presets: Compact (200) -> Medium (340) -> Large (500) -> Studio (680)
             windowController?.cycleSizePreset()
         } else {
             window?.performDrag(with: event)
@@ -111,7 +110,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         super.init(window: window)
         window.delegate = self
         
-        // High-precision accurate neural segmentation
         segmentationRequest.qualityLevel = .accurate
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
@@ -160,7 +158,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         rootLayer.addSublayer(layer)
         self.metalLayer = layer
         
-        // Floating visual resize pill indicator on hover
         let pill = CATextLayer()
         pill.string = " 🔍 Double-Click to Expand • Scroll to Resize "
         pill.font = NSFont.systemFont(ofSize: 11, weight: .bold)
@@ -276,7 +273,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
-        // Single-Pass High Speed Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -322,7 +318,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        // Ultra-Fast Zero-Latency Metal GPU Texture Render
+        // Ultra-Fast Zero-Latency Metal GPU Texture Render with Aspect-Fill Uniform Scaling (Zero Distortion!)
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
@@ -335,12 +331,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let originY = finalImage.extent.origin.y
         let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
-        let scaleX = drawableSize.width / normalizedImage.extent.width
-        let scaleY = drawableSize.height / normalizedImage.extent.height
-        let scaledFinal = normalizedImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        // Uniform Aspect-Fill Scaling (Prevents vertical stretching / distortion!)
+        let scale = max(drawableSize.width / normalizedImage.extent.width, drawableSize.height / normalizedImage.extent.height)
+        let scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        
+        let offsetX = (drawableSize.width - (normalizedImage.extent.width * scale)) / 2.0
+        let offsetY = (drawableSize.height - (normalizedImage.extent.height * scale)) / 2.0
+        let centeredFinal = scaledImage.transformed(by: CGAffineTransform(translationX: offsetX, y: offsetY))
         
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        context.render(scaledFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: colorSpace)
+        context.render(centeredFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: colorSpace)
         
         commandBuffer.present(drawable)
         commandBuffer.commit()
