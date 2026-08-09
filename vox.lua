@@ -2001,21 +2001,24 @@ local screenRec = {
 }
 _G.screenRec = screenRec
 
+local startScreenRecording, stopScreenRecording, toggleScreenRecording
+
 local function formatRecTime(sec)
   local m = math.floor(sec / 60)
   local s = sec % 60
   return string.format("%02d:%02d", m, s)
 end
 
-function _G.toggleScreenRecording()
+function toggleScreenRecording()
   if screenRec.active then
     stopScreenRecording()
   else
     startScreenRecording()
   end
 end
+_G.toggleScreenRecording = toggleScreenRecording
 
-function _G.startScreenRecording()
+function startScreenRecording()
   if screenRec.active then
     stopScreenRecording()
     return
@@ -2242,7 +2245,7 @@ function _G.startScreenRecording()
   end))
 end
 
-function _G.stopScreenRecording()
+function stopScreenRecording()
   if not screenRec.active then return end
   screenRec.active = false
 
@@ -2323,6 +2326,10 @@ function cancelScreenRecording()
 
   hs.alert.show("🗑️ Recording cancelled", 1.5)
 end
+
+_G.startScreenRecording = startScreenRecording
+_G.stopScreenRecording  = stopScreenRecording
+_G.cancelScreenRecording = cancelScreenRecording
 
 -- branded menubar icon: tiny alien silhouette with punched-out eyes.
 -- idle = monochrome template (adapts to menubar theme), rec = coral,
