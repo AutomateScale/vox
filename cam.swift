@@ -144,7 +144,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     private func setupCamera() {
         let session = AVCaptureSession()
         
-        // 1080p Full HD Studio Preset
         if session.canSetSessionPreset(.hd1920x1080) {
             session.sessionPreset = .hd1920x1080
         } else if session.canSetSessionPreset(.high) {
@@ -229,9 +228,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let drawableSize = metalLayer.drawableSize
         let renderBounds = CGRect(x: 0, y: 0, width: drawableSize.width, height: drawableSize.height)
         
-        let scaleX = drawableSize.width / finalImage.extent.width
-        let scaleY = drawableSize.height / finalImage.extent.height
-        let scaledFinal = finalImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        // Normalize origin coordinates to (0,0) before scaling to prevent off-screen rendering
+        let originX = finalImage.extent.origin.x
+        let originY = finalImage.extent.origin.y
+        let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
+        
+        let scaleX = drawableSize.width / normalizedImage.extent.width
+        let scaleY = drawableSize.height / normalizedImage.extent.height
+        let scaledFinal = normalizedImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
         
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         context.render(scaledFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: colorSpace)
