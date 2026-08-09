@@ -49,7 +49,7 @@ class ResizableCutoutView: NSView {
     
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
-            // Double-click to cycle size presets: Compact (200) -> Medium (340) -> Large (500)
+            // Double-click to cycle size presets: Compact (200) -> Medium (340) -> Large (500) -> Studio (680)
             windowController?.cycleSizePreset()
         } else {
             window?.performDrag(with: event)
@@ -111,8 +111,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         super.init(window: window)
         window.delegate = self
         
-        // Balanced quality for 60 FPS ultra-fast performance
-        segmentationRequest.qualityLevel = .balanced
+        // High-precision accurate neural segmentation
+        segmentationRequest.qualityLevel = .accurate
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupMetal()
@@ -259,7 +259,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // Fast 60 FPS Pacing
         let now = CACurrentMediaTime()
         if now - lastRenderTime < 0.016 {
             return
@@ -289,12 +288,31 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                 
+                // 1. Hard Threshold Floor: Cut off background noise < 30% confidence to 0.0
+                let matrixFilter = CIFilter(name: "CIColorMatrix")
+                matrixFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
+                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: 3.5), forKey: "inputAVector")
+                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.80), forKey: "inputBiasVector")
+                let thresholdMask = matrixFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                
+                // 2. 2px Edge Erosion: Pull mask 2px inside body to eliminate background fringe & chair halos
+                let erodeFilter = CIFilter(name: "CIMorphologyMinimum")
+                erodeFilter?.setValue(thresholdMask, forKey: kCIInputImageKey)
+                erodeFilter?.setValue(2, forKey: kCIInputRadiusKey)
+                let erodedMask = erodeFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? thresholdMask
+                
+                // 3. Smooth Edge Anti-Aliasing (1.0px Gaussian Blur)
+                let blurFilter = CIFilter(name: "CIGaussianBlur")
+                blurFilter?.setValue(erodedMask, forKey: kCIInputImageKey)
+                blurFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
+                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? erodedMask
+                
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
                 let filter = CIFilter(name: "CIBlendWithMask")
                 filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                 filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
+                filter?.setValue(finalMask, forKey: kCIInputMaskImageKey)
                 
                 if let blended = filter?.outputImage {
                     finalImage = blended
