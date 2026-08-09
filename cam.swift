@@ -7,10 +7,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var captureSession: AVCaptureSession?
     var videoOutput: AVCaptureVideoDataOutput?
     var renderLayer: CALayer?
-    var circleBorderLayer: CALayer?
     var ciContext: CIContext?
     
-    var greenScreenMode: String = "cutout" // "cutout" (transparent person cutout), "green", "emerald", "blur", "off"
+    var greenScreenMode: String = "cutout" // "cutout", "green", "emerald", "blur", "off"
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     
     init(size: CGFloat = 220.0, cornerPosition: String = "bottom-left", bgMode: String = "cutout") {
@@ -29,7 +28,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             y = screen.maxY - size - margin
         }
         
-        let rect = NSRect(x: x, y: y, width: size, height: size * 1.1)
+        let rect = NSRect(x: x, y: y, width: size, height: size * 1.15)
         
         let window = NSWindow(
             contentRect: rect,
@@ -41,15 +40,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.level = .floating
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true
+        // Disable window shadow in cutout mode so there is NO rectangular box outline around the person!
+        window.hasShadow = (bgMode != "cutout" && bgMode != "transparent")
         window.isMovableByWindowBackground = true
         window.displaysWhenScreenProfileChanges = true
         
         super.init(window: window)
         window.delegate = self
         
-        // High quality person segmentation request
-        segmentationRequest.qualityLevel = .balanced
+        // High quality person segmentation request (.accurate for crisp edge boundaries)
+        segmentationRequest.qualityLevel = .accurate
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupContentView(size: size)
@@ -63,7 +63,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     private func setupContentView(size: CGFloat) {
         guard let window = self.window else { return }
         
-        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size * 1.1))
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size * 1.15))
         containerView.wantsLayer = true
         
         let rootLayer = CALayer()
@@ -71,7 +71,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         rootLayer.masksToBounds = false
         rootLayer.backgroundColor = NSColor.clear.cgColor
         
-        if greenScreenMode != "cutout" {
+        if greenScreenMode != "cutout" && greenScreenMode != "transparent" {
             rootLayer.cornerRadius = size / 2.0
             rootLayer.masksToBounds = true
             rootLayer.borderColor = NSColor(red: 0.1, green: 0.85, blue: 0.75, alpha: 0.9).cgColor
@@ -131,13 +131,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         var inputCIImage = CIImage(cvPixelBuffer: pixelBuffer)
         
-        // Horizontal mirror for standard presenter camera orientation
+        // Mirror image horizontally for presenter orientation
         inputCIImage = inputCIImage.oriented(.upMirrored)
         
         var finalImage: CIImage = inputCIImage
         
         if greenScreenMode == "cutout" || greenScreenMode == "transparent" {
-            // Advanced Person Segmentation Cutout — Zero background, only person rendered
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
             do {
                 try handler.perform([segmentationRequest])
@@ -148,13 +147,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let scaleY = inputCIImage.extent.height / maskCIImage.extent.height
                     let scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                     
+                    // Sharpen alpha mask contrast to eliminate fuzzy edge halo / dark outline
+                    let maskThreshold = CIFilter(name: "CIColorMatrix")
+                    maskThreshold?.setValue(scaledMask, forKey: kCIInputImageKey)
+                    maskThreshold?.setValue(CIVector(x: 0, y: 0, z: 0, w: 2.0), forKey: "inputAVector")
+                    maskThreshold?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.15), forKey: "inputBiasVector")
+                    let cleanMask = maskThreshold?.outputImage ?? scaledMask
+                    
                     // 100% Transparent Background
                     let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                     
                     let filter = CIFilter(name: "CIBlendWithMask")
                     filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                     filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                    filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
+                    filter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
                     
                     if let cutout = filter?.outputImage {
                         finalImage = cutout
@@ -199,7 +205,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             }
         }
         
-        // Render to transparent layer
         if let cgImage = self.ciContext?.createCGImage(finalImage, from: finalImage.extent) {
             DispatchQueue.main.async {
                 CATransaction.begin()
@@ -222,7 +227,7 @@ app.setActivationPolicy(.accessory)
 
 var size: CGFloat = 220.0
 var position = "bottom-left"
-var bgMode = "cutout" // Default to transparent person cutout (no background box!)
+var bgMode = "cutout"
 
 let args = CommandLine.arguments
 for i in 0..<args.count {
