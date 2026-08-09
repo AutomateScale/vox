@@ -9,7 +9,7 @@ class ResizableCutoutView: NSView {
     weak var windowController: WebcamWindowController?
     
     override func scrollWheel(with event: NSEvent) {
-        // Resizing via scroll wheel / trackpad pinch (Scroll or Option/Cmd + Scroll)
+        // Resizing via scroll wheel / trackpad pinch
         let delta = event.deltaY
         if abs(delta) > 0.1 {
             windowController?.adjustSize(by: delta * 8.0)
@@ -31,6 +31,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var ciContext: CIContext?
     
     var currentSize: CGFloat = 260.0
+    var lastRenderTime: CFTimeInterval = 0
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     
     init(size: CGFloat = 260.0, cornerPosition: String = "bottom-left") {
@@ -67,8 +68,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         super.init(window: window)
         window.delegate = self
         
-        // Accurate State-of-the-Art Neural Segmentation Request
-        segmentationRequest.qualityLevel = .accurate
+        // Balanced quality level for 30 FPS zero-jitter video performance
+        segmentationRequest.qualityLevel = .balanced
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupMetal()
@@ -132,7 +133,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     private func setupCamera() {
         let session = AVCaptureSession()
         
-        // Use 1080p Full HD Studio Camera preset for crisp state-of-the-art detail
         if session.canSetSessionPreset(.hd1920x1080) {
             session.sessionPreset = .hd1920x1080
         } else if session.canSetSessionPreset(.high) {
@@ -149,6 +149,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             if session.canAddInput(input) {
                 session.addInput(input)
             }
+            
+            // Lock camera device to locked 30 FPS for smooth, efficient video capture
+            try device.lockForConfiguration()
+            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
+            device.unlockForConfiguration()
             
             let output = AVCaptureVideoDataOutput()
             output.alwaysDiscardsLateVideoFrames = true
@@ -171,6 +177,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // Enforce 30 FPS max rendering cadence (32ms interval)
+        let now = CACurrentMediaTime()
+        if now - lastRenderTime < 0.031 {
+            return
+        }
+        lastRenderTime = now
+        
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         var inputCIImage = CIImage(cvPixelBuffer: pixelBuffer)
         
@@ -179,7 +192,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
-        // Perform Pro-Grade Neural Person Segmentation
+        // High Speed 30 FPS Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -206,7 +219,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             print("Segmentation error: \(error)")
         }
         
-        // High Speed 60 FPS Metal GPU Texture Render (Zero CPU Overhead)
+        // Metal GPU Texture Render (Zero CPU Bottleneck)
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
@@ -215,7 +228,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let drawableSize = metalLayer.drawableSize
         let renderBounds = CGRect(x: 0, y: 0, width: drawableSize.width, height: drawableSize.height)
         
-        // Scale final image to target layer bounds
         let scaleX = drawableSize.width / finalImage.extent.width
         let scaleY = drawableSize.height / finalImage.extent.height
         let scaledFinal = finalImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
