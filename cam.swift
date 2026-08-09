@@ -99,7 +99,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             defer: false
         )
         
-        window.level = .floating
+        // High-priority Overlay level floating over all apps & full screen spaces
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -371,7 +372,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let wc = WebcamWindowController(size: size, cornerPosition: position)
         wc.showWindow(nil)
+        wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
         self.controller = wc
     }
 }
