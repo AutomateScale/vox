@@ -12,31 +12,66 @@ func logMsg(_ msg: String) {
 
 class ResizableCutoutView: NSView {
     weak var windowController: WebcamWindowController?
+    var isHovered: Bool = false
+    var trackingArea: NSTrackingArea?
+    
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area = trackingArea {
+            removeTrackingArea(area)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        self.trackingArea = area
+    }
+    
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        windowController?.showControlsPill(true)
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        windowController?.showControlsPill(false)
+    }
     
     override func scrollWheel(with event: NSEvent) {
         let delta = event.deltaY
         if abs(delta) > 0.1 {
-            windowController?.adjustSize(by: delta * 8.0)
+            windowController?.adjustSize(by: delta * 12.0)
         }
     }
     
     override func mouseDown(with event: NSEvent) {
-        window?.performDrag(with: event)
+        if event.clickCount == 2 {
+            // Double-click to cycle size presets: Compact (200) -> Medium (340) -> Large (500)
+            windowController?.cycleSizePreset()
+        } else {
+            window?.performDrag(with: event)
+        }
     }
 }
 
 class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     var captureSession: AVCaptureSession?
     var videoOutput: AVCaptureVideoDataOutput?
-    var renderLayer: CALayer?
+    var metalLayer: CAMetalLayer?
     var metalDevice: MTLDevice?
+    var commandQueue: MTLCommandQueue?
     var ciContext: CIContext?
-    var previousMask: CIImage?
+    var pillLayer: CATextLayer?
     
     var currentSize: CGFloat = 260.0
     var lastRenderTime: CFTimeInterval = 0
-    var frameCount: Int = 0
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
+    
+    let sizePresets: [CGFloat] = [200.0, 340.0, 500.0, 680.0]
+    var currentPresetIndex: Int = 0
     
     init(size: CGFloat = 260.0, cornerPosition: String = "bottom-left") {
         self.currentSize = size
@@ -76,7 +111,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         super.init(window: window)
         window.delegate = self
         
-        segmentationRequest.qualityLevel = .accurate
+        // Balanced quality for 60 FPS ultra-fast performance
+        segmentationRequest.qualityLevel = .balanced
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupMetal()
@@ -89,12 +125,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     private func setupMetal() {
-        if let device = MTLCreateSystemDefaultDevice() {
-            self.metalDevice = device
-            self.ciContext = CIContext(mtlDevice: device)
-        } else {
-            self.ciContext = CIContext()
-        }
+        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        self.metalDevice = device
+        self.commandQueue = device.makeCommandQueue()
+        self.ciContext = CIContext(mtlDevice: device, options: [
+            .cacheIntermediates: false,
+            .useSoftwareRenderer: false
+        ])
     }
     
     private func setupContentView(width: CGFloat, height: CGFloat) {
@@ -105,25 +142,65 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         containerView.windowController = self
         containerView.wantsLayer = true
         
-        let layer = CALayer()
+        let rootLayer = CALayer()
+        rootLayer.frame = containerView.bounds
+        rootLayer.backgroundColor = NSColor.clear.cgColor
+        containerView.layer = rootLayer
+        
+        let layer = CAMetalLayer()
+        layer.device = metalDevice
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false
         layer.frame = containerView.bounds
         layer.contentsScale = scale
+        layer.drawableSize = CGSize(width: width * scale, height: height * scale)
         layer.backgroundColor = NSColor.clear.cgColor
         layer.isOpaque = false
         
-        containerView.layer = layer
-        self.renderLayer = layer
+        rootLayer.addSublayer(layer)
+        self.metalLayer = layer
+        
+        // Floating visual resize pill indicator on hover
+        let pill = CATextLayer()
+        pill.string = " 🔍 Double-Click to Expand • Scroll to Resize "
+        pill.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        pill.fontSize = 11
+        pill.alignmentMode = .center
+        pill.foregroundColor = NSColor.white.cgColor
+        pill.backgroundColor = NSColor.black.withAlphaComponent(0.65).cgColor
+        pill.cornerRadius = 10.0
+        pill.frame = CGRect(x: 10, y: 10, width: width - 20, height: 22)
+        pill.opacity = 0.0
+        rootLayer.addSublayer(pill)
+        self.pillLayer = pill
+        
         window.contentView = containerView
     }
     
+    func showControlsPill(_ show: Bool) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.2)
+        self.pillLayer?.opacity = show ? 1.0 : 0.0
+        CATransaction.commit()
+    }
+    
+    func cycleSizePreset() {
+        currentPresetIndex = (currentPresetIndex + 1) % sizePresets.count
+        let targetSize = sizePresets[currentPresetIndex]
+        setSize(targetSize)
+    }
+    
     func adjustSize(by delta: CGFloat) {
-        guard let window = self.window, let contentView = window.contentView else { return }
         let minSize: CGFloat = 140.0
         let maxSize: CGFloat = 850.0
-        
         let newSize = max(minSize, min(maxSize, currentSize + delta))
-        if newSize == currentSize { return }
-        
+        if newSize != currentSize {
+            setSize(newSize)
+        }
+    }
+    
+    private func setSize(_ newSize: CGFloat) {
+        guard let window = self.window, let contentView = window.contentView else { return }
         currentSize = newSize
         let frame = window.frame
         let newHeight = newSize * 1.25
@@ -131,10 +208,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
         DispatchQueue.main.async {
-            window.setFrame(newRect, display: true, animate: false)
+            window.setFrame(newRect, display: true, animate: true)
             contentView.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            self.renderLayer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            self.renderLayer?.contentsScale = scale
+            contentView.layer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
+            self.metalLayer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
+            self.metalLayer?.drawableSize = CGSize(width: newSize * scale, height: newHeight * scale)
+            self.pillLayer?.frame = CGRect(x: 10, y: 10, width: newSize - 20, height: 22)
         }
     }
     
@@ -143,25 +222,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let session = AVCaptureSession()
         
         let videoDevices = AVCaptureDevice.devices(for: .video)
-        logMsg("Found \(videoDevices.count) video devices:")
-        for dev in videoDevices {
-            logMsg("  -> Device: \(dev.localizedName) (ID: \(dev.uniqueID))")
-        }
-        
         guard let device = videoDevices.first ?? AVCaptureDevice.default(for: .video) else {
             logMsg("ERROR - No video camera found.")
             return
         }
-        logMsg("Selected camera device: \(device.localizedName)")
         
         do {
             let input = try AVCaptureDeviceInput(device: device)
             if session.canAddInput(input) {
                 session.addInput(input)
-                logMsg("Input added successfully.")
-            } else {
-                logMsg("ERROR - Cannot add input to session.")
-                return
             }
         } catch {
             logMsg("ERROR initializing camera input: \(error)")
@@ -170,42 +239,29 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         if session.canSetSessionPreset(.high) {
             session.sessionPreset = .high
-            logMsg("Preset set to High")
-        } else if session.canSetSessionPreset(.medium) {
-            session.sessionPreset = .medium
-            logMsg("Preset set to Medium")
         }
         
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera.processing.queue", qos: .userInteractive))
+        output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera.metal.queue", qos: .userInteractive))
         
         if session.canAddOutput(output) {
             session.addOutput(output)
-            logMsg("Output added successfully.")
-        } else {
-            logMsg("ERROR - Cannot add output to session.")
         }
         
         self.videoOutput = output
         self.captureSession = session
         
         DispatchQueue.global(qos: .userInitiated).async {
-            logMsg("Calling session.startRunning()...")
             session.startRunning()
-            logMsg("session.startRunning() completed. Is running: \(session.isRunning)")
         }
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        frameCount += 1
-        if frameCount % 30 == 0 {
-            logMsg("Frame received #\(frameCount)")
-        }
-        
+        // Fast 60 FPS Pacing
         let now = CACurrentMediaTime()
-        if now - lastRenderTime < 0.030 {
+        if now - lastRenderTime < 0.016 {
             return
         }
         lastRenderTime = now
@@ -221,6 +277,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
+        // Single-Pass High Speed Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -232,51 +289,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                 
-                // 1. Subtle 1px Edge Contraction (Strips room background fringe/halo)
-                let erodeFilter = CIFilter(name: "CIMorphologyMinimum")
-                erodeFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
-                erodeFilter?.setValue(1, forKey: kCIInputRadiusKey)
-                let erodedMask = erodeFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
-                
-                // 2. Soft Sub-Pixel Edge Feathering
-                let blurFilter = CIFilter(name: "CIGaussianBlur")
-                blurFilter?.setValue(erodedMask, forKey: kCIInputImageKey)
-                blurFilter?.setValue(1.2, forKey: kCIInputRadiusKey)
-                let blurredMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? erodedMask
-                
-                // 3. Smooth Natural Edge Response (Avoids harsh pixel stepping)
-                let matrixFilter = CIFilter(name: "CIColorMatrix")
-                matrixFilter?.setValue(blurredMask, forKey: kCIInputImageKey)
-                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.4), forKey: "inputAVector")
-                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.05), forKey: "inputBiasVector")
-                let contrastMask = matrixFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? blurredMask
-                
-                // 4. Inter-Frame Temporal Anti-Flicker (0.8 current / 0.2 previous EMA)
-                var smoothMask = contrastMask
-                if let prevMask = self.previousMask {
-                    let currAlpha = CIFilter(name: "CIColorMatrix")
-                    currAlpha?.setValue(contrastMask, forKey: kCIInputImageKey)
-                    currAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.8), forKey: "inputAVector")
-                    
-                    let prevAlpha = CIFilter(name: "CIColorMatrix")
-                    prevAlpha?.setValue(prevMask, forKey: kCIInputImageKey)
-                    prevAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.2), forKey: "inputAVector")
-                    
-                    let addFilter = CIFilter(name: "CIAdditionCompositing")
-                    addFilter?.setValue(currAlpha?.outputImage, forKey: kCIInputImageKey)
-                    addFilter?.setValue(prevAlpha?.outputImage, forKey: kCIInputBackgroundImageKey)
-                    if let blendedMask = addFilter?.outputImage {
-                        smoothMask = blendedMask.cropped(to: inputCIImage.extent)
-                    }
-                }
-                self.previousMask = smoothMask
-                
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
                 let filter = CIFilter(name: "CIBlendWithMask")
                 filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                 filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                filter?.setValue(smoothMask, forKey: kCIInputMaskImageKey)
+                filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
                 
                 if let blended = filter?.outputImage {
                     finalImage = blended
@@ -286,20 +304,28 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        guard let context = self.ciContext else { return }
+        // Ultra-Fast Zero-Latency Metal GPU Texture Render
+        guard let metalLayer = self.metalLayer,
+              let drawable = metalLayer.nextDrawable(),
+              let commandBuffer = commandQueue?.makeCommandBuffer(),
+              let context = self.ciContext else { return }
+        
+        let drawableSize = metalLayer.drawableSize
+        let renderBounds = CGRect(x: 0, y: 0, width: drawableSize.width, height: drawableSize.height)
         
         let originX = finalImage.extent.origin.x
         let originY = finalImage.extent.origin.y
         let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
-        if let cgImage = context.createCGImage(normalizedImage, from: normalizedImage.extent) {
-            DispatchQueue.main.async {
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                self.renderLayer?.contents = cgImage
-                CATransaction.commit()
-            }
-        }
+        let scaleX = drawableSize.width / normalizedImage.extent.width
+        let scaleY = drawableSize.height / normalizedImage.extent.height
+        let scaledFinal = normalizedImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        context.render(scaledFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: colorSpace)
+        
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
     }
     
     func closeWebcam() {
