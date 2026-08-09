@@ -61,6 +61,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.hasShadow = false
         window.isMovableByWindowBackground = true
         window.displaysWhenScreenProfileChanges = true
+        window.sharingType = .readWrite
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.orderFrontRegardless()
         
         super.init(window: window)
         window.delegate = self
@@ -258,6 +261,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let wc = WebcamWindowController(size: size, cornerPosition: position)
         wc.showWindow(nil)
+        wc.window?.orderFrontRegardless()
         self.controller = wc
     }
 }
