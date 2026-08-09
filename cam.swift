@@ -9,7 +9,6 @@ class ResizableCutoutView: NSView {
     weak var windowController: WebcamWindowController?
     
     override func scrollWheel(with event: NSEvent) {
-        // Resizing via scroll wheel / trackpad pinch
         let delta = event.deltaY
         if abs(delta) > 0.1 {
             windowController?.adjustSize(by: delta * 8.0)
@@ -17,7 +16,6 @@ class ResizableCutoutView: NSView {
     }
     
     override func mouseDown(with event: NSEvent) {
-        // Window dragging
         window?.performDrag(with: event)
     }
 }
@@ -68,7 +66,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         super.init(window: window)
         window.delegate = self
         
-        // Balanced quality level for 30 FPS zero-jitter video performance
         segmentationRequest.qualityLevel = .balanced
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
@@ -149,37 +146,32 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             if session.canAddInput(input) {
                 session.addInput(input)
             }
-            
-            // Lock camera device to locked 30 FPS for smooth, efficient video capture
-            try device.lockForConfiguration()
-            device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
-            device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
-            device.unlockForConfiguration()
-            
-            let output = AVCaptureVideoDataOutput()
-            output.alwaysDiscardsLateVideoFrames = true
-            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-            output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera.metal.queue", qos: .userInteractive))
-            
-            if session.canAddOutput(output) {
-                session.addOutput(output)
-            }
-            
-            self.videoOutput = output
-            self.captureSession = session
-            
-            DispatchQueue.global(qos: .userInitiated).async {
-                session.startRunning()
-            }
         } catch {
             print("Error initializing camera input: \(error)")
+            return
+        }
+        
+        let output = AVCaptureVideoDataOutput()
+        output.alwaysDiscardsLateVideoFrames = true
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera.metal.queue", qos: .userInteractive))
+        
+        if session.canAddOutput(output) {
+            session.addOutput(output)
+        }
+        
+        self.videoOutput = output
+        self.captureSession = session
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.startRunning()
         }
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // Enforce 30 FPS max rendering cadence (32ms interval)
+        // Enforce smooth 30 FPS pacing (32ms interval)
         let now = CACurrentMediaTime()
-        if now - lastRenderTime < 0.031 {
+        if now - lastRenderTime < 0.030 {
             return
         }
         lastRenderTime = now
@@ -187,12 +179,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         var inputCIImage = CIImage(cvPixelBuffer: pixelBuffer)
         
-        // Mirror camera for presenter orientation
         inputCIImage = inputCIImage.oriented(.upMirrored)
-        
         var finalImage: CIImage = inputCIImage
         
-        // High Speed 30 FPS Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -203,7 +192,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskCIImage.extent.height
                 let scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                 
-                // Pure transparent background
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
                 let filter = CIFilter(name: "CIBlendWithMask")
@@ -219,7 +207,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             print("Segmentation error: \(error)")
         }
         
-        // Metal GPU Texture Render (Zero CPU Bottleneck)
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
