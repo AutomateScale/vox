@@ -2031,7 +2031,7 @@ function startScreenRecording()
   -- 3. Create Screen Recording HUD Widget
   local mainScreen = hs.screen.mainScreen()
   local screenFrame = mainScreen and mainScreen:frame() or { x = 0, y = 0, w = 1920, h = 1080 }
-  local hudW, hudH = 260, 46
+  local hudW, hudH = 340, 46
   local hudX = screenFrame.x + (screenFrame.w - hudW) / 2
   local hudY = screenFrame.y + screenFrame.h - hudH - 35
 
@@ -2039,6 +2039,7 @@ function startScreenRecording()
   c:level(hs.canvas.windowLevels.overlay)
   c:behavior({ "canJoinAllSpaces", "stationary" })
 
+  -- 1. Container background
   c[1] = {
     type = "rectangle",
     action = "fill",
@@ -2047,62 +2048,133 @@ function startScreenRecording()
     strokeColor = { red = 0.2, green = 0.85, blue = 0.75, alpha = 0.8 },
     strokeWidth = 1.5,
   }
+  -- 2. Red recording dot
   c[2] = {
     type = "oval",
     action = "fill",
     fillColor = { red = 1.0, green = 0.2, blue = 0.3, alpha = 1.0 },
     frame = { x = 16, y = 16, w = 14, h = 14 }
   }
+  -- 3. Timer text
   c[3] = {
     type = "text",
     text = "00:00",
     textColor = { red = 1.0, green = 1.0, blue = 1.0, alpha = 1.0 },
     textFont = ".AppleSystemUIFontBold",
     textSize = 15,
-    frame = { x = 38, y = 13, w = 60, h = 24 }
+    frame = { x = 36, y = 13, w = 55, h = 24 }
   }
+  -- 4 & 5. ALIEN 👽 BUTTON
   c[4] = {
+    type = "oval",
+    action = "fill",
+    fillColor = { red = 0.15, green = 0.45, blue = 0.35, alpha = 0.9 },
+    strokeColor = { red = 0.3, green = 0.95, blue = 0.75, alpha = 1.0 },
+    strokeWidth = 1.2,
+    frame = { x = 96, y = 9, w = 28, h = 28 },
+    trackMouseDown = true
+  }
+  c[5] = {
+    type = "text",
+    text = "👽",
+    textSize = 16,
+    textAlignment = "center",
+    frame = { x = 96, y = 11, w = 28, h = 24 },
+    trackMouseDown = true
+  }
+  -- 6 & 7. CAM 📷 BUTTON
+  c[6] = {
+    type = "rectangle",
+    action = "fill",
+    fillColor = { red = 0.18, green = 0.22, blue = 0.30, alpha = 0.85 },
+    roundedRectRadii = { xRadius = 8, yRadius = 8 },
+    frame = { x = 132, y = 10, w = 62, h = 26 },
+    trackMouseDown = true
+  }
+  c[7] = {
+    type = "text",
+    text = C.screenRecWebcam and "📷 Cam" or "📷 OFF",
+    textColor = { red = 0.85, green = 0.9, blue = 0.95, alpha = 1.0 },
+    textFont = ".AppleSystemUIFontBold",
+    textSize = 11,
+    textAlignment = "center",
+    frame = { x = 132, y = 14, w = 62, h = 20 },
+    trackMouseDown = true
+  }
+  -- 8 & 9. STOP ⏹ BUTTON
+  c[8] = {
     type = "rectangle",
     action = "fill",
     fillColor = { red = 0.9, green = 0.25, blue = 0.25, alpha = 0.9 },
     roundedRectRadii = { xRadius = 8, yRadius = 8 },
-    frame = { x = 110, y = 10, w = 65, h = 26 },
+    frame = { x = 202, y = 10, w = 65, h = 26 },
     trackMouseDown = true
   }
-  c[5] = {
+  c[9] = {
     type = "text",
     text = "⏹ Stop",
     textColor = { red = 1.0, green = 1.0, blue = 1.0, alpha = 1.0 },
     textFont = ".AppleSystemUIFontBold",
     textSize = 12,
     textAlignment = "center",
-    frame = { x = 110, y = 14, w = 65, h = 20 },
+    frame = { x = 202, y = 14, w = 65, h = 20 },
     trackMouseDown = true
   }
-  c[6] = {
+  -- 10 & 11. CANCEL ✖ BUTTON
+  c[10] = {
     type = "rectangle",
     action = "fill",
     fillColor = { red = 0.25, green = 0.28, blue = 0.35, alpha = 0.8 },
     roundedRectRadii = { xRadius = 8, yRadius = 8 },
-    frame = { x = 185, y = 10, w = 60, h = 26 },
+    frame = { x = 275, y = 10, w = 52, h = 26 },
     trackMouseDown = true
   }
-  c[7] = {
+  c[11] = {
     type = "text",
     text = "✖ Cancel",
     textColor = { red = 0.8, green = 0.8, blue = 0.85, alpha = 1.0 },
     textFont = ".AppleSystemUIFont",
     textSize = 11,
     textAlignment = "center",
-    frame = { x = 185, y = 14, w = 60, h = 20 },
+    frame = { x = 275, y = 14, w = 52, h = 20 },
     trackMouseDown = true
   }
 
   c:mouseCallback(function(canvas, event, id, x, y)
     if event == "mouseDown" then
       if id == 4 or id == 5 then
-        stopScreenRecording()
+        play("send")
+        local quotes = {
+          "👽 Vox Alien: Recording live! Show them the magic! ✨",
+          "👽 Vox Alien: Rolling! You're crushing this video!",
+          "👽 Vox Alien: Mic is hot and screen is sharp! 🚀",
+          "👽 Vox Alien: Peak vibe recording in progress!"
+        }
+        local msg = quotes[math.random(#quotes)]
+        hs.alert.show(msg, 2.0)
       elseif id == 6 or id == 7 then
+        C.screenRecWebcam = not C.screenRecWebcam
+        if screenRec.camTask then
+          screenRec.camTask:terminate()
+          screenRec.camTask = nil
+          os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+        elseif C.screenRecWebcam then
+          local camBin = HOME .. "/vox/cam-bin"
+          if hs.fs.attributes(camBin) then
+            screenRec.camTask = hs.task.new(camBin, nil, {
+              "--size", tostring(C.screenRecWebcamSize or 180),
+              "--position", C.screenRecWebcamPos or "bottom-left"
+            })
+            screenRec.camTask:start()
+          end
+        end
+        if screenRec.hud then
+          screenRec.hud[7].text = C.screenRecWebcam and "📷 Cam" or "📷 OFF"
+        end
+        hs.alert.show("Webcam Circle: " .. (C.screenRecWebcam and "ON" or "OFF"), 1.2)
+      elseif id == 8 or id == 9 then
+        stopScreenRecording()
+      elseif id == 10 or id == 11 then
         cancelScreenRecording()
       end
     end
