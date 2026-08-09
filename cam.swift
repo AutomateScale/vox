@@ -136,7 +136,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             session.sessionPreset = .high
         }
         
-        guard let device = AVCaptureDevice.default(for: .video) else {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
+            mediaType: .video,
+            position: .unspecified
+        )
+        guard let device = discovery.devices.first ?? AVCaptureDevice.default(for: .video) else {
             print("No video camera found.")
             return
         }
@@ -176,20 +181,26 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         lastRenderTime = now
         
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        var inputCIImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let rawCIImage = CIImage(cvPixelBuffer: pixelBuffer)
         
-        inputCIImage = inputCIImage.oriented(.upMirrored)
+        let rawOriginX = rawCIImage.extent.origin.x
+        let rawOriginY = rawCIImage.extent.origin.y
+        let inputCIImage = rawCIImage
+            .transformed(by: CGAffineTransform(translationX: -rawOriginX, y: -rawOriginY))
+            .oriented(.upMirrored)
+        
         var finalImage: CIImage = inputCIImage
         
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
             if let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
-                let maskCIImage = CIImage(cvPixelBuffer: maskBuffer)
+                let maskRaw = CIImage(cvPixelBuffer: maskBuffer)
+                let maskNorm = maskRaw.transformed(by: CGAffineTransform(translationX: -maskRaw.extent.origin.x, y: -maskRaw.extent.origin.y))
                 
-                let scaleX = inputCIImage.extent.width / maskCIImage.extent.width
-                let scaleY = inputCIImage.extent.height / maskCIImage.extent.height
-                let scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+                let scaleX = inputCIImage.extent.width / maskNorm.extent.width
+                let scaleY = inputCIImage.extent.height / maskNorm.extent.height
+                let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                 
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
