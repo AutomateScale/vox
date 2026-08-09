@@ -1044,6 +1044,20 @@ local function miniTick()
   c[5].strokeColor = head[1]
   c[6].fillColor = head[1]
   c:alpha(glow)
+
+  -- Track bottom edge of currently focused highlighted window if window positioning is enabled
+  if C.alienPos and C.alienPos.window then
+    local ok, wf = pcall(function()
+      local w = hs.window.focusedWindow()
+      return w and w:frame()
+    end)
+    if ok and wf and wf.w > 120 and wf.h > 120 then
+      local mainF = hs.screen.mainScreen():fullFrame()
+      local targetX = math.max(mainF.x + 4, math.min(wf.x + (wf.w - MW) / 2, mainF.x + mainF.w - MW - 4))
+      local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 32, mainF.y + mainF.h - MH - 4))
+      c:frame({ x = targetX, y = targetY, w = MW, h = MH })
+    end
+  end
 end
 
 local function miniShow()
@@ -1051,11 +1065,21 @@ local function miniShow()
   -- Only stand aside for the pill when the pill is actually in use.
   if C.hudStyle ~= "mini" and hud.visible then return end
   miniEnsure()
-  -- primary screen, always: mainScreen() follows keyboard focus, which on
-  -- multi-monitor setups strands the alien on whatever display had focus
-  local f = hs.screen.primaryScreen():fullFrame()
-  mini.canvas:frame({ x = f.x + (f.w - MW) / 2, y = f.y + f.h - 34,
-                      w = MW, h = MH })
+  
+  local ok, wf = pcall(function()
+    local w = hs.window.focusedWindow()
+    return w and w:frame()
+  end)
+  if C.alienPos and C.alienPos.window and ok and wf and wf.w > 120 and wf.h > 120 then
+    local mainF = hs.screen.mainScreen():fullFrame()
+    local targetX = math.max(mainF.x + 4, math.min(wf.x + (wf.w - MW) / 2, mainF.x + mainF.w - MW - 4))
+    local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 32, mainF.y + mainF.h - MH - 4))
+    mini.canvas:frame({ x = targetX, y = targetY, w = MW, h = MH })
+  else
+    local f = hs.screen.primaryScreen():fullFrame()
+    mini.canvas:frame({ x = f.x + (f.w - MW) / 2, y = f.y + f.h - 34,
+                        w = MW, h = MH })
+  end
   mini.canvas:show()
   if not mini.timer then
     mini.timer = hs.timer.doEvery(0.25, safeTick("miniTick", miniTick))
@@ -1515,8 +1539,8 @@ local function hudPositions()
       local w = hs.window.focusedWindow(); return w and w:frame()
     end)
     if ok and wf and wf.w > 120 then
-      -- straddle the top edge: he pops up out of the window
-      add(wf.x + (wf.w - CV_W) / 2, wf.y - CV_H + 24)
+      -- Dock flush at the bottom center edge of the highlighted focused window!
+      add(wf.x + (wf.w - CV_W) / 2, wf.y + wf.h - 34)
     end
   end
   if pos.center then add(f.x + (f.w - CV_W) / 2, f.y + f.h - CV_H - 28) end
@@ -5115,8 +5139,8 @@ menubar:setMenu(function()
       } },
     { title = "Alien position (pick any combo)", menu = (function()
         local defs = {
+          { "window",   "Bottom edge of highlighted window (Default)" },
           { "titlebar", "Docked flush in window titlebar" },
-          { "window",   "Pops out of the window you dictate into" },
           { "center",   "Bottom center of the screen" },
           { "top",      "Top center of the screen" },
           { "side",     "Right edge, mid-height" },
