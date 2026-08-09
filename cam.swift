@@ -59,9 +59,8 @@ class ResizableCutoutView: NSView {
 class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     var captureSession: AVCaptureSession?
     var videoOutput: AVCaptureVideoDataOutput?
-    var metalLayer: CAMetalLayer?
+    var renderLayer: CALayer?
     var metalDevice: MTLDevice?
-    var commandQueue: MTLCommandQueue?
     var ciContext: CIContext?
     var pillLayer: CATextLayer?
     var sampleQueue: DispatchQueue?
@@ -93,12 +92,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             y = screen.maxY - height - margin
         }
         
-        // Strict Clamping to visible monitor screen area
         x = max(screen.minX + margin, min(screen.maxX - width - margin, x))
         y = max(screen.minY + margin, min(screen.maxY - height - margin, y))
         
         let rect = NSRect(x: x, y: y, width: width, height: height)
-        logMsg("Creating window at clamped rect: \(rect)")
+        logMsg("Creating window at rect: \(rect)")
         
         let window = NSWindow(
             contentRect: rect,
@@ -107,7 +105,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             defer: false
         )
         
-        // Standard AppKit Floating window level (Level 3 - floats over standard windows)
         window.level = .floating
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -135,16 +132,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     private func setupMetal() {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
-        self.metalDevice = device
-        self.commandQueue = device.makeCommandQueue()
-        let srgbSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-        self.ciContext = CIContext(mtlDevice: device, options: [
-            .workingColorSpace: srgbSpace,
-            .outputColorSpace: srgbSpace,
-            .cacheIntermediates: false,
-            .useSoftwareRenderer: false
-        ])
+        if let device = MTLCreateSystemDefaultDevice() {
+            self.metalDevice = device
+            self.ciContext = CIContext(mtlDevice: device)
+        } else {
+            self.ciContext = CIContext()
+        }
     }
     
     private func setupContentView(width: CGFloat, height: CGFloat) {
@@ -155,23 +148,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         containerView.windowController = self
         containerView.wantsLayer = true
         
-        let rootLayer = CALayer()
-        rootLayer.frame = containerView.bounds
-        rootLayer.backgroundColor = NSColor.clear.cgColor
-        containerView.layer = rootLayer
-        
-        let layer = CAMetalLayer()
-        layer.device = metalDevice
-        layer.pixelFormat = .bgra8Unorm_srgb
-        layer.framebufferOnly = false
+        let layer = CALayer()
         layer.frame = containerView.bounds
         layer.contentsScale = scale
-        layer.drawableSize = CGSize(width: width * scale, height: height * scale)
         layer.backgroundColor = NSColor.clear.cgColor
         layer.isOpaque = false
         
-        rootLayer.addSublayer(layer)
-        self.metalLayer = layer
+        containerView.layer = layer
+        self.renderLayer = layer
         
         let pill = CATextLayer()
         pill.string = " 🔍 Double-Click to Expand • Scroll to Resize "
@@ -183,7 +167,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         pill.cornerRadius = 10.0
         pill.frame = CGRect(x: 10, y: 10, width: width - 20, height: 22)
         pill.opacity = 0.0
-        rootLayer.addSublayer(pill)
+        layer.addSublayer(pill)
         self.pillLayer = pill
         
         window.contentView = containerView
@@ -223,24 +207,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         DispatchQueue.main.async {
             window.setFrame(newRect, display: true, animate: true)
             contentView.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
-            contentView.layer?.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
-            self.metalLayer?.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
-            self.metalLayer?.drawableSize = CGSize(width: newWidth * scale, height: newHeight * scale)
+            self.renderLayer?.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
+            self.renderLayer?.contentsScale = scale
             self.pillLayer?.frame = CGRect(x: 10, y: 10, width: newWidth - 20, height: 22)
         }
     }
     
     private func setupCamera() {
         logMsg("Setting up camera session...")
-        
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        logMsg("Camera authorization status: \(status.rawValue)")
-        if status == .notDetermined {
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                logMsg("Camera requestAccess result: \(granted)")
-            }
-        }
-        
         let session = AVCaptureSession()
         
         let videoDevices = AVCaptureDevice.devices(for: .video)
@@ -260,8 +234,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             if session.canAddInput(input) {
                 session.addInput(input)
                 logMsg("Input added successfully.")
-            } else {
-                logMsg("ERROR - session.canAddInput returned false")
             }
         } catch {
             logMsg("ERROR initializing camera input: \(error)")
@@ -277,15 +249,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         output.alwaysDiscardsLateVideoFrames = true
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         
-        let queue = DispatchQueue(label: "camera.metal.queue", qos: .userInteractive)
+        let queue = DispatchQueue(label: "camera.processing.queue", qos: .userInteractive)
         self.sampleQueue = queue
         output.setSampleBufferDelegate(self, queue: queue)
         
         if session.canAddOutput(output) {
             session.addOutput(output)
             logMsg("Output added successfully.")
-        } else {
-            logMsg("ERROR - session.canAddOutput returned false")
         }
         
         self.videoOutput = output
@@ -305,7 +275,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         }
         
         let now = CACurrentMediaTime()
-        if now - lastRenderTime < 0.016 {
+        if now - lastRenderTime < 0.030 {
             return
         }
         lastRenderTime = now
@@ -321,7 +291,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
-        // Fast Balanced Neural ML Segmentation
+        // Fast Person Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -333,12 +303,18 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
                 
+                // Natural Edge Feathering (1.0px Gaussian Blur)
+                let blurFilter = CIFilter(name: "CIGaussianBlur")
+                blurFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
+                blurFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
+                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
                 let filter = CIFilter(name: "CIBlendWithMask")
                 filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                 filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
+                filter?.setValue(finalMask, forKey: kCIInputMaskImageKey)
                 
                 if let blended = filter?.outputImage {
                     finalImage = blended
@@ -348,31 +324,34 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        // Ultra-Fast Widescreen Metal GPU Texture Render
-        guard let metalLayer = self.metalLayer,
-              let drawable = metalLayer.nextDrawable(),
-              let commandBuffer = commandQueue?.makeCommandBuffer(),
-              let context = self.ciContext else { return }
+        guard let context = self.ciContext,
+              let window = self.window else { return }
         
-        let drawableSize = metalLayer.drawableSize
-        let renderBounds = CGRect(x: 0, y: 0, width: drawableSize.width, height: drawableSize.height)
+        let containerBounds = window.contentView?.bounds ?? CGRect(x: 0, y: 0, width: 476, height: 323)
+        let scaleFactor = NSScreen.main?.backingScaleFactor ?? 2.0
+        let renderWidth = containerBounds.width * scaleFactor
+        let renderHeight = containerBounds.height * scaleFactor
         
         let originX = finalImage.extent.origin.x
         let originY = finalImage.extent.origin.y
         let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
-        let scale = min(drawableSize.width / normalizedImage.extent.width, drawableSize.height / normalizedImage.extent.height)
+        let scale = min(renderWidth / normalizedImage.extent.width, renderHeight / normalizedImage.extent.height)
         let scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         
-        let offsetX = (drawableSize.width - (normalizedImage.extent.width * scale)) / 2.0
-        let offsetY = (drawableSize.height - (normalizedImage.extent.height * scale)) / 2.0
+        let offsetX = (renderWidth - (normalizedImage.extent.width * scale)) / 2.0
+        let offsetY = (renderHeight - (normalizedImage.extent.height * scale)) / 2.0
         let centeredFinal = scaledImage.transformed(by: CGAffineTransform(translationX: offsetX, y: offsetY))
         
-        let srgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
-        context.render(centeredFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: srgbColorSpace)
-        
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
+        let renderRect = CGRect(x: 0, y: 0, width: renderWidth, height: renderHeight)
+        if let cgImage = context.createCGImage(centeredFinal, from: renderRect) {
+            DispatchQueue.main.async {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.renderLayer?.contents = cgImage
+                CATransaction.commit()
+            }
+        }
     }
     
     func closeWebcam() {
