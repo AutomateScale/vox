@@ -140,12 +140,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             session.sessionPreset = .high
         }
         
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera],
-            mediaType: .video,
-            position: .unspecified
-        )
-        guard let device = discovery.devices.first ?? AVCaptureDevice.default(for: .video) else {
+        let videoDevices = AVCaptureDevice.devices(for: .video)
+        guard let device = videoDevices.first ?? AVCaptureDevice.default(for: .video) else {
             print("No video camera found.")
             return
         }

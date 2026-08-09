@@ -2306,7 +2306,7 @@ function stopScreenRecording()
         end
       end)
       n:title("🎥 Voom Video Saved!")
-      n:subtitle("Duration: " .. formatRecTime(recTime))
+      n:subTitle("Duration: " .. formatRecTime(recTime))
       n:informativeText("Saved to: " .. savePath .. "\nRevealed in Finder & copied to clipboard!")
       n:actionButtonTitle("Open Video")
       n:hasActionButton(true)
