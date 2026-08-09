@@ -61,8 +61,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.hasShadow = false
         window.isMovableByWindowBackground = true
         window.displaysWhenScreenProfileChanges = true
+        window.hidesOnDeactivate = false
         window.sharingType = .readWrite
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.orderFrontRegardless()
         
         super.init(window: window)
@@ -140,7 +141,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         }
         
         let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
+            deviceTypes: [.builtInWideAngleCamera],
             mediaType: .video,
             position: .unspecified
         )
