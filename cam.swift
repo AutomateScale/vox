@@ -5,6 +5,11 @@ import CoreImage
 import Metal
 import QuartzCore
 
+func logMsg(_ msg: String) {
+    fputs("CAM_LOG: \(msg)\n", stderr)
+    fflush(stderr)
+}
+
 class ResizableCutoutView: NSView {
     weak var windowController: WebcamWindowController?
     
@@ -29,6 +34,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     
     var currentSize: CGFloat = 260.0
     var lastRenderTime: CFTimeInterval = 0
+    var frameCount: Int = 0
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     
     init(size: CGFloat = 260.0, cornerPosition: String = "bottom-left") {
@@ -132,28 +138,41 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     private func setupCamera() {
+        logMsg("Setting up camera session...")
         let session = AVCaptureSession()
         
-        if session.canSetSessionPreset(.hd1920x1080) {
-            session.sessionPreset = .hd1920x1080
-        } else if session.canSetSessionPreset(.high) {
-            session.sessionPreset = .high
+        let videoDevices = AVCaptureDevice.devices(for: .video)
+        logMsg("Found \(videoDevices.count) video devices:")
+        for dev in videoDevices {
+            logMsg("  -> Device: \(dev.localizedName) (ID: \(dev.uniqueID))")
         }
         
-        let videoDevices = AVCaptureDevice.devices(for: .video)
         guard let device = videoDevices.first ?? AVCaptureDevice.default(for: .video) else {
-            print("No video camera found.")
+            logMsg("ERROR - No video camera found.")
             return
         }
+        logMsg("Selected camera device: \(device.localizedName)")
         
         do {
             let input = try AVCaptureDeviceInput(device: device)
             if session.canAddInput(input) {
                 session.addInput(input)
+                logMsg("Input added successfully.")
+            } else {
+                logMsg("ERROR - Cannot add input to session.")
+                return
             }
         } catch {
-            print("Error initializing camera input: \(error)")
+            logMsg("ERROR initializing camera input: \(error)")
             return
+        }
+        
+        if session.canSetSessionPreset(.high) {
+            session.sessionPreset = .high
+            logMsg("Preset set to High")
+        } else if session.canSetSessionPreset(.medium) {
+            session.sessionPreset = .medium
+            logMsg("Preset set to Medium")
         }
         
         let output = AVCaptureVideoDataOutput()
@@ -163,17 +182,27 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         if session.canAddOutput(output) {
             session.addOutput(output)
+            logMsg("Output added successfully.")
+        } else {
+            logMsg("ERROR - Cannot add output to session.")
         }
         
         self.videoOutput = output
         self.captureSession = session
         
         DispatchQueue.global(qos: .userInitiated).async {
+            logMsg("Calling session.startRunning()...")
             session.startRunning()
+            logMsg("session.startRunning() completed. Is running: \(session.isRunning)")
         }
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        frameCount += 1
+        if frameCount % 30 == 0 {
+            logMsg("Frame received #\(frameCount)")
+        }
+        
         let now = CACurrentMediaTime()
         if now - lastRenderTime < 0.030 {
             return
@@ -214,7 +243,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 }
             }
         } catch {
-            print("Segmentation error: \(error)")
+            logMsg("Segmentation error: \(error)")
         }
         
         guard let context = self.ciContext else { return }
