@@ -126,7 +126,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         guard let device = MTLCreateSystemDefaultDevice() else { return }
         self.metalDevice = device
         self.commandQueue = device.makeCommandQueue()
+        let srgbSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         self.ciContext = CIContext(mtlDevice: device, options: [
+            .workingColorSpace: srgbSpace,
+            .outputColorSpace: srgbSpace,
             .cacheIntermediates: false,
             .useSoftwareRenderer: false
         ])
@@ -147,7 +150,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         let layer = CAMetalLayer()
         layer.device = metalDevice
-        layer.pixelFormat = .bgra8Unorm
+        layer.pixelFormat = .bgra8Unorm_srgb
         layer.framebufferOnly = false
         layer.frame = containerView.bounds
         layer.contentsScale = scale
@@ -306,7 +309,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        // Ultra-Fast Zero-Latency Metal GPU Texture Render with Pure Natural Lifelike Camera Colors
+        // Ultra-Fast Zero-Latency Metal GPU Texture Render with sRGB Transfer Curve
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
@@ -326,8 +329,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let offsetY = (drawableSize.height - (normalizedImage.extent.height * scale)) / 2.0
         let centeredFinal = scaledImage.transformed(by: CGAffineTransform(translationX: offsetX, y: offsetY))
         
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        context.render(centeredFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: colorSpace)
+        let srgbColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        context.render(centeredFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: srgbColorSpace)
         
         commandBuffer.present(drawable)
         commandBuffer.commit()
