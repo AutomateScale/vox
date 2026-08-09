@@ -2269,10 +2269,15 @@ function stopScreenRecording()
   os.execute("/usr/bin/killall cam-bin 2>/dev/null")
 
   if screenRec.task then
-    pcall(function() screenRec.task:interrupt() end)
+    local pid = screenRec.task:pid()
+    if pid and pid > 0 then
+      os.execute("/bin/kill -INT " .. tostring(pid) .. " 2>/dev/null")
+    else
+      pcall(function() screenRec.task:terminate() end)
+    end
     local taskToClean = screenRec.task
     screenRec.task = nil
-    hs.timer.doAfter(0.8, function()
+    hs.timer.doAfter(1.0, function()
       if taskToClean and taskToClean:isRunning() then
         pcall(function() taskToClean:terminate() end)
       end
