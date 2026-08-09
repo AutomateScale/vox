@@ -9,10 +9,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var renderLayer: CALayer?
     var ciContext: CIContext?
     
-    var greenScreenMode: String = "cutout" // "cutout", "green", "emerald", "blur", "off"
+    var greenScreenMode: String = "green" // "green", "emerald", "blur", "off"
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     
-    init(size: CGFloat = 180.0, cornerPosition: String = "bottom-left", bgMode: String = "cutout") {
+    init(size: CGFloat = 180.0, cornerPosition: String = "bottom-left", bgMode: String = "green") {
         self.greenScreenMode = bgMode
         
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
@@ -40,15 +40,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.level = .floating
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true // Original window drop shadow
+        window.hasShadow = true
         window.isMovableByWindowBackground = true
         window.displaysWhenScreenProfileChanges = true
         
         super.init(window: window)
         window.delegate = self
         
-        // High precision person segmentation request
-        segmentationRequest.qualityLevel = .accurate
+        // Fast, high-performance realtime person segmentation
+        segmentationRequest.qualityLevel = .fast
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupContentView(size: size)
@@ -72,7 +72,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         circleLayer.masksToBounds = true
         circleLayer.borderColor = NSColor(red: 0.1, green: 0.85, blue: 0.75, alpha: 0.9).cgColor // Original Vox Cyan Accent Ring
         circleLayer.borderWidth = 3.0
-        circleLayer.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 1.0).cgColor // Sleek dark backing
+        circleLayer.backgroundColor = NSColor(red: 0.0, green: 1.0, blue: 0.0, alpha: 1.0).cgColor // Pure Chroma Green
         
         containerView.layer = circleLayer
         window.contentView = containerView
@@ -135,51 +135,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
-        if greenScreenMode == "cutout" || greenScreenMode == "transparent" {
-            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
-            do {
-                try handler.perform([segmentationRequest])
-                if let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
-                    let maskCIImage = CIImage(cvPixelBuffer: maskBuffer)
-                    
-                    let scaleX = inputCIImage.extent.width / maskCIImage.extent.width
-                    let scaleY = inputCIImage.extent.height / maskCIImage.extent.height
-                    var scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-                    
-                    // Choke (contract) mask edge slightly to strip away background edge bleeding
-                    if let erodeFilter = CIFilter(name: "CIMorphologyErode") {
-                        erodeFilter.setValue(scaledMask, forKey: kCIInputImageKey)
-                        erodeFilter.setValue(1.5, forKey: kCIInputRadiusKey)
-                        if let eroded = erodeFilter.outputImage {
-                            scaledMask = eroded
-                        }
-                    }
-                    
-                    // Smooth mask edge to prevent harsh pixelation
-                    if let blurFilter = CIFilter(name: "CIGaussianBlur") {
-                        blurFilter.setValue(scaledMask, forKey: kCIInputImageKey)
-                        blurFilter.setValue(0.8, forKey: kCIInputRadiusKey)
-                        if let blurred = blurFilter.outputImage {
-                            scaledMask = blurred.cropped(to: inputCIImage.extent)
-                        }
-                    }
-                    
-                    // Sleek dark background inside original circle outline
-                    let darkBg = CIImage(color: CIColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 1.0)).cropped(to: inputCIImage.extent)
-                    
-                    let filter = CIFilter(name: "CIBlendWithMask")
-                    filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
-                    filter?.setValue(darkBg, forKey: kCIInputBackgroundImageKey)
-                    filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
-                    
-                    if let blended = filter?.outputImage {
-                        finalImage = blended
-                    }
-                }
-            } catch {
-                print("Cutout segmentation error: \(error)")
-            }
-        } else if greenScreenMode != "off" {
+        if greenScreenMode != "off" {
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
             do {
                 try handler.perform([segmentationRequest])
@@ -191,13 +147,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                     
                     var bgImage: CIImage
-                    if greenScreenMode == "green" {
-                        bgImage = CIImage(color: CIColor(red: 0.0, green: 1.0, blue: 0.0, alpha: 1.0)).cropped(to: inputCIImage.extent)
-                    } else if greenScreenMode == "emerald" {
+                    if greenScreenMode == "emerald" {
                         bgImage = CIImage(color: CIColor(red: 0.05, green: 0.25, blue: 0.20, alpha: 1.0)).cropped(to: inputCIImage.extent)
                     } else if greenScreenMode == "blur" {
                         bgImage = inputCIImage.clampedToExtent().applyingGaussianBlur(sigma: 15.0).cropped(to: inputCIImage.extent)
                     } else {
+                        // Pure Chroma-Key Green (#00FF00) Background
                         bgImage = CIImage(color: CIColor(red: 0.0, green: 1.0, blue: 0.0, alpha: 1.0)).cropped(to: inputCIImage.extent)
                     }
                     
@@ -237,7 +192,7 @@ app.setActivationPolicy(.accessory)
 
 var size: CGFloat = 180.0
 var position = "bottom-left"
-var bgMode = "cutout"
+var bgMode = "green" // Pure Chroma-Key Green Screen by default!
 
 let args = CommandLine.arguments
 for i in 0..<args.count {
@@ -246,9 +201,6 @@ for i in 0..<args.count {
     }
     if args[i] == "--position", i + 1 < args.count {
         position = args[i+1]
-    }
-    if args[i] == "--cutout" || args[i] == "--transparent" {
-        bgMode = "cutout"
     }
     if args[i] == "--bg", i + 1 < args.count {
         bgMode = args[i+1]

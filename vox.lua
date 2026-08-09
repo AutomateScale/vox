@@ -59,7 +59,7 @@ local C = {
   screenRecWebcam     = true,
   screenRecWebcamSize = 180,
   screenRecWebcamPos  = "bottom-left",
-  screenRecBgMode     = "cutout",
+  screenRecBgMode     = "green",
   -- whisperHost: where transcription happens. Keep 127.0.0.1 normally.
   -- Old/slow Mac? Point it at a fast Mac running Vox on your LAN
   -- (that Mac sets serverBind = "0.0.0.0" in ITS local.lua) and this
