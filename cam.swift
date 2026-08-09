@@ -230,11 +230,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("ERROR - No video camera found.")
             return
         }
+        logMsg("Using video device: \(device.localizedName)")
         
         do {
             let input = try AVCaptureDeviceInput(device: device)
             if session.canAddInput(input) {
                 session.addInput(input)
+                logMsg("Input added successfully.")
             }
         } catch {
             logMsg("ERROR initializing camera input: \(error)")
@@ -243,6 +245,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         if session.canSetSessionPreset(.high) {
             session.sessionPreset = .high
+            logMsg("Preset set to High")
         }
         
         let output = AVCaptureVideoDataOutput()
@@ -252,13 +255,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         if session.canAddOutput(output) {
             session.addOutput(output)
+            logMsg("Output added successfully.")
         }
         
         self.videoOutput = output
         self.captureSession = session
         
         DispatchQueue.global(qos: .userInitiated).async {
+            logMsg("Starting session.startRunning()...")
             session.startRunning()
+            logMsg("session.startRunning() finished. Is running: \(session.isRunning)")
         }
     }
     
@@ -326,7 +332,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let originY = finalImage.extent.origin.y
         let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
-        // Widescreen Aspect Fit Scaling: Guarantees 100% of hands, arms, and body fit without any side clipping
         let scale = min(drawableSize.width / normalizedImage.extent.width, drawableSize.height / normalizedImage.extent.height)
         let scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         
@@ -371,10 +376,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// Single instance enforcement guard
-let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-if runningApps.count > 1 {
-    logMsg("cam-bin is already running. Terminating duplicate instance.")
+// Single instance enforcement guard (Exact PID filtering)
+let myPID = getpid()
+let duplicateCount = NSWorkspace.shared.runningApplications.filter { app in
+    return app.executableURL?.lastPathComponent == "cam-bin" && app.processIdentifier != myPID
+}.count
+
+if duplicateCount > 0 {
+    logMsg("cam-bin is already running (PID != \(myPID)). Terminating duplicate instance.")
     exit(0)
 }
 
