@@ -273,7 +273,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
-        // Single-Pass High Speed Neural ML Segmentation
+        // Accurate Person Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -285,24 +285,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                 
-                // 1. Hard Threshold Floor: Cut off background noise < 30% confidence to 0.0
-                let matrixFilter = CIFilter(name: "CIColorMatrix")
-                matrixFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
-                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: 3.5), forKey: "inputAVector")
-                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.80), forKey: "inputBiasVector")
-                let thresholdMask = matrixFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
-                
-                // 2. 2px Edge Erosion: Pull mask 2px inside body to eliminate background fringe & chair halos
-                let erodeFilter = CIFilter(name: "CIMorphologyMinimum")
-                erodeFilter?.setValue(thresholdMask, forKey: kCIInputImageKey)
-                erodeFilter?.setValue(2, forKey: kCIInputRadiusKey)
-                let erodedMask = erodeFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? thresholdMask
-                
-                // 3. Smooth Edge Anti-Aliasing (1.0px Gaussian Blur)
+                // Natural Sub-Pixel Edge Feathering (1.0px Gaussian Blur)
                 let blurFilter = CIFilter(name: "CIGaussianBlur")
-                blurFilter?.setValue(erodedMask, forKey: kCIInputImageKey)
+                blurFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
                 blurFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
-                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? erodedMask
+                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
                 
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
@@ -319,7 +306,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        // Ultra-Fast Zero-Latency Metal GPU Texture Render with Aspect-Fill Uniform Scaling (Zero Distortion!)
+        // Ultra-Fast Zero-Latency Metal GPU Texture Render with Pure Natural Lifelike Camera Colors
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
