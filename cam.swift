@@ -65,29 +65,32 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var ciContext: CIContext?
     var pillLayer: CATextLayer?
     
-    var currentSize: CGFloat = 260.0
+    var currentSize: CGFloat = 340.0
     var lastRenderTime: CFTimeInterval = 0
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     
-    let sizePresets: [CGFloat] = [200.0, 340.0, 500.0, 680.0]
+    let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
     var currentPresetIndex: Int = 0
     
-    init(size: CGFloat = 260.0, cornerPosition: String = "bottom-left") {
+    init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left") {
         self.currentSize = size
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         let margin: CGFloat = 25.0
+        
+        let width = size * 1.4
+        let height = size * 0.95
         
         var x: CGFloat = screen.minX + margin
         var y: CGFloat = screen.minY + margin
         
         if cornerPosition.contains("right") {
-            x = screen.maxX - size - margin
+            x = screen.maxX - width - margin
         }
         if cornerPosition.contains("top") {
-            y = screen.maxY - size - margin
+            y = screen.maxY - height - margin
         }
         
-        let rect = NSRect(x: x, y: y, width: size, height: size * 1.25)
+        let rect = NSRect(x: x, y: y, width: width, height: height)
         
         let window = NSWindow(
             contentRect: rect,
@@ -114,7 +117,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupMetal()
-        setupContentView(width: size, height: size * 1.25)
+        setupContentView(width: width, height: height)
         setupCamera()
     }
     
@@ -191,8 +194,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     func adjustSize(by delta: CGFloat) {
-        let minSize: CGFloat = 140.0
-        let maxSize: CGFloat = 850.0
+        let minSize: CGFloat = 160.0
+        let maxSize: CGFloat = 900.0
         let newSize = max(minSize, min(maxSize, currentSize + delta))
         if newSize != currentSize {
             setSize(newSize)
@@ -203,17 +206,18 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         guard let window = self.window, let contentView = window.contentView else { return }
         currentSize = newSize
         let frame = window.frame
-        let newHeight = newSize * 1.25
-        let newRect = NSRect(x: frame.minX, y: frame.minY, width: newSize, height: newHeight)
+        let newWidth = newSize * 1.4
+        let newHeight = newSize * 0.95
+        let newRect = NSRect(x: frame.minX, y: frame.minY, width: newWidth, height: newHeight)
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
         DispatchQueue.main.async {
             window.setFrame(newRect, display: true, animate: true)
-            contentView.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            contentView.layer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            self.metalLayer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            self.metalLayer?.drawableSize = CGSize(width: newSize * scale, height: newHeight * scale)
-            self.pillLayer?.frame = CGRect(x: 10, y: 10, width: newSize - 20, height: 22)
+            contentView.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
+            contentView.layer?.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
+            self.metalLayer?.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
+            self.metalLayer?.drawableSize = CGSize(width: newWidth * scale, height: newHeight * scale)
+            self.pillLayer?.frame = CGRect(x: 10, y: 10, width: newWidth - 20, height: 22)
         }
     }
     
@@ -309,7 +313,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        // Ultra-Fast Zero-Latency Metal GPU Texture Render with sRGB Transfer Curve
+        // Ultra-Fast Widescreen Metal GPU Texture Render (Zero Hand/Arm Clipping!)
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
@@ -322,7 +326,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let originY = finalImage.extent.origin.y
         let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
-        let scale = max(drawableSize.width / normalizedImage.extent.width, drawableSize.height / normalizedImage.extent.height)
+        // Widescreen Aspect Fit Scaling: Guarantees 100% of hands, arms, and body fit without any side clipping
+        let scale = min(drawableSize.width / normalizedImage.extent.width, drawableSize.height / normalizedImage.extent.height)
         let scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         
         let offsetX = (drawableSize.width - (normalizedImage.extent.width * scale)) / 2.0
@@ -346,7 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var controller: WebcamWindowController?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        var size: CGFloat = 260.0
+        var size: CGFloat = 340.0
         var position = "bottom-left"
         
         let args = CommandLine.arguments
