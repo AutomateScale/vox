@@ -64,9 +64,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var commandQueue: MTLCommandQueue?
     var ciContext: CIContext?
     var pillLayer: CATextLayer?
+    var sampleQueue: DispatchQueue?
     
     var currentSize: CGFloat = 340.0
     var lastRenderTime: CFTimeInterval = 0
+    var frameCount: Int = 0
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
@@ -99,7 +101,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             defer: false
         )
         
-        // High-priority Overlay level floating over all apps & full screen spaces
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -224,9 +225,23 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     
     private func setupCamera() {
         logMsg("Setting up camera session...")
+        
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        logMsg("Camera authorization status: \(status.rawValue)")
+        if status == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                logMsg("Camera requestAccess result: \(granted)")
+            }
+        }
+        
         let session = AVCaptureSession()
         
         let videoDevices = AVCaptureDevice.devices(for: .video)
+        logMsg("Found \(videoDevices.count) video devices:")
+        for dev in videoDevices {
+            logMsg("  -> Device: \(dev.localizedName) (ID: \(dev.uniqueID))")
+        }
+        
         guard let device = videoDevices.first ?? AVCaptureDevice.default(for: .video) else {
             logMsg("ERROR - No video camera found.")
             return
@@ -238,6 +253,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             if session.canAddInput(input) {
                 session.addInput(input)
                 logMsg("Input added successfully.")
+            } else {
+                logMsg("ERROR - session.canAddInput returned false")
             }
         } catch {
             logMsg("ERROR initializing camera input: \(error)")
@@ -252,11 +269,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera.metal.queue", qos: .userInteractive))
+        
+        let queue = DispatchQueue(label: "camera.metal.queue", qos: .userInteractive)
+        self.sampleQueue = queue
+        output.setSampleBufferDelegate(self, queue: queue)
         
         if session.canAddOutput(output) {
             session.addOutput(output)
             logMsg("Output added successfully.")
+        } else {
+            logMsg("ERROR - session.canAddOutput returned false")
         }
         
         self.videoOutput = output
@@ -270,6 +292,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        frameCount += 1
+        if frameCount % 30 == 0 {
+            logMsg("Frame received #\(frameCount)")
+        }
+        
         let now = CACurrentMediaTime()
         if now - lastRenderTime < 0.016 {
             return
