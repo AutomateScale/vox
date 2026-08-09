@@ -11,7 +11,7 @@ info() { printf "  ·  %s\n" "$1"; }
 echo "== Vox doctor =="
 
 echo "[1] Dependencies"
-for b in sox whisper-cli whisper-server; do
+for b in sox ffmpeg whisper-cli whisper-server; do
   [ -x "$BREW/$b" ] && ok "$b" || bad "$b missing — run: bash ~/vox/install.sh"
 done
 if [ -d /Applications/Hammerspoon.app ]; then

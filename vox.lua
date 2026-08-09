@@ -51,9 +51,14 @@ local WMODEL = IS_ARM and "ggml-large-v3-turbo-q5_0.bin"
 
 local C = {
   sox         = BREW .. "/sox",
+  ffmpeg      = BREW .. "/ffmpeg",
   whisper     = BREW .. "/whisper-cli",     -- fallback only
   whisperSrv  = BREW .. "/whisper-server",  -- fast path
   serverPort  = 8090,
+  screenRecDir        = HOME .. "/Movies/VoxRecordings",
+  screenRecWebcam     = true,
+  screenRecWebcamSize = 180,
+  screenRecWebcamPos  = "bottom-left",
   -- whisperHost: where transcription happens. Keep 127.0.0.1 normally.
   -- Old/slow Mac? Point it at a fast Mac running Vox on your LAN
   -- (that Mac sets serverBind = "0.0.0.0" in ITS local.lua) and this
@@ -235,7 +240,8 @@ end
 -- Type-checked against the default so a stale saved value can't wedge boot.
 local PREFS = { "holdKeycode", "holdKeyName", "duckMode", "duckAudio", "convLive", "alienPlayByPlay",
                 "keepInClipboard", "llmCleanup", "translateTo",
-                "alienVoiceName", "soundTheme", "language", "memory" }
+                "alienVoiceName", "soundTheme", "language", "memory",
+                "screenRecWebcam", "screenRecWebcamPos" }
 local function pref(key, val)
   C[key] = val
   hs.settings.set("vox.pref." .. key, val)
@@ -265,8 +271,12 @@ local recTask, menubar
 -- those call sites compiled against always-nil globals and crashed at fire
 -- time — which is why the hands-free loop dead-ended. Globals resolve at
 -- call time, and the main chunk is at Lua's 200-local limit anyway.
-startRecording = function() end
-stopRecording  = function() end
+startRecording        = function() end
+stopRecording         = function() end
+startScreenRecording  = function() end
+stopScreenRecording   = function() end
+cancelScreenRecording = function() end
+toggleScreenRecording = function() end
 
 local timers  = {}                   -- anchored refs so timers survive GC
 local duck                           -- ducking state (defined below)
@@ -1932,6 +1942,261 @@ local function vignDemo()
   hs.timer.doAfter(9, function() vign.demo = false; vignHide() end)
 end
 
+-- ------------------------------------------------------------
+-- LOOM-STYLE SCREEN RECORDING
+-- ------------------------------------------------------------
+local screenRec = {
+  active = false,
+  task = nil,
+  camTask = nil,
+  startTime = 0,
+  seconds = 0,
+  timer = nil,
+  outputPath = "",
+  hud = nil,
+}
+
+local function formatRecTime(sec)
+  local m = math.floor(sec / 60)
+  local s = sec % 60
+  return string.format("%02d:%02d", m, s)
+end
+
+function toggleScreenRecording()
+  if screenRec.active then
+    stopScreenRecording()
+  else
+    startScreenRecording()
+  end
+end
+
+function startScreenRecording()
+  if screenRec.active then
+    stopScreenRecording()
+    return
+  end
+
+  local recDir = C.screenRecDir or (HOME .. "/Movies/VoxRecordings")
+  os.execute("/bin/mkdir -p '" .. recDir .. "' 2>/dev/null")
+
+  local dateStr = os.date("%Y-%m-%d_%H-%M-%S")
+  screenRec.outputPath = recDir .. "/Vox_Recording_" .. dateStr .. ".mp4"
+  screenRec.active = true
+  screenRec.seconds = 0
+  screenRec.startTime = os.time()
+
+  -- 1. Launch Webcam Bubble if enabled
+  if C.screenRecWebcam then
+    local camBin = HOME .. "/vox/cam-bin"
+    local camSwift = HOME .. "/vox/cam.swift"
+    if not hs.fs.attributes(camBin) and hs.fs.attributes(camSwift) then
+      os.execute("/usr/bin/swiftc -O '" .. camSwift .. "' -o '" .. camBin .. "' 2>/dev/null")
+    end
+    if hs.fs.attributes(camBin) then
+      screenRec.camTask = hs.task.new(camBin, nil, {
+        "--size", tostring(C.screenRecWebcamSize or 180),
+        "--position", C.screenRecWebcamPos or "bottom-left"
+      })
+      screenRec.camTask:start()
+    end
+  end
+
+  -- 2. Launch ffmpeg process
+  local ffmpegBin = C.ffmpeg or "/usr/local/bin/ffmpeg"
+  if not hs.fs.attributes(ffmpegBin) then ffmpegBin = "/opt/homebrew/bin/ffmpeg" end
+  if not hs.fs.attributes(ffmpegBin) then ffmpegBin = "/usr/bin/ffmpeg" end
+
+  local args = {
+    "-f", "avfoundation",
+    "-pixel_format", "nv12",
+    "-i", "1:0",
+    "-vf", "scale=2560:-2",
+    "-c:v", "h264_videotoolbox",
+    "-allow_sw", "1",
+    "-b:v", "6M",
+    "-c:a", "aac",
+    "-b:a", "192k",
+    "-y",
+    screenRec.outputPath
+  }
+
+  screenRec.task = hs.task.new(ffmpegBin, function(code, stdOut, stdErr)
+    log("ffmpeg screen recording task finished with code: " .. tostring(code))
+  end, args)
+
+  screenRec.task:start()
+  play("start")
+  hs.alert.show("🎥 Screen Recording Started (⌥⇧R to stop)", 2.0)
+
+  -- 3. Create Screen Recording HUD Widget
+  local mainScreen = hs.screen.mainScreen()
+  local screenFrame = mainScreen and mainScreen:frame() or { x = 0, y = 0, w = 1920, h = 1080 }
+  local hudW, hudH = 260, 46
+  local hudX = screenFrame.x + (screenFrame.w - hudW) / 2
+  local hudY = screenFrame.y + screenFrame.h - hudH - 35
+
+  local c = hs.canvas.new({ x = hudX, y = hudY, w = hudW, h = hudH })
+  c:level(hs.canvas.windowLevels.overlay)
+  c:behavior({ "canJoinAllSpaces", "stationary" })
+
+  c[1] = {
+    type = "rectangle",
+    action = "fill",
+    fillColor = { red = 0.08, green = 0.09, blue = 0.12, alpha = 0.92 },
+    roundedRectRadii = { xRadius = 23, yRadius = 23 },
+    strokeColor = { red = 0.2, green = 0.85, blue = 0.75, alpha = 0.8 },
+    strokeWidth = 1.5,
+  }
+  c[2] = {
+    type = "oval",
+    action = "fill",
+    fillColor = { red = 1.0, green = 0.2, blue = 0.3, alpha = 1.0 },
+    frame = { x = 16, y = 16, w = 14, h = 14 }
+  }
+  c[3] = {
+    type = "text",
+    text = "00:00",
+    textColor = { red = 1.0, green = 1.0, blue = 1.0, alpha = 1.0 },
+    textFont = ".AppleSystemUIFontBold",
+    textSize = 15,
+    frame = { x = 38, y = 13, w = 60, h = 24 }
+  }
+  c[4] = {
+    type = "rectangle",
+    action = "fill",
+    fillColor = { red = 0.9, green = 0.25, blue = 0.25, alpha = 0.9 },
+    roundedRectRadii = { xRadius = 8, yRadius = 8 },
+    frame = { x = 110, y = 10, w = 65, h = 26 },
+    trackMouseDown = true
+  }
+  c[5] = {
+    type = "text",
+    text = "⏹ Stop",
+    textColor = { red = 1.0, green = 1.0, blue = 1.0, alpha = 1.0 },
+    textFont = ".AppleSystemUIFontBold",
+    textSize = 12,
+    textAlignment = "center",
+    frame = { x = 110, y = 14, w = 65, h = 20 },
+    trackMouseDown = true
+  }
+  c[6] = {
+    type = "rectangle",
+    action = "fill",
+    fillColor = { red = 0.25, green = 0.28, blue = 0.35, alpha = 0.8 },
+    roundedRectRadii = { xRadius = 8, yRadius = 8 },
+    frame = { x = 185, y = 10, w = 60, h = 26 },
+    trackMouseDown = true
+  }
+  c[7] = {
+    type = "text",
+    text = "✖ Cancel",
+    textColor = { red = 0.8, green = 0.8, blue = 0.85, alpha = 1.0 },
+    textFont = ".AppleSystemUIFont",
+    textSize = 11,
+    textAlignment = "center",
+    frame = { x = 185, y = 14, w = 60, h = 20 },
+    trackMouseDown = true
+  }
+
+  c:mouseCallback(function(canvas, event, id, x, y)
+    if event == "mouseDown" then
+      if id == 4 or id == 5 then
+        stopScreenRecording()
+      elseif id == 6 or id == 7 then
+        cancelScreenRecording()
+      end
+    end
+  end)
+
+  c:show()
+  screenRec.hud = c
+
+  screenRec.timer = hs.timer.doEvery(1.0, safeTick("screenRecTimer", function()
+    if not screenRec.active then return end
+    screenRec.seconds = screenRec.seconds + 1
+    if screenRec.hud then
+      screenRec.hud[3].text = formatRecTime(screenRec.seconds)
+      local dotAlpha = (screenRec.seconds % 2 == 0) and 1.0 or 0.3
+      screenRec.hud[2].fillColor.alpha = dotAlpha
+    end
+  end))
+end
+
+function stopScreenRecording()
+  if not screenRec.active then return end
+  screenRec.active = false
+
+  if screenRec.timer then
+    screenRec.timer:stop()
+    screenRec.timer = nil
+  end
+
+  if screenRec.hud then
+    screenRec.hud:delete()
+    screenRec.hud = nil
+  end
+
+  if screenRec.camTask then
+    screenRec.camTask:terminate()
+    screenRec.camTask = nil
+  end
+  os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+
+  if screenRec.task then
+    screenRec.task:terminate()
+    screenRec.task = nil
+  end
+
+  play("done")
+  local savePath = screenRec.outputPath
+  local recTime = screenRec.seconds
+
+  hs.timer.doAfter(0.8, function()
+    if hs.fs.attributes(savePath) then
+      hs.pasteboard.setContents(savePath)
+
+      local n = hs.notify.new(function(notif)
+        local act = notif:activationType()
+        if act == hs.notify.activationTypes.actionButtonClicked
+           or act == hs.notify.activationTypes.contentsClicked then
+          hs.execute("open '" .. savePath .. "'")
+        end
+      end)
+      n:title("🎥 Vox Screen Recording Saved!")
+      n:subtitle("Duration: " .. formatRecTime(recTime))
+      n:informativeText("Saved to: " .. savePath .. "\nPath copied to clipboard! Click to open.")
+      n:actionButtonTitle("Open Video")
+      n:hasActionButton(true)
+      n:send()
+
+      hs.alert.show("🎥 Video saved & path copied! (" .. formatRecTime(recTime) .. ")", 3.0)
+    else
+      hs.alert.show("❌ Screen recording failed to save", 2.5)
+    end
+  end)
+end
+
+function cancelScreenRecording()
+  if not screenRec.active then return end
+  screenRec.active = false
+
+  if screenRec.timer then screenRec.timer:stop(); screenRec.timer = nil end
+  if screenRec.hud then screenRec.hud:delete(); screenRec.hud = nil end
+  if screenRec.camTask then screenRec.camTask:terminate(); screenRec.camTask = nil end
+  os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+
+  if screenRec.task then screenRec.task:terminate(); screenRec.task = nil end
+
+  local savePath = screenRec.outputPath
+  hs.timer.doAfter(0.5, function()
+    if savePath and hs.fs.attributes(savePath) then
+      os.remove(savePath)
+    end
+  end)
+
+  hs.alert.show("🗑️ Recording cancelled", 1.5)
+end
+
 -- branded menubar icon: tiny alien silhouette with punched-out eyes.
 -- idle = monochrome template (adapts to menubar theme), rec = coral,
 -- work = violet.
@@ -2469,6 +2734,7 @@ local ACTION_DICT = {
     { "volume up / volume down",       "nudges output ±12%" },
     { "mute / unmute",                 "output audio" },
     { "take a screenshot",             "presses ⌘⇧3" },
+    { "record screen / stop recording","Loom-style screen + voice recording (⌥⇧R)" },
     { "lock the screen",               "locks the Mac" },
   } },
   { "Brain", {
@@ -2618,6 +2884,18 @@ local function performAction(text)
   end
 
   -- system bits
+  if t:match("^record%s+screen") or t:match("^start%s+recording%s+screen")
+     or t:match("^start%s+screen%s+recording") or t == "record screen" then
+    actionSay("Starting screen recording...", "🎥")
+    hs.timer.doAfter(0.5, function() startScreenRecording() end)
+    return true
+  end
+  if t:match("^stop%s+recording") or t:match("^stop%s+screen%s+recording")
+     or t:match("^end%s+screen%s+recording") or t == "stop recording" then
+    actionSay("Stopping screen recording...", "🛑")
+    stopScreenRecording()
+    return true
+  end
   if t:match("^take%s+a%s+screenshot") or t == "screenshot" then
     hs.eventtap.keyStroke({ "cmd", "shift" }, "3", 0)
     actionSay("Screenshot taken.", "📸")
@@ -4686,6 +4964,25 @@ menubar:setMenu(function()
         end
         return items
       end)() },
+    { title = "-" },
+    { title = "🎥 Screen Recording (Loom style)", menu = {
+        { title = (screenRec and screenRec.active) and "🛑 Stop Screen Recording (⌥⇧R)" or "▶ Start Screen Recording (⌥⇧R)",
+          fn = function() toggleScreenRecording() end },
+        { title = "📷 Include Webcam Bubble", checked = C.screenRecWebcam,
+          fn = function()
+            pref("screenRecWebcam", not C.screenRecWebcam)
+            hs.alert.show("Webcam Bubble: " .. (C.screenRecWebcam and "ON" or "OFF"), 1.5)
+          end },
+        { title = "📂 Open Recordings Folder",
+          fn = function() hs.execute("open '" .. (C.screenRecDir or (HOME .. "/Movies/VoxRecordings")) .. "'") end },
+        { title = "🎬 Play Latest Recording",
+          disabled = (not screenRec or screenRec.outputPath == "" or not hs.fs.attributes(screenRec.outputPath)),
+          fn = function()
+            if screenRec and screenRec.outputPath ~= "" and hs.fs.attributes(screenRec.outputPath) then
+              hs.execute("open '" .. screenRec.outputPath .. "'")
+            end
+          end },
+      } },
     { title = "While recording", menu = {
         { title = "Duck audio to 15%", checked = C.duckMode == "duck",
           fn = function() pref("duckMode", "duck"); hs.alert.show("Recording: duck audio", 1) end },
@@ -5159,6 +5456,16 @@ timers.stateWatchdog = hs.timer.doEvery(5, function()
     stuckSince.recording, stuckSince.processing = 0, 0
   end
 end)
+
+M.screenRecHotkey = hs.hotkey.bind({ "alt", "shift" }, "R", function()
+  toggleScreenRecording()
+end)
+
+M.startScreenRecording  = startScreenRecording
+M.stopScreenRecording   = stopScreenRecording
+M.cancelScreenRecording = cancelScreenRecording
+M.toggleScreenRecording = toggleScreenRecording
+M.screenRec             = screenRec
 
 -- Anchor everything in the module table so Lua GC never collects
 -- the eventtap, menubar, canvas, or timers (classic Hammerspoon gotcha).

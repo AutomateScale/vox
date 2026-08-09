@@ -54,6 +54,7 @@ echo "==> [1/6] Installing dependencies (Homebrew)..."
 binstall --cask hammerspoon
 binstall whisper-cpp
 binstall sox
+binstall ffmpeg
 binstall ollama
 
 echo "==> [2/6] Whisper model ($MODEL_FILE) — download + checksum verify..."
@@ -170,11 +171,16 @@ if ! codesign --verify /Applications/Hammerspoon.app >/dev/null 2>&1; then
   brew reinstall --cask hammerspoon
 fi
 
-echo "==> Compiling the screen-reader (for triple-tap smart replies)..."
+echo "==> Compiling screen-reader & webcam bubble (for Loom screen recording)..."
 if command -v swiftc >/dev/null 2>&1 && [ ! -x "$REPO/ocr-bin" ]; then
   swiftc -O "$REPO/ocr.swift" -o "$REPO/ocr-bin" 2>/dev/null \
     && echo "    ocr-bin ready ✅" \
     || echo "    (skipped — compiles itself on first triple-tap instead)"
+fi
+if command -v swiftc >/dev/null 2>&1 && [ ! -x "$REPO/cam-bin" ]; then
+  swiftc -O "$REPO/cam.swift" -o "$REPO/cam-bin" 2>/dev/null \
+    && echo "    cam-bin ready ✅" \
+    || echo "    (skipped — compiles itself on first screen recording instead)"
 fi
 
 echo "==> [6/6] Applying Vox icon (once — re-branding can reset TCC grants on older macOS)..."

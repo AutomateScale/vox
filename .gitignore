@@ -4,6 +4,7 @@ models/
 local.lua
 learned.json
 ocr-bin
+cam-bin
 calibration.json
 memory/
 identity.md
