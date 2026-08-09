@@ -2035,6 +2035,7 @@ function startScreenRecording()
 
   -- 1. Launch Webcam Bubble if enabled
   if C.screenRecWebcam then
+    os.execute("/usr/bin/killall -9 cam-bin 2>/dev/null")
     local camBin = HOME .. "/vox/cam-bin"
     local camSwift = HOME .. "/vox/cam.swift"
     if not hs.fs.attributes(camBin) and hs.fs.attributes(camSwift) then

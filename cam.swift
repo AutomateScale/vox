@@ -273,6 +273,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
+        // Single-Pass High Speed Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -331,7 +332,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let originY = finalImage.extent.origin.y
         let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
-        // Uniform Aspect-Fill Scaling (Prevents vertical stretching / distortion!)
         let scale = max(drawableSize.width / normalizedImage.extent.width, drawableSize.height / normalizedImage.extent.height)
         let scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         
@@ -374,6 +374,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wc.window?.orderFrontRegardless()
         self.controller = wc
     }
+}
+
+// Single instance enforcement guard
+let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+if runningApps.count > 1 {
+    logMsg("cam-bin is already running. Terminating duplicate instance.")
+    exit(0)
 }
 
 let app = NSApplication.shared
