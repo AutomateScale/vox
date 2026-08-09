@@ -940,13 +940,20 @@ local function miniEnsure()
   c[12] = { type = "text", text = "P", textSize = 10,
             textColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = 1 },
             textAlignment = "center", frame = { x = MW - 19, y = 14.5, w = 17, h = 13 } }
-  c:alpha(0.55)
+  c:alpha(0.95)
   c:canvasMouseEvents(true, false, false, false)
   c:mouseCallback(function(_, event, _, x, y)
     if event ~= "mouseDown" then return end
     if x <= 22 and mini.act.content then mini.act.content()
     elseif x >= MW - 22 and mini.act.grab then mini.act.grab()
-    elseif mini.act.talk then mini.act.talk() end
+    else
+      local mods = hs.eventtap.checkKeyboardModifiers()
+      if mods.alt or mods.shift then
+        toggleScreenRecording()
+      elseif mini.act.talk then
+        mini.act.talk()
+      end
+    end
   end)
   mini.canvas = c
 end
@@ -1024,21 +1031,21 @@ local function miniTick()
             or (k == "curious") and { red = 0.62, green = 0.90, blue = 1.0, alpha = 1 }
             or                      { red = 0.62, green = 1.0,  blue = 0.86, alpha = 1 }
     head = { c1, { red = c1.red * 0.62, green = c1.green * 0.78, blue = c1.blue * 0.72, alpha = 1 } }
-    glow = 0.6 + flare * 0.4
+    glow = 0.95 + flare * 0.05
   elseif mini.mode == "rec" then
     local lv = math.min(1, mini.level * 3.2)
     head = { { red = 0.55 + lv * 0.3, green = 0.95, blue = 1.0, alpha = 1 },
              { red = 0.20, green = 0.72 + lv * 0.2, blue = 0.95, alpha = 1 } }
-    glow = 0.85 + lv * 0.15
+    glow = 0.95 + lv * 0.05
   elseif mini.mode == "work" then
     local pulse = 0.5 + 0.5 * math.sin(mini.phase * 0.22)
     head = { { red = 0.85, green = 0.72, blue = 1.0, alpha = 1 },
              { red = 0.55, green = 0.36 + pulse * 0.12, blue = 0.95, alpha = 1 } }
-    glow = 0.72 + pulse * 0.2
+    glow = 0.85 + pulse * 0.15
   else
     head = { { red = 0.72, green = 1.0,  blue = 0.88, alpha = 1 },
              { red = 0.40, green = 0.90, blue = 0.66, alpha = 1 } }
-    glow = 0.55                       -- unobtrusive when there is nothing to say
+    glow = 0.95                       -- unobtrusive when there is nothing to say
   end
   c[1].fillGradientColors = head
   c[5].strokeColor = head[1]
@@ -1054,7 +1061,7 @@ local function miniTick()
     if ok and wf and wf.w > 120 and wf.h > 120 then
       local mainF = hs.screen.mainScreen():fullFrame()
       local targetX = math.max(mainF.x + 4, math.min(wf.x + (wf.w - MW) / 2, mainF.x + mainF.w - MW - 4))
-      local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 32, mainF.y + mainF.h - MH - 4))
+      local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 45, mainF.y + mainF.h - MH - 4))
       c:frame({ x = targetX, y = targetY, w = MW, h = MH })
     end
   end
@@ -1073,7 +1080,7 @@ local function miniShow()
   if C.alienPos and C.alienPos.window and ok and wf and wf.w > 120 and wf.h > 120 then
     local mainF = hs.screen.mainScreen():fullFrame()
     local targetX = math.max(mainF.x + 4, math.min(wf.x + (wf.w - MW) / 2, mainF.x + mainF.w - MW - 4))
-    local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 32, mainF.y + mainF.h - MH - 4))
+    local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 45, mainF.y + mainF.h - MH - 4))
     mini.canvas:frame({ x = targetX, y = targetY, w = MW, h = MH })
   else
     local f = hs.screen.primaryScreen():fullFrame()
