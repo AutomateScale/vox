@@ -31,6 +31,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var renderLayer: CALayer?
     var metalDevice: MTLDevice?
     var ciContext: CIContext?
+    var previousMask: CIImage?
     
     var currentSize: CGFloat = 260.0
     var lastRenderTime: CFTimeInterval = 0
@@ -75,7 +76,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         super.init(window: window)
         window.delegate = self
         
-        segmentationRequest.qualityLevel = .balanced
+        segmentationRequest.qualityLevel = .accurate
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupMetal()
@@ -231,12 +232,45 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                 
+                // 1. Soft Sub-Pixel Edge Anti-Aliasing (Gaussian Blur)
+                let blurFilter = CIFilter(name: "CIGaussianBlur")
+                blurFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
+                blurFilter?.setValue(2.0, forKey: kCIInputRadiusKey)
+                let blurredMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                
+                // 2. Alpha Contrast Curve — Eliminates perimeter flashing & background noise
+                let matrixFilter = CIFilter(name: "CIColorMatrix")
+                matrixFilter?.setValue(blurredMask, forKey: kCIInputImageKey)
+                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: 2.2), forKey: "inputAVector")
+                matrixFilter?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.18), forKey: "inputBiasVector")
+                let contrastMask = matrixFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? blurredMask
+                
+                // 3. Temporal Anti-Flicker Inter-Frame Smoothing (0.75 current / 0.25 previous EMA)
+                var smoothMask = contrastMask
+                if let prevMask = self.previousMask {
+                    let currAlpha = CIFilter(name: "CIColorMatrix")
+                    currAlpha?.setValue(contrastMask, forKey: kCIInputImageKey)
+                    currAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.75), forKey: "inputAVector")
+                    
+                    let prevAlpha = CIFilter(name: "CIColorMatrix")
+                    prevAlpha?.setValue(prevMask, forKey: kCIInputImageKey)
+                    prevAlpha?.setValue(CIVector(x: 0, y: 0, z: 0, w: 0.25), forKey: "inputAVector")
+                    
+                    let addFilter = CIFilter(name: "CIAdditionCompositing")
+                    addFilter?.setValue(currAlpha?.outputImage, forKey: kCIInputImageKey)
+                    addFilter?.setValue(prevAlpha?.outputImage, forKey: kCIInputBackgroundImageKey)
+                    if let blendedMask = addFilter?.outputImage {
+                        smoothMask = blendedMask.cropped(to: inputCIImage.extent)
+                    }
+                }
+                self.previousMask = smoothMask
+                
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
                 let filter = CIFilter(name: "CIBlendWithMask")
                 filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                 filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
+                filter?.setValue(smoothMask, forKey: kCIInputMaskImageKey)
                 
                 if let blended = filter?.outputImage {
                     finalImage = blended
