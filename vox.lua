@@ -1999,6 +1999,7 @@ local screenRec = {
   outputPath = "",
   hud = nil,
 }
+_G.screenRec = screenRec
 
 local function formatRecTime(sec)
   local m = math.floor(sec / 60)
@@ -2006,7 +2007,7 @@ local function formatRecTime(sec)
   return string.format("%02d:%02d", m, s)
 end
 
-function toggleScreenRecording()
+function _G.toggleScreenRecording()
   if screenRec.active then
     stopScreenRecording()
   else
@@ -2014,7 +2015,7 @@ function toggleScreenRecording()
   end
 end
 
-function startScreenRecording()
+function _G.startScreenRecording()
   if screenRec.active then
     stopScreenRecording()
     return
@@ -2037,7 +2038,9 @@ function startScreenRecording()
       os.execute("/usr/bin/swiftc -O '" .. camSwift .. "' -o '" .. camBin .. "' 2>/dev/null")
     end
     if hs.fs.attributes(camBin) then
-      screenRec.camTask = hs.task.new(camBin, nil, {
+      screenRec.camTask = hs.task.new(camBin, function(code)
+        log("camTask exit code: " .. tostring(code))
+      end, {
         "--size", tostring(C.screenRecWebcamSize or 240),
         "--position", C.screenRecWebcamPos or "bottom-left"
       })
@@ -2239,7 +2242,7 @@ function startScreenRecording()
   end))
 end
 
-function stopScreenRecording()
+function _G.stopScreenRecording()
   if not screenRec.active then return end
   screenRec.active = false
 
@@ -2260,16 +2263,23 @@ function stopScreenRecording()
   os.execute("/usr/bin/killall cam-bin 2>/dev/null")
 
   if screenRec.task then
-    screenRec.task:terminate()
+    pcall(function() screenRec.task:interrupt() end)
+    local taskToClean = screenRec.task
     screenRec.task = nil
+    hs.timer.doAfter(0.8, function()
+      if taskToClean and taskToClean:isRunning() then
+        pcall(function() taskToClean:terminate() end)
+      end
+    end)
   end
 
   play("done")
   local savePath = screenRec.outputPath
   local recTime = screenRec.seconds
 
-  hs.timer.doAfter(0.8, function()
-    if hs.fs.attributes(savePath) then
+  hs.timer.doAfter(1.5, function()
+    local attr = hs.fs.attributes(savePath)
+    if attr and attr.size and attr.size > 0 then
       hs.pasteboard.setContents(savePath)
 
       local n = hs.notify.new(function(notif)
