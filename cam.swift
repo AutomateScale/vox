@@ -40,15 +40,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.level = .floating
         window.isOpaque = false
         window.backgroundColor = .clear
-        // Disable window shadow in cutout mode so there is NO rectangular box outline around the person!
-        window.hasShadow = (bgMode != "cutout" && bgMode != "transparent")
+        window.hasShadow = false // Disable window shadow completely to prevent rectangular box outline
         window.isMovableByWindowBackground = true
         window.displaysWhenScreenProfileChanges = true
         
         super.init(window: window)
         window.delegate = self
         
-        // High quality person segmentation request (.accurate for crisp edge boundaries)
+        // High precision person segmentation request
         segmentationRequest.qualityLevel = .accurate
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
@@ -70,17 +69,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         rootLayer.frame = containerView.bounds
         rootLayer.masksToBounds = false
         rootLayer.backgroundColor = NSColor.clear.cgColor
+        rootLayer.cornerRadius = 0.0
+        rootLayer.borderWidth = 0.0
+        rootLayer.borderColor = NSColor.clear.cgColor
         
         if greenScreenMode != "cutout" && greenScreenMode != "transparent" {
             rootLayer.cornerRadius = size / 2.0
             rootLayer.masksToBounds = true
             rootLayer.borderColor = NSColor(red: 0.1, green: 0.85, blue: 0.75, alpha: 0.9).cgColor
             rootLayer.borderWidth = 3.0
-        } else {
-            rootLayer.cornerRadius = 0.0
-            rootLayer.masksToBounds = false
-            rootLayer.borderColor = NSColor.clear.cgColor
-            rootLayer.borderWidth = 0.0
         }
         
         containerView.layer = rootLayer
@@ -88,6 +85,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         let imageLayer = CALayer()
         imageLayer.frame = containerView.bounds
+        imageLayer.masksToBounds = false
+        imageLayer.backgroundColor = NSColor.clear.cgColor
+        imageLayer.borderWidth = 0.0
+        imageLayer.borderColor = NSColor.clear.cgColor
+        
         rootLayer.addSublayer(imageLayer)
         self.renderLayer = imageLayer
         
@@ -150,14 +152,25 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     
                     let scaleX = inputCIImage.extent.width / maskCIImage.extent.width
                     let scaleY = inputCIImage.extent.height / maskCIImage.extent.height
-                    let scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+                    var scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                     
-                    // Sharpen alpha mask contrast to eliminate fuzzy edge halo / dark outline
-                    let maskThreshold = CIFilter(name: "CIColorMatrix")
-                    maskThreshold?.setValue(scaledMask, forKey: kCIInputImageKey)
-                    maskThreshold?.setValue(CIVector(x: 0, y: 0, z: 0, w: 2.0), forKey: "inputAVector")
-                    maskThreshold?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.15), forKey: "inputBiasVector")
-                    let cleanMask = maskThreshold?.outputImage ?? scaledMask
+                    // Choke (contract) mask edge slightly to strip away background edge bleeding / outline fringe
+                    if let erodeFilter = CIFilter(name: "CIMorphologyErode") {
+                        erodeFilter.setValue(scaledMask, forKey: kCIInputImageKey)
+                        erodeFilter.setValue(1.5, forKey: kCIInputRadiusKey)
+                        if let eroded = erodeFilter.outputImage {
+                            scaledMask = eroded
+                        }
+                    }
+                    
+                    // Smooth mask edge to prevent harsh pixelation
+                    if let blurFilter = CIFilter(name: "CIGaussianBlur") {
+                        blurFilter.setValue(scaledMask, forKey: kCIInputImageKey)
+                        blurFilter.setValue(0.8, forKey: kCIInputRadiusKey)
+                        if let blurred = blurFilter.outputImage {
+                            scaledMask = blurred.cropped(to: inputCIImage.extent)
+                        }
+                    }
                     
                     // 100% Transparent Background
                     let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
@@ -165,10 +178,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let filter = CIFilter(name: "CIBlendWithMask")
                     filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                     filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                    filter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                    filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
                     
-                    if let cutout = filter?.outputImage {
-                        finalImage = cutout
+                    if let blended = filter?.outputImage {
+                        if let premultiplied = CIFilter(name: "CIPremultiply") {
+                            premultiplied.setValue(blended, forKey: kCIInputImageKey)
+                            finalImage = premultiplied.outputImage ?? blended
+                        } else {
+                            finalImage = blended
+                        }
                     }
                 }
             } catch {
