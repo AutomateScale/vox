@@ -2335,9 +2335,57 @@ function cancelScreenRecording()
   hs.alert.show("🗑️ Recording cancelled", 1.5)
 end
 
-_G.startScreenRecording = startScreenRecording
-_G.stopScreenRecording  = stopScreenRecording
-_G.cancelScreenRecording = cancelScreenRecording
+function showWebcamOverlay()
+  local camBin = HOME .. "/vox/cam-bin"
+  local camSwift = HOME .. "/vox/cam.swift"
+  if not hs.fs.attributes(camBin) and hs.fs.attributes(camSwift) then
+    os.execute("/usr/bin/swiftc -O '" .. camSwift .. "' -o '" .. camBin .. "' 2>/dev/null")
+  end
+  if hs.fs.attributes(camBin) then
+    os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+    screenRec.camTask = hs.task.new(camBin, function(code)
+      log("camTask exit code: " .. tostring(code))
+    end, {
+      "--size", tostring(C.screenRecWebcamSize or 260),
+      "--position", C.screenRecWebcamPos or "bottom-left"
+    })
+    screenRec.camTask:start()
+    hs.alert.show("📹 Presenter Camera Overlay ON (⌥⇧C)", 1.5)
+  end
+end
+
+function hideWebcamOverlay()
+  if screenRec.camTask then
+    screenRec.camTask:terminate()
+    screenRec.camTask = nil
+  end
+  os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+  hs.alert.show("📹 Presenter Camera Overlay OFF", 1.5)
+end
+
+function toggleWebcamOverlay()
+  local p = io.popen("pgrep -f cam-bin")
+  local out = p and p:read("*a") or ""
+  if p then p:close() end
+  if out ~= "" then
+    hideWebcamOverlay()
+  else
+    showWebcamOverlay()
+  end
+end
+
+_G.startScreenRecording  = startScreenRecording
+_G.stopScreenRecording   = stopScreenRecording
+_G.cancelScreenRecording  = cancelScreenRecording
+_G.showWebcamOverlay     = showWebcamOverlay
+_G.hideWebcamOverlay     = hideWebcamOverlay
+_G.toggleWebcamOverlay   = toggleWebcamOverlay
+
+pcall(function()
+  hs.hotkey.bind({"alt", "shift"}, "C", function()
+    toggleWebcamOverlay()
+  end)
+end)
 
 -- branded menubar icon: tiny alien silhouette with punched-out eyes.
 -- idle = monochrome template (adapts to menubar theme), rec = coral,

@@ -23,9 +23,8 @@ class ResizableCutoutView: NSView {
 class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVideoDataOutputSampleBufferDelegate {
     var captureSession: AVCaptureSession?
     var videoOutput: AVCaptureVideoDataOutput?
-    var metalLayer: CAMetalLayer?
+    var renderLayer: CALayer?
     var metalDevice: MTLDevice?
-    var commandQueue: MTLCommandQueue?
     var ciContext: CIContext?
     
     var currentSize: CGFloat = 260.0
@@ -79,13 +78,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     private func setupMetal() {
-        guard let device = MTLCreateSystemDefaultDevice() else { return }
-        self.metalDevice = device
-        self.commandQueue = device.makeCommandQueue()
-        self.ciContext = CIContext(mtlDevice: device, options: [
-            .cacheIntermediates: false,
-            .useSoftwareRenderer: false
-        ])
+        if let device = MTLCreateSystemDefaultDevice() {
+            self.metalDevice = device
+            self.ciContext = CIContext(mtlDevice: device)
+        } else {
+            self.ciContext = CIContext()
+        }
     }
     
     private func setupContentView(width: CGFloat, height: CGFloat) {
@@ -96,25 +94,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         containerView.windowController = self
         containerView.wantsLayer = true
         
-        let rootLayer = CALayer()
-        rootLayer.frame = containerView.bounds
-        rootLayer.backgroundColor = NSColor.clear.cgColor
-        containerView.layer = rootLayer
-        
-        let layer = CAMetalLayer()
-        layer.device = metalDevice
-        layer.pixelFormat = .bgra8Unorm
-        layer.framebufferOnly = false
+        let layer = CALayer()
         layer.frame = containerView.bounds
         layer.contentsScale = scale
-        layer.drawableSize = CGSize(width: width * scale, height: height * scale)
-        layer.magnificationFilter = .linear
-        layer.minificationFilter = .linear
         layer.backgroundColor = NSColor.clear.cgColor
         layer.isOpaque = false
         
-        rootLayer.addSublayer(layer)
-        self.metalLayer = layer
+        containerView.layer = layer
+        self.renderLayer = layer
         window.contentView = containerView
     }
     
@@ -135,9 +122,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         DispatchQueue.main.async {
             window.setFrame(newRect, display: true, animate: false)
             contentView.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            contentView.layer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            self.metalLayer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
-            self.metalLayer?.drawableSize = CGSize(width: newSize * scale, height: newHeight * scale)
+            self.renderLayer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
+            self.renderLayer?.contentsScale = scale
         }
     }
     
@@ -168,7 +154,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let output = AVCaptureVideoDataOutput()
         output.alwaysDiscardsLateVideoFrames = true
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera.metal.queue", qos: .userInteractive))
+        output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera.processing.queue", qos: .userInteractive))
         
         if session.canAddOutput(output) {
             session.addOutput(output)
@@ -220,28 +206,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             print("Segmentation error: \(error)")
         }
         
-        guard let metalLayer = self.metalLayer,
-              let drawable = metalLayer.nextDrawable(),
-              let commandBuffer = commandQueue?.makeCommandBuffer(),
-              let context = self.ciContext else { return }
+        guard let context = self.ciContext else { return }
         
-        let drawableSize = metalLayer.drawableSize
-        let renderBounds = CGRect(x: 0, y: 0, width: drawableSize.width, height: drawableSize.height)
-        
-        // Normalize origin coordinates to (0,0) before scaling to prevent off-screen rendering
         let originX = finalImage.extent.origin.x
         let originY = finalImage.extent.origin.y
         let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
-        let scaleX = drawableSize.width / normalizedImage.extent.width
-        let scaleY = drawableSize.height / normalizedImage.extent.height
-        let scaledFinal = normalizedImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-        
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        context.render(scaledFinal, to: drawable.texture, commandBuffer: commandBuffer, bounds: renderBounds, colorSpace: colorSpace)
-        
-        commandBuffer.present(drawable)
-        commandBuffer.commit()
+        if let cgImage = context.createCGImage(normalizedImage, from: normalizedImage.extent) {
+            DispatchQueue.main.async {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.renderLayer?.contents = cgImage
+                CATransaction.commit()
+            }
+        }
     }
     
     func closeWebcam() {
