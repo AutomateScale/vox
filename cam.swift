@@ -115,7 +115,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         super.init(window: window)
         window.delegate = self
         
-        segmentationRequest.qualityLevel = .accurate
+        segmentationRequest.qualityLevel = .balanced
         segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
         
         setupMetal()
@@ -314,7 +314,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
-        // Accurate Person Neural ML Segmentation
+        // Fast Balanced Neural ML Segmentation
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
         do {
             try handler.perform([segmentationRequest])
@@ -324,20 +324,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 
                 let scaleX = inputCIImage.extent.width / maskNorm.extent.width
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
-                let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
-                
-                // Natural Sub-Pixel Edge Feathering (1.0px Gaussian Blur)
-                let blurFilter = CIFilter(name: "CIGaussianBlur")
-                blurFilter?.setValue(scaledMask, forKey: kCIInputImageKey)
-                blurFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
-                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
                 
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
                 
                 let filter = CIFilter(name: "CIBlendWithMask")
                 filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                 filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                filter?.setValue(finalMask, forKey: kCIInputMaskImageKey)
+                filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
                 
                 if let blended = filter?.outputImage {
                     finalImage = blended
@@ -347,7 +341,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        // Ultra-Fast Widescreen Metal GPU Texture Render (Zero Hand/Arm Clipping!)
+        // Ultra-Fast Widescreen Metal GPU Texture Render (Guaranteed camera visibility!)
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
