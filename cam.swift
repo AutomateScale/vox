@@ -12,7 +12,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var greenScreenMode: String = "cutout" // "cutout", "green", "emerald", "blur", "off"
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     
-    init(size: CGFloat = 220.0, cornerPosition: String = "bottom-left", bgMode: String = "cutout") {
+    init(size: CGFloat = 180.0, cornerPosition: String = "bottom-left", bgMode: String = "cutout") {
         self.greenScreenMode = bgMode
         
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
@@ -28,7 +28,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             y = screen.maxY - size - margin
         }
         
-        let rect = NSRect(x: x, y: y, width: size, height: size * 1.15)
+        let rect = NSRect(x: x, y: y, width: size, height: size)
         
         let window = NSWindow(
             contentRect: rect,
@@ -40,7 +40,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.level = .floating
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = false // Disable window shadow completely to prevent rectangular box outline
+        window.hasShadow = true // Original window drop shadow
         window.isMovableByWindowBackground = true
         window.displaysWhenScreenProfileChanges = true
         
@@ -62,35 +62,27 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     private func setupContentView(size: CGFloat) {
         guard let window = self.window else { return }
         
-        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size * 1.15))
+        let containerView = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
         containerView.wantsLayer = true
         
-        let rootLayer = CALayer()
-        rootLayer.frame = containerView.bounds
-        rootLayer.masksToBounds = false
-        rootLayer.backgroundColor = NSColor.clear.cgColor
-        rootLayer.cornerRadius = 0.0
-        rootLayer.borderWidth = 0.0
-        rootLayer.borderColor = NSColor.clear.cgColor
+        // Original Vox Cyan/Emerald Circular Border Ring
+        let circleLayer = CALayer()
+        circleLayer.frame = containerView.bounds
+        circleLayer.cornerRadius = size / 2.0
+        circleLayer.masksToBounds = true
+        circleLayer.borderColor = NSColor(red: 0.1, green: 0.85, blue: 0.75, alpha: 0.9).cgColor // Original Vox Cyan Accent Ring
+        circleLayer.borderWidth = 3.0
+        circleLayer.backgroundColor = NSColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 1.0).cgColor // Sleek dark backing
         
-        if greenScreenMode != "cutout" && greenScreenMode != "transparent" {
-            rootLayer.cornerRadius = size / 2.0
-            rootLayer.masksToBounds = true
-            rootLayer.borderColor = NSColor(red: 0.1, green: 0.85, blue: 0.75, alpha: 0.9).cgColor
-            rootLayer.borderWidth = 3.0
-        }
-        
-        containerView.layer = rootLayer
+        containerView.layer = circleLayer
         window.contentView = containerView
         
         let imageLayer = CALayer()
         imageLayer.frame = containerView.bounds
-        imageLayer.masksToBounds = false
-        imageLayer.backgroundColor = NSColor.clear.cgColor
-        imageLayer.borderWidth = 0.0
-        imageLayer.borderColor = NSColor.clear.cgColor
+        imageLayer.masksToBounds = true
+        imageLayer.cornerRadius = size / 2.0
         
-        rootLayer.addSublayer(imageLayer)
+        circleLayer.addSublayer(imageLayer)
         self.renderLayer = imageLayer
         
         if let metalDevice = MTLCreateSystemDefaultDevice() {
@@ -154,7 +146,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let scaleY = inputCIImage.extent.height / maskCIImage.extent.height
                     var scaledMask = maskCIImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
                     
-                    // Choke (contract) mask edge slightly to strip away background edge bleeding / outline fringe
+                    // Choke (contract) mask edge slightly to strip away background edge bleeding
                     if let erodeFilter = CIFilter(name: "CIMorphologyErode") {
                         erodeFilter.setValue(scaledMask, forKey: kCIInputImageKey)
                         erodeFilter.setValue(1.5, forKey: kCIInputRadiusKey)
@@ -172,21 +164,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         }
                     }
                     
-                    // 100% Transparent Background
-                    let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
+                    // Sleek dark background inside original circle outline
+                    let darkBg = CIImage(color: CIColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 1.0)).cropped(to: inputCIImage.extent)
                     
                     let filter = CIFilter(name: "CIBlendWithMask")
                     filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
-                    filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    filter?.setValue(darkBg, forKey: kCIInputBackgroundImageKey)
                     filter?.setValue(scaledMask, forKey: kCIInputMaskImageKey)
                     
                     if let blended = filter?.outputImage {
-                        if let premultiplied = CIFilter(name: "CIPremultiply") {
-                            premultiplied.setValue(blended, forKey: kCIInputImageKey)
-                            finalImage = premultiplied.outputImage ?? blended
-                        } else {
-                            finalImage = blended
-                        }
+                        finalImage = blended
                     }
                 }
             } catch {
@@ -248,7 +235,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
-var size: CGFloat = 220.0
+var size: CGFloat = 180.0
 var position = "bottom-left"
 var bgMode = "cutout"
 
