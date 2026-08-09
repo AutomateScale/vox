@@ -2288,10 +2288,15 @@ function stopScreenRecording()
   local savePath = screenRec.outputPath
   local recTime = screenRec.seconds
 
-  hs.timer.doAfter(1.5, function()
+  local checkCount = 0
+  local function verifySave()
+    checkCount = checkCount + 1
     local attr = hs.fs.attributes(savePath)
     if attr and attr.size and attr.size > 0 then
       hs.pasteboard.setContents(savePath)
+
+      -- Auto-reveal in Finder
+      hs.execute("/usr/bin/open -R '" .. savePath .. "'")
 
       local n = hs.notify.new(function(notif)
         local act = notif:activationType()
@@ -2302,16 +2307,20 @@ function stopScreenRecording()
       end)
       n:title("🎥 Voom Video Saved!")
       n:subtitle("Duration: " .. formatRecTime(recTime))
-      n:informativeText("Saved to: " .. savePath .. "\nPath copied to clipboard! Click to open.")
+      n:informativeText("Saved to: " .. savePath .. "\nRevealed in Finder & copied to clipboard!")
       n:actionButtonTitle("Open Video")
       n:hasActionButton(true)
       n:send()
 
-      hs.alert.show("🎥 Voom video saved & path copied! (" .. formatRecTime(recTime) .. ")", 3.0)
+      hs.alert.show("🎥 Voom video saved & revealed in Finder! (" .. formatRecTime(recTime) .. ")", 3.0)
+    elseif checkCount < 7 then
+      hs.timer.doAfter(0.5, verifySave)
     else
       hs.alert.show("❌ Voom video failed to save", 2.5)
     end
-  end)
+  end
+
+  hs.timer.doAfter(0.5, verifySave)
 end
 
 function cancelScreenRecording()
