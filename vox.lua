@@ -2072,7 +2072,10 @@ function startScreenRecording()
   }
 
   screenRec.task = hs.task.new(ffmpegBin, function(code, stdOut, stdErr)
-    log("ffmpeg screen recording task finished with code: " .. tostring(code))
+    log("ffmpeg finished code: " .. tostring(code) .. " stdErr: " .. tostring(stdErr))
+    if code ~= 0 then
+      os.execute("echo 'FFMPEG ERR (" .. tostring(code) .. "): " .. (stdErr or ""):gsub("'", "") .. "' >> /tmp/vox_ffmpeg.log")
+    end
   end, args)
 
   screenRec.task:start()
