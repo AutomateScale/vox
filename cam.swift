@@ -76,8 +76,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     
     init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left") {
         self.currentSize = size
-        let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-        let margin: CGFloat = 25.0
+        let primaryScreen = NSScreen.screens.first ?? NSScreen.main
+        let screen = primaryScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
+        let margin: CGFloat = 35.0
         
         let width = size * 1.4
         let height = size * 0.95
@@ -92,7 +93,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             y = screen.maxY - height - margin
         }
         
+        // Strict Clamping to visible monitor screen area
+        x = max(screen.minX + margin, min(screen.maxX - width - margin, x))
+        y = max(screen.minY + margin, min(screen.maxY - height - margin, y))
+        
         let rect = NSRect(x: x, y: y, width: width, height: height)
+        logMsg("Creating window at clamped rect: \(rect)")
         
         let window = NSWindow(
             contentRect: rect,
@@ -101,7 +107,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             defer: false
         )
         
-        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
+        // Standard AppKit Floating window level (Level 3 - floats over standard windows)
+        window.level = .floating
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -341,7 +348,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Segmentation error: \(error)")
         }
         
-        // Ultra-Fast Widescreen Metal GPU Texture Render (Guaranteed camera visibility!)
+        // Ultra-Fast Widescreen Metal GPU Texture Render
         guard let metalLayer = self.metalLayer,
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue?.makeCommandBuffer(),
