@@ -2072,7 +2072,7 @@ function startScreenRecording()
 
   screenRec.task:start()
   play("start")
-  hs.alert.show("🎥 Screen Recording Started (⌥⇧R to stop)", 2.0)
+  hs.alert.show("🎥 Voom Started (⌥⇧R to stop)", 2.0)
 
   -- 3. Create Screen Recording HUD Widget
   local mainScreen = hs.screen.mainScreen()
@@ -2280,16 +2280,16 @@ function stopScreenRecording()
           hs.execute("open '" .. savePath .. "'")
         end
       end)
-      n:title("🎥 Vox Screen Recording Saved!")
+      n:title("🎥 Voom Video Saved!")
       n:subtitle("Duration: " .. formatRecTime(recTime))
       n:informativeText("Saved to: " .. savePath .. "\nPath copied to clipboard! Click to open.")
       n:actionButtonTitle("Open Video")
       n:hasActionButton(true)
       n:send()
 
-      hs.alert.show("🎥 Video saved & path copied! (" .. formatRecTime(recTime) .. ")", 3.0)
+      hs.alert.show("🎥 Voom video saved & path copied! (" .. formatRecTime(recTime) .. ")", 3.0)
     else
-      hs.alert.show("❌ Screen recording failed to save", 2.5)
+      hs.alert.show("❌ Voom video failed to save", 2.5)
     end
   end)
 end
@@ -2852,7 +2852,7 @@ local ACTION_DICT = {
     { "volume up / volume down",       "nudges output ±12%" },
     { "mute / unmute",                 "output audio" },
     { "take a screenshot",             "presses ⌘⇧3" },
-    { "record screen / stop recording","Loom-style screen + voice recording (⌥⇧R)" },
+    { "voom / record screen",          "Voom screen & presenter recording (⌥⇧R)" },
     { "lock the screen",               "locks the Mac" },
   } },
   { "Brain", {
@@ -3002,15 +3002,17 @@ local function performAction(text)
   end
 
   -- system bits
-  if t:match("^record%s+screen") or t:match("^start%s+recording%s+screen")
-     or t:match("^start%s+screen%s+recording") or t == "record screen" then
-    actionSay("Starting screen recording...", "🎥")
+  if t:match("^voom") or t:match("^start%s+voom") or t:match("^record%s+screen")
+     or t:match("^start%s+recording%s+screen") or t:match("^start%s+screen%s+recording")
+     or t == "voom" or t == "record screen" then
+    actionSay("Starting Voom...", "🎥")
     hs.timer.doAfter(0.5, function() startScreenRecording() end)
     return true
   end
-  if t:match("^stop%s+recording") or t:match("^stop%s+screen%s+recording")
-     or t:match("^end%s+screen%s+recording") or t == "stop recording" then
-    actionSay("Stopping screen recording...", "🛑")
+  if t:match("^stop%s+voom") or t:match("^stop%s+recording")
+     or t:match("^stop%s+screen%s+recording") or t:match("^end%s+screen%s+recording")
+     or t == "stop voom" or t == "stop recording" then
+    actionSay("Stopping Voom...", "🛑")
     stopScreenRecording()
     return true
   end
@@ -5085,8 +5087,8 @@ menubar:setMenu(function()
         return items
       end)() },
     { title = "-" },
-    { title = "🎥 Screen Recording (Loom style)", menu = {
-        { title = (screenRec and screenRec.active) and "🛑 Stop Screen Recording (⌥⇧R)" or "▶ Start Screen Recording (⌥⇧R)",
+    { title = "🎥 Voom — Screen & Presenter Recording", menu = {
+        { title = (screenRec and screenRec.active) and "🛑 Stop Voom Recording (⌥⇧R)" or "▶ Start Voom Recording (⌥⇧R)",
           fn = function() toggleScreenRecording() end },
         { title = "📷 Include Webcam Bubble", checked = C.screenRecWebcam,
           fn = function()
