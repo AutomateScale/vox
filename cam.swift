@@ -228,29 +228,37 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
 }
 
-// Command Line Handler
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-
-var size: CGFloat = 260.0
-var position = "bottom-left"
-
-let args = CommandLine.arguments
-for i in 0..<args.count {
-    if args[i] == "--size", i + 1 < args.count, let s = Double(args[i+1]) {
-        size = CGFloat(s)
-    }
-    if args[i] == "--position", i + 1 < args.count {
-        position = args[i+1]
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var controller: WebcamWindowController?
+    
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        var size: CGFloat = 260.0
+        var position = "bottom-left"
+        
+        let args = CommandLine.arguments
+        for i in 0..<args.count {
+            if args[i] == "--size", i + 1 < args.count, let s = Double(args[i+1]) {
+                size = CGFloat(s)
+            }
+            if args[i] == "--position", i + 1 < args.count {
+                position = args[i+1]
+            }
+        }
+        
+        let wc = WebcamWindowController(size: size, cornerPosition: position)
+        wc.showWindow(nil)
+        self.controller = wc
     }
 }
 
-let controller = WebcamWindowController(size: size, cornerPosition: position)
-controller.showWindow(nil)
+let app = NSApplication.shared
+let delegate = AppDelegate()
+app.delegate = delegate
+app.setActivationPolicy(.accessory)
 
 let sigSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 sigSource.setEventHandler {
-    controller.closeWebcam()
+    delegate.controller?.closeWebcam()
     exit(0)
 }
 sigSource.resume()
@@ -258,7 +266,7 @@ signal(SIGINT, SIG_IGN)
 
 let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 termSource.setEventHandler {
-    controller.closeWebcam()
+    delegate.controller?.closeWebcam()
     exit(0)
 }
 termSource.resume()
