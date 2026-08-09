@@ -95,6 +95,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         containerView.windowController = self
         containerView.wantsLayer = true
         
+        let rootLayer = CALayer()
+        rootLayer.frame = containerView.bounds
+        rootLayer.backgroundColor = NSColor.clear.cgColor
+        containerView.layer = rootLayer
+        
         let layer = CAMetalLayer()
         layer.device = metalDevice
         layer.pixelFormat = .bgra8Unorm
@@ -103,13 +108,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         layer.backgroundColor = NSColor.clear.cgColor
         layer.isOpaque = false
         
-        containerView.layer = layer
+        rootLayer.addSublayer(layer)
         self.metalLayer = layer
         window.contentView = containerView
     }
     
     func adjustSize(by delta: CGFloat) {
-        guard let window = self.window else { return }
+        guard let window = self.window, let contentView = window.contentView else { return }
         let minSize: CGFloat = 140.0
         let maxSize: CGFloat = 850.0
         
@@ -123,18 +128,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         DispatchQueue.main.async {
             window.setFrame(newRect, display: true, animate: false)
+            contentView.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
+            contentView.layer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
             self.metalLayer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
         }
     }
     
     private func setupCamera() {
         let session = AVCaptureSession()
-        
-        if session.canSetSessionPreset(.hd1920x1080) {
-            session.sessionPreset = .hd1920x1080
-        } else if session.canSetSessionPreset(.high) {
-            session.sessionPreset = .high
-        }
+        session.sessionPreset = .vga640x480
         
         guard let device = AVCaptureDevice.default(for: .video) else {
             print("No video camera found.")
@@ -169,7 +171,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // Enforce smooth 30 FPS pacing (32ms interval)
         let now = CACurrentMediaTime()
         if now - lastRenderTime < 0.030 {
             return
