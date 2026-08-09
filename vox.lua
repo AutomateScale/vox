@@ -2038,9 +2038,8 @@ function startScreenRecording()
     end
     if hs.fs.attributes(camBin) then
       screenRec.camTask = hs.task.new(camBin, nil, {
-        "--size", tostring(C.screenRecWebcamSize or 180),
-        "--position", C.screenRecWebcamPos or "bottom-left",
-        "--bg", C.screenRecBgMode or "cutout"
+        "--size", tostring(C.screenRecWebcamSize or 240),
+        "--position", C.screenRecWebcamPos or "bottom-left"
       })
       screenRec.camTask:start()
     end
