@@ -2047,6 +2047,7 @@ function startScreenRecording()
     "-b:v", "6M",
     "-c:a", "aac",
     "-b:a", "192k",
+    "-movflags", "+frag_keyframe+empty_moov",
     "-y",
     screenRec.outputPath
   }
