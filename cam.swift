@@ -90,6 +90,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     
     private func setupContentView(width: CGFloat, height: CGFloat) {
         guard let window = self.window else { return }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
         let containerView = ResizableCutoutView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         containerView.windowController = self
@@ -105,6 +106,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         layer.pixelFormat = .bgra8Unorm
         layer.framebufferOnly = false
         layer.frame = containerView.bounds
+        layer.contentsScale = scale
+        layer.drawableSize = CGSize(width: width * scale, height: height * scale)
+        layer.magnificationFilter = .linear
+        layer.minificationFilter = .linear
         layer.backgroundColor = NSColor.clear.cgColor
         layer.isOpaque = false
         
@@ -125,18 +130,26 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let frame = window.frame
         let newHeight = newSize * 1.25
         let newRect = NSRect(x: frame.minX, y: frame.minY, width: newSize, height: newHeight)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
         DispatchQueue.main.async {
             window.setFrame(newRect, display: true, animate: false)
             contentView.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
             contentView.layer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
             self.metalLayer?.frame = NSRect(x: 0, y: 0, width: newSize, height: newHeight)
+            self.metalLayer?.drawableSize = CGSize(width: newSize * scale, height: newHeight * scale)
         }
     }
     
     private func setupCamera() {
         let session = AVCaptureSession()
-        session.sessionPreset = .vga640x480
+        
+        // 1080p Full HD Studio Preset
+        if session.canSetSessionPreset(.hd1920x1080) {
+            session.sessionPreset = .hd1920x1080
+        } else if session.canSetSessionPreset(.high) {
+            session.sessionPreset = .high
+        }
         
         guard let device = AVCaptureDevice.default(for: .video) else {
             print("No video camera found.")
