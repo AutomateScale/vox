@@ -59,7 +59,7 @@ local C = {
   screenRecWebcam     = true,
   screenRecWebcamSize = 180,
   screenRecWebcamPos  = "bottom-left",
-  screenRecBgMode     = "green",
+  screenRecBgMode     = "cutout",
   -- whisperHost: where transcription happens. Keep 127.0.0.1 normally.
   -- Old/slow Mac? Point it at a fast Mac running Vox on your LAN
   -- (that Mac sets serverBind = "0.0.0.0" in ITS local.lua) and this
@@ -5080,13 +5080,15 @@ menubar:setMenu(function()
             hs.alert.show("Webcam Bubble: " .. (C.screenRecWebcam and "ON" or "OFF"), 1.5)
           end },
         { title = "Webcam Background Mode", menu = {
+            { title = "✨ Transparent Person Cutout (No Background Box!)", checked = (C.screenRecBgMode == "cutout" or C.screenRecBgMode == "transparent"),
+              fn = function() pref("screenRecBgMode", "cutout"); hs.alert.show("Webcam: Transparent Person Cutout ✨", 1.5) end },
             { title = "🟢 Automatic Green Screen (Chroma Key)", checked = (C.screenRecBgMode == "green"),
               fn = function() pref("screenRecBgMode", "green"); hs.alert.show("Webcam: Automatic Green Screen 🟢", 1.5) end },
             { title = "🌲 Vox Emerald Studio", checked = (C.screenRecBgMode == "emerald"),
               fn = function() pref("screenRecBgMode", "emerald"); hs.alert.show("Webcam: Vox Emerald Studio 🌲", 1.5) end },
             { title = "🌫 Studio Background Blur", checked = (C.screenRecBgMode == "blur"),
               fn = function() pref("screenRecBgMode", "blur"); hs.alert.show("Webcam: Studio Blur 🌫", 1.5) end },
-            { title = "📷 Raw Camera (No Green Screen)", checked = (C.screenRecBgMode == "off"),
+            { title = "📷 Raw Camera Circle", checked = (C.screenRecBgMode == "off"),
               fn = function() pref("screenRecBgMode", "off"); hs.alert.show("Webcam: Raw Camera 📷", 1.5) end },
           } },
         { title = "📂 Open Recordings Folder",
