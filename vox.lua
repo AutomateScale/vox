@@ -1053,16 +1053,20 @@ local function miniTick()
   c[6].fillColor = head[1]
   c:alpha(glow)
 
-  -- Track bottom edge of currently focused highlighted window if window positioning is enabled
+  -- Track bottom edge of currently focused highlighted window across all screens
   if C.alienPos and C.alienPos.window then
-    local ok, wf = pcall(function()
+    local ok, winInfo = pcall(function()
       local w = hs.window.focusedWindow()
-      return w and w:frame()
+      if not w then return nil end
+      local wf = w:frame()
+      local ws = w:screen() or hs.screen.mainScreen()
+      return { frame = wf, screenFrame = ws:fullFrame() }
     end)
-    if ok and wf and wf.w > 120 and wf.h > 120 then
-      local mainF = hs.screen.mainScreen():fullFrame()
-      local targetX = math.max(mainF.x + 4, math.min(wf.x + (wf.w - MW) / 2, mainF.x + mainF.w - MW - 4))
-      local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 45, mainF.y + mainF.h - MH - 4))
+    if ok and winInfo and winInfo.frame and winInfo.frame.w > 120 and winInfo.frame.h > 120 then
+      local wf = winInfo.frame
+      local sf = winInfo.screenFrame
+      local targetX = math.max(sf.x + 4, math.min(wf.x + (wf.w - MW) / 2, sf.x + sf.w - MW - 4))
+      local targetY = math.max(sf.y + 4, math.min(wf.y + wf.h - 45, sf.y + sf.h - MH - 4))
       c:frame({ x = targetX, y = targetY, w = MW, h = MH })
     end
   end
@@ -1074,17 +1078,22 @@ local function miniShow()
   if C.hudStyle ~= "mini" and hud.visible then return end
   miniEnsure()
   
-  local ok, wf = pcall(function()
+  local ok, winInfo = pcall(function()
     local w = hs.window.focusedWindow()
-    return w and w:frame()
+    if not w then return nil end
+    local wf = w:frame()
+    local ws = w:screen() or hs.screen.mainScreen()
+    return { frame = wf, screenFrame = ws:fullFrame() }
   end)
-  if C.alienPos and C.alienPos.window and ok and wf and wf.w > 120 and wf.h > 120 then
-    local mainF = hs.screen.mainScreen():fullFrame()
-    local targetX = math.max(mainF.x + 4, math.min(wf.x + (wf.w - MW) / 2, mainF.x + mainF.w - MW - 4))
-    local targetY = math.max(mainF.y + 4, math.min(wf.y + wf.h - 45, mainF.y + mainF.h - MH - 4))
+  if C.alienPos and C.alienPos.window and ok and winInfo and winInfo.frame and winInfo.frame.w > 120 and winInfo.frame.h > 120 then
+    local wf = winInfo.frame
+    local sf = winInfo.screenFrame
+    local targetX = math.max(sf.x + 4, math.min(wf.x + (wf.w - MW) / 2, sf.x + sf.w - MW - 4))
+    local targetY = math.max(sf.y + 4, math.min(wf.y + wf.h - 45, sf.y + sf.h - MH - 4))
     mini.canvas:frame({ x = targetX, y = targetY, w = MW, h = MH })
   else
-    local f = hs.screen.primaryScreen():fullFrame()
+    local activeScr = hs.mouse.getCurrentScreen() or hs.screen.mainScreen() or hs.screen.primaryScreen()
+    local f = activeScr:fullFrame()
     mini.canvas:frame({ x = f.x + (f.w - MW) / 2, y = f.y + f.h - 34,
                         w = MW, h = MH })
   end
@@ -1526,29 +1535,32 @@ end
 local function hudPositions()
   local f = hs.screen.mainScreen():fullFrame()
   local list, seen = {}, {}
-  local function add(x, y)
-    x = math.max(f.x + 4, math.min(x, f.x + f.w - CV_W - 4))
-    y = math.max(f.y + 4, math.min(y, f.y + f.h - CV_H - 4))
+  local function add(x, y, scr)
+    local sf = scr and scr:fullFrame() or f
+    x = math.max(sf.x + 4, math.min(x, sf.x + sf.w - CV_W - 4))
+    y = math.max(sf.y + 4, math.min(y, sf.y + sf.h - CV_H - 4))
     local key = math.floor(x) .. ":" .. math.floor(y)
     if not seen[key] then seen[key] = true; list[#list + 1] = { x = x, y = y } end
   end
   local pos = C.alienPos or {}
   if pos.titlebar then
-    local ok, wf = pcall(function()
-      local w = hs.window.focusedWindow(); return w and w:frame()
+    local ok, winInfo = pcall(function()
+      local w = hs.window.focusedWindow()
+      return w and { frame = w:frame(), screen = w:screen() }
     end)
-    if ok and wf and wf.w > 120 then
-      -- flush-fit inside top titlebar of focused window
-      add(wf.x + (wf.w - CV_W) / 2, wf.y + 4)
+    if ok and winInfo and winInfo.frame and winInfo.frame.w > 120 then
+      local wf = winInfo.frame
+      add(wf.x + (wf.w - CV_W) / 2, wf.y + 4, winInfo.screen)
     end
   end
   if pos.window then
-    local ok, wf = pcall(function()
-      local w = hs.window.focusedWindow(); return w and w:frame()
+    local ok, winInfo = pcall(function()
+      local w = hs.window.focusedWindow()
+      return w and { frame = w:frame(), screen = w:screen() }
     end)
-    if ok and wf and wf.w > 120 then
-      -- Dock flush at the bottom center edge of the highlighted focused window!
-      add(wf.x + (wf.w - CV_W) / 2, wf.y + wf.h - 34)
+    if ok and winInfo and winInfo.frame and winInfo.frame.w > 120 then
+      local wf = winInfo.frame
+      add(wf.x + (wf.w - CV_W) / 2, wf.y + wf.h - 34, winInfo.screen)
     end
   end
   if pos.center then add(f.x + (f.w - CV_W) / 2, f.y + f.h - CV_H - 28) end
