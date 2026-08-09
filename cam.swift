@@ -76,6 +76,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             rootLayer.masksToBounds = true
             rootLayer.borderColor = NSColor(red: 0.1, green: 0.85, blue: 0.75, alpha: 0.9).cgColor
             rootLayer.borderWidth = 3.0
+        } else {
+            rootLayer.cornerRadius = 0.0
+            rootLayer.masksToBounds = false
+            rootLayer.borderColor = NSColor.clear.cgColor
+            rootLayer.borderWidth = 0.0
         }
         
         containerView.layer = rootLayer

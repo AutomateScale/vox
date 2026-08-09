@@ -2040,7 +2040,7 @@ function startScreenRecording()
       screenRec.camTask = hs.task.new(camBin, nil, {
         "--size", tostring(C.screenRecWebcamSize or 180),
         "--position", C.screenRecWebcamPos or "bottom-left",
-        "--bg", C.screenRecBgMode or "green"
+        "--bg", C.screenRecBgMode or "cutout"
       })
       screenRec.camTask:start()
     end
