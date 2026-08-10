@@ -3655,6 +3655,17 @@ local function applyVoiceCommands(text)
     return "", { fn = function() hs.eventtap.keyStroke({ "cmd" }, "q", 0) end, label = "Quit app" }
   end
 
+  -- Camera Controls
+  if bare:find("camera on") or bare:find("show camera") or bare:find("turn camera on") or bare == "camera on" then
+    return "", { fn = function() showWebcamOverlay() end, label = "Camera Overlay ON" }
+  end
+  if bare:find("camera off") or bare:find("hide camera") or bare:find("turn camera off") or bare == "camera off" then
+    return "", { fn = function() hideWebcamOverlay() end, label = "Camera Overlay OFF" }
+  end
+  if bare:find("toggle camera") or bare == "camera" then
+    return "", { fn = function() toggleWebcamOverlay() end, label = "Toggle Camera" }
+  end
+
   -- Fullscreen & Expand
   if bare:find("expand") or bare:find("full screen") or bare:find("fullscreen") or bare:find("maximize") then
     return "", { fn = function()
