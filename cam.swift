@@ -401,71 +401,84 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     
                     if let baseAddr = CVPixelBufferGetBaseAddress(maskBuffer) {
                         let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
-                        var minX = mw, maxX = 0, minY = mh, maxY = 0
-                        var bodyPixels = 0
                         
+                        // 1. Pass 1: Extract row-by-row body extremities (head, arms, hands, shoulders, torso)
+                        var rowMin = Array(repeating: mw, count: mh)
+                        var rowMax = Array(repeating: -1, count: mh)
+                        var globalMinY = mh, globalMaxY = 0
+                        var totalBodyCount = 0
+
                         for y in 0..<mh {
                             let rowOffset = y * bytesPerRow
                             let flatOffset = y * mw
-                            
                             for x in 0..<mw {
                                 let rawVal = Float(ptr[rowOffset + x]) / 255.0
-                                
-                                // 100% Authentic Natural Human Geometry: Zero artificial shape or morphology alteration!
-                                let normY = Double(y) / Double(mh) // y=0 is TOP (head), y=mh is BOTTOM (chest)
-                                let normX = Double(x) / Double(mw) // x=0 is LEFT, x=mw is RIGHT
-                                
-                                let isRightSideOuter = (normX > 0.72) // Right-side background region
-                                let isLeftSideOuter  = (normX < 0.28) // Left-side background region
-                                let isOuterBackground = (isRightSideOuter || isLeftSideOuter) && (normY < 0.85)
-                                
-                                // True Anatomical Neck & Jawline Zone (y=0.24 to 0.56)
-                                let isNeckJawZone = (normY >= 0.24 && normY <= 0.56) && (normX >= 0.25 && normX <= 0.75)
-                                
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
-                                
-                                // Anti-Spike Flash Suppression on Outer Background (Eliminates 1-frame room flashes on right side!)
-                                var blendWeight: Float = max(0.10, min(0.75, 0.10 + (delta / 0.18) * 0.65))
-                                if isOuterBackground && prevVal < 0.18 && rawVal > 0.18 {
-                                    blendWeight = 0.05 // Heavy damping on rising ambient noise flashes!
-                                }
-                                
+                                let blendWeight: Float = max(0.12, min(0.75, 0.12 + (delta / 0.18) * 0.63))
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
-                                
-                                // Adaptive Threshold: Strict on outer background (0.30), refined on neck/jawline (0.22)
-                                let gateThreshold: Float = isOuterBackground ? 0.30 : (isNeckJawZone ? 0.22 : 0.16)
-                                
-                                // Cubic Hermite Sigmoidal Edge Transition with Hysteresis Gate
-                                var finalByte: UInt8 = 0
-                                if smoothedVal >= gateThreshold {
-                                    if smoothedVal >= 0.68 {
-                                        finalByte = 255
-                                    } else {
-                                        let t = (smoothedVal - gateThreshold) / (0.68 - gateThreshold)
-                                        let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
-                                        finalByte = UInt8(clamping: Int(smoothstep * 255.0))
-                                    }
-                                }
-                                ptr[rowOffset + x] = finalByte
-                                
-                                if finalByte >= 35 {
-                                    if x < minX { minX = x }
-                                    if x > maxX { maxX = x }
-                                    if y < minY { minY = y }
-                                    if y > maxY { maxY = y }
-                                    bodyPixels += 1
+
+                                if smoothedVal >= 0.18 {
+                                    if x < rowMin[y] { rowMin[y] = x }
+                                    if x > rowMax[y] { rowMax[y] = x }
+                                    if y < globalMinY { globalMinY = y }
+                                    if y > globalMaxY { globalMaxY = y }
+                                    totalBodyCount += 1
                                 }
                             }
                         }
-                        if bodyPixels > 40 {
-                            let padX = Int(Double(mw) * 0.16) // 16% anatomical movement margin
-                            let padY = Int(Double(mh) * 0.16)
-                            let nMinX = CGFloat(max(0, minX - padX)) / CGFloat(mw)
-                            let nMaxX = CGFloat(min(mw, maxX + padX)) / CGFloat(mw)
-                            let nMinY = CGFloat(max(0, minY - padY)) / CGFloat(mh)
-                            let nMaxY = CGFloat(min(mh, maxY + padY)) / CGFloat(mh)
+
+                        // Smooth row extremities vertically (3-row rolling envelope margin)
+                        var cleanRowMin = rowMin
+                        var cleanRowMax = rowMax
+                        let marginPx = 8 // 8px tight safety margin around arms & body
+                        
+                        if totalBodyCount > 40 {
+                            for y in max(0, globalMinY - 4)...min(mh - 1, globalMaxY + 4) {
+                                var rMin = mw, rMax = -1
+                                for dy in -3...3 {
+                                    let ny = max(0, min(mh - 1, y + dy))
+                                    if rowMin[ny] < rMin { rMin = rowMin[ny] }
+                                    if rowMax[ny] > rMax { rMax = rowMax[ny] }
+                                }
+                                cleanRowMin[y] = max(0, rMin - marginPx)
+                                cleanRowMax[y] = min(mw - 1, rMax + marginPx)
+                            }
+                        }
+
+                        // 2. Pass 2: HARD ERASE ALL PIXELS OUTSIDE THE ANATOMIC ARM & BODY PERIMETER
+                        for y in 0..<mh {
+                            let rowOffset = y * bytesPerRow
+                            let flatOffset = y * mw
+                            let isBodyRow = (y >= max(0, globalMinY - 4) && y <= min(mh - 1, globalMaxY + 4))
+                            let minAllowedX = cleanRowMin[y]
+                            let maxAllowedX = cleanRowMax[y]
+
+                            for x in 0..<mw {
+                                var finalByte: UInt8 = 0
+                                if isBodyRow && x >= minAllowedX && x <= maxAllowedX {
+                                    let smoothedVal = self.prevMaskData![flatOffset + x]
+                                    if smoothedVal >= 0.16 {
+                                        if smoothedVal >= 0.68 {
+                                            finalByte = 255
+                                        } else {
+                                            let t = (smoothedVal - 0.16) / (0.68 - 0.16)
+                                            let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
+                                            finalByte = UInt8(clamping: Int(smoothstep * 255.0))
+                                        }
+                                    }
+                                }
+                                ptr[rowOffset + x] = finalByte
+                            }
+                        }
+                        if totalBodyCount > 40 {
+                            let padX = Int(Double(mw) * 0.12)
+                            let padY = Int(Double(mh) * 0.12)
+                            let nMinX = CGFloat(max(0, cleanRowMin.min() ?? 0 - padX)) / CGFloat(mw)
+                            let nMaxX = CGFloat(min(mw, cleanRowMax.max() ?? mw + padX)) / CGFloat(mw)
+                            let nMinY = CGFloat(max(0, globalMinY - padY)) / CGFloat(mh)
+                            let nMaxY = CGFloat(min(mh, globalMaxY + padY)) / CGFloat(mh)
                             let targetRect = CGRect(x: nMinX, y: nMinY, width: nMaxX - nMinX, height: nMaxY - nMinY)
                             if let prev = self.trackedBodyRect {
                                 let smX = prev.origin.x * 0.50 + targetRect.origin.x * 0.50
