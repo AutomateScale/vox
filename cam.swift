@@ -482,6 +482,23 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     outlineImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     outlineImage?.setValue(outlineStrokeMask, forKey: kCIInputMaskImageKey)
 
+                    // 1. Sleek 3D Studio Soft Drop-Shadow Layer Behind Cutout
+                    let shadowMaxFilter = CIFilter(name: "CIMorphologyMaximum")
+                    shadowMaxFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
+                    shadowMaxFilter?.setValue(5, forKey: kCIInputRadiusKey)
+                    let shadowBaseMask = shadowMaxFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                    let shadowBlur = CIFilter(name: "CIGaussianBlur")
+                    shadowBlur?.setValue(shadowBaseMask, forKey: kCIInputImageKey)
+                    shadowBlur?.setValue(6.0, forKey: kCIInputRadiusKey)
+                    let softShadowMask = shadowBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? shadowBaseMask
+
+                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.55)).cropped(to: inputCIImage.extent)
+                    let shadowImage = CIFilter(name: "CIBlendWithMask")
+                    shadowImage?.setValue(darkShadowColor, forKey: kCIInputImageKey)
+                    shadowImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    shadowImage?.setValue(softShadowMask, forKey: kCIInputMaskImageKey)
+
                     // 100% Baseline Subject Cutout (Zero color or light modifications)
                     let cutoutFilter = CIFilter(name: "CIBlendWithMask")
                     cutoutFilter?.setValue(inputCIImage, forKey: kCIInputImageKey)
@@ -489,16 +506,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
                     let subjectCutout = cutoutFilter?.outputImage ?? inputCIImage
 
-                    // Composite Dynamic Humanoid Outline over Baseline Subject Cutout
+                    // Composite Subject Cutout OVER Sleek 3D Studio Drop-Shadow
+                    let subjectWithShadow = CIFilter(name: "CISourceOverCompositing")
+                    subjectWithShadow?.setValue(subjectCutout, forKey: kCIInputImageKey)
+                    subjectWithShadow?.setValue(shadowImage?.outputImage, forKey: kCIInputBackgroundImageKey)
+
+                    // Composite Dynamic Humanoid Outline OVER Subject + Shadow
                     let overFilter = CIFilter(name: "CISourceOverCompositing")
                     overFilter?.setValue(outlineImage?.outputImage, forKey: kCIInputImageKey)
-                    overFilter?.setValue(subjectCutout, forKey: kCIInputBackgroundImageKey)
+                    overFilter?.setValue(subjectWithShadow?.outputImage, forKey: kCIInputBackgroundImageKey)
 
-                    // ABSOLUTE 100.00% OUTER SAFETY GUARD: Mask final render by dilatedMask so NOTHING outside the outline can ever render!
+                    // ABSOLUTE 100.00% OUTER SAFETY GUARD: Mask final render by softShadowMask so NOTHING outside shadow bounds can ever render!
                     let finalSafetyGuard = CIFilter(name: "CIBlendWithMask")
                     finalSafetyGuard?.setValue(overFilter?.outputImage, forKey: kCIInputImageKey)
                     finalSafetyGuard?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                    finalSafetyGuard?.setValue(dilatedMask, forKey: kCIInputMaskImageKey)
+                    finalSafetyGuard?.setValue(softShadowMask, forKey: kCIInputMaskImageKey)
 
                     if let blended = finalSafetyGuard?.outputImage {
                         finalImage = blended
