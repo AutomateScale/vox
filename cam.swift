@@ -667,37 +667,72 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     shadowImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     shadowImage?.setValue(softShadowMask, forKey: kCIInputMaskImageKey)
 
-                    // Motion-Activated Luminous Energy Aura Field ("Children of the Light" Aura)
-                    let motionScale = min(1.0, max(0.0, (self.currentMotionVelocity - 0.005) / 0.03))
-                    let auraAlpha = 0.25 + motionScale * 0.55 // Glows intensely as you move!
-                    
-                    let auraMax = CIFilter(name: "CIMorphologyMaximum")
-                    auraMax?.setValue(cleanMask, forKey: kCIInputImageKey)
-                    auraMax?.setValue(Int(6 + motionScale * 6), forKey: kCIInputRadiusKey)
-                    let auraExpanded = auraMax?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
-
-                    let auraBlur = CIFilter(name: "CIGaussianBlur")
-                    auraBlur?.setValue(auraExpanded, forKey: kCIInputImageKey)
-                    auraBlur?.setValue(8.0 + motionScale * 6.0, forKey: kCIInputRadiusKey)
-                    let softAuraMask = auraBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? auraExpanded
-
-                    // Chromatic Luminous Energy Pulse: Mint Green -> Electric Cyan -> Solar Gold
+                    // Dual-Ring Harmonic Energy Aura Engine ("Children of the Light" Masterpiece)
+                    let motionScale = min(1.0, max(0.0, (self.currentMotionVelocity - 0.005) / 0.025))
                     let time = CACurrentMediaTime()
-                    let rGlow = 0.35 + sin(time * 3.0 + motionScale * 2.0) * 0.30
-                    let gGlow = 0.85 + cos(time * 2.5) * 0.15
-                    let bGlow = 0.90 + sin(time * 2.0) * 0.10
                     
-                    let auraCIColor = CIColor(red: CGFloat(rGlow), green: CGFloat(gGlow), blue: CGFloat(bGlow), alpha: CGFloat(auraAlpha))
-                    let auraColorImg = CIImage(color: auraCIColor).cropped(to: inputCIImage.extent)
+                    // 1. Inner Neon Core Ring (High Energy)
+                    let innerMax = CIFilter(name: "CIMorphologyMaximum")
+                    innerMax?.setValue(cleanMask, forKey: kCIInputImageKey)
+                    innerMax?.setValue(Int(4 + motionScale * 5), forKey: kCIInputRadiusKey)
+                    let innerExpanded = innerMax?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
 
-                    let auraImage = CIFilter(name: "CIBlendWithMask")
-                    auraImage?.setValue(auraColorImg, forKey: kCIInputImageKey)
-                    auraImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                    auraImage?.setValue(softAuraMask, forKey: kCIInputMaskImageKey)
+                    let innerBlur = CIFilter(name: "CIGaussianBlur")
+                    innerBlur?.setValue(innerExpanded, forKey: kCIInputImageKey)
+                    innerBlur?.setValue(3.5 + motionScale * 3.0, forKey: kCIInputRadiusKey)
+                    let innerSoftMask = innerBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? innerExpanded
 
-                    // Composite Luminous Aura OVER Studio Drop-Shadow
+                    // 2. Outer Soft Ambient Wave Halo (Broad Ethereal Bloom)
+                    let outerMax = CIFilter(name: "CIMorphologyMaximum")
+                    outerMax?.setValue(cleanMask, forKey: kCIInputImageKey)
+                    outerMax?.setValue(Int(10 + motionScale * 8), forKey: kCIInputRadiusKey)
+                    let outerExpanded = outerMax?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                    let outerBlur = CIFilter(name: "CIGaussianBlur")
+                    outerBlur?.setValue(outerExpanded, forKey: kCIInputImageKey)
+                    outerBlur?.setValue(14.0 + motionScale * 6.0, forKey: kCIInputRadiusKey)
+                    let outerSoftMask = outerBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? outerExpanded
+
+                    // Mode-Aware Chromatic Energy Colors
+                    var coreR: CGFloat = 0.40, coreG: CGFloat = 0.98, coreB: CGFloat = 0.80 // Mint Core
+                    var waveR: CGFloat = 0.20, waveG: CGFloat = 0.70, waveB: CGFloat = 1.00 // Cyan Wave
+                    
+                    if self.filterMode == "hero" || self.filterMode == "male" {
+                        coreR = 0.25; coreG = 0.80; coreB = 1.00 // Electric Blue
+                        waveR = 0.50; waveG = 0.30; waveB = 1.00 // Deep Violet
+                    } else if self.filterMode == "goddess" || self.filterMode == "fem" {
+                        coreR = 1.00; coreG = 0.80; coreB = 0.90 // Rose Gold
+                        waveR = 1.00; waveG = 0.50; waveB = 0.75 // Celestial Pink
+                    } else if self.filterMode == "cyber" || self.filterMode == "neon" {
+                        coreR = 0.00; coreG = 1.00; coreB = 0.95 // Electric Cyan
+                        waveR = 1.00; waveG = 0.00; waveB = 0.85 // Hot Magenta
+                    }
+
+                    // Dynamic Pulse Phase Modulation
+                    let pulse = sin(time * 2.8) * 0.12
+                    let coreAlpha = min(0.90, max(0.30, 0.30 + motionScale * 0.60 + pulse))
+                    let waveAlpha = min(0.60, max(0.18, 0.18 + motionScale * 0.42 + pulse * 0.5))
+
+                    let innerColor = CIImage(color: CIColor(red: coreR, green: coreG, blue: coreB, alpha: CGFloat(coreAlpha))).cropped(to: inputCIImage.extent)
+                    let outerColor = CIImage(color: CIColor(red: waveR, green: waveG, blue: waveB, alpha: CGFloat(waveAlpha))).cropped(to: inputCIImage.extent)
+
+                    let outerAura = CIFilter(name: "CIBlendWithMask")
+                    outerAura?.setValue(outerColor, forKey: kCIInputImageKey)
+                    outerAura?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    outerAura?.setValue(outerSoftMask, forKey: kCIInputMaskImageKey)
+
+                    let innerAura = CIFilter(name: "CIBlendWithMask")
+                    innerAura?.setValue(innerColor, forKey: kCIInputImageKey)
+                    innerAura?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    innerAura?.setValue(innerSoftMask, forKey: kCIInputMaskImageKey)
+
+                    // Composite Inner Core OVER Outer Halo OVER Studio Drop-Shadow
+                    let fullAura = CIFilter(name: "CISourceOverCompositing")
+                    fullAura?.setValue(innerAura?.outputImage, forKey: kCIInputImageKey)
+                    fullAura?.setValue(outerAura?.outputImage, forKey: kCIInputBackgroundImageKey)
+
                     let auraWithShadow = CIFilter(name: "CISourceOverCompositing")
-                    auraWithShadow?.setValue(auraImage?.outputImage, forKey: kCIInputImageKey)
+                    auraWithShadow?.setValue(fullAura?.outputImage, forKey: kCIInputImageKey)
                     auraWithShadow?.setValue(shadowImage?.outputImage, forKey: kCIInputBackgroundImageKey)
 
                     // 100% Baseline Subject Cutout (Zero color or light modifications)
