@@ -356,9 +356,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                     rawVal = min(1.0, rawVal * 1.25)
                                 }
                                 
-                                // 60 FPS Temporal Exponential Moving Average: 70% history + 30% new frame
+                                // Adaptive Velocity-Aware Motion Filter (Eliminates motion trailing on fast movement while keeping zero-flicker stability when still)
                                 let prevVal = self.prevMaskData![flatOffset + x]
-                                let smoothedVal = prevVal * 0.70 + rawVal * 0.30
+                                let delta = abs(rawVal - prevVal)
+                                let blendWeight: Float = (delta > 0.12) ? 0.82 : 0.28 // Fast motion: 82% new frame (snaps in 16ms)! Stationary: 28% new frame (silky smooth)!
+                                let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
                                 
                                 // Hermite Smoothstep Sigmoidal Edge Transition
@@ -392,10 +394,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                             let nMaxY = CGFloat(min(mh, maxY + padY)) / CGFloat(mh)
                             let targetRect = CGRect(x: nMinX, y: nMinY, width: nMaxX - nMinX, height: nMaxY - nMinY)
                             if let prev = self.trackedBodyRect {
-                                let smX = prev.origin.x * 0.82 + targetRect.origin.x * 0.18
-                                let smY = prev.origin.y * 0.82 + targetRect.origin.y * 0.18
-                                let smW = prev.size.width * 0.82 + targetRect.size.width * 0.18
-                                let smH = prev.size.height * 0.82 + targetRect.size.height * 0.18
+                                let smX = prev.origin.x * 0.50 + targetRect.origin.x * 0.50
+                                let smY = prev.origin.y * 0.50 + targetRect.origin.y * 0.50
+                                let smW = prev.size.width * 0.50 + targetRect.size.width * 0.50
+                                let smH = prev.size.height * 0.50 + targetRect.size.height * 0.50
                                 self.trackedBodyRect = CGRect(x: smX, y: smY, width: smW, height: smH)
                             } else {
                                 self.trackedBodyRect = targetRect
