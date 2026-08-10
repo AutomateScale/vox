@@ -46,8 +46,7 @@ do
   if q then CORES = tonumber(q:read("*a")) or 4; q:close() end
 end
 local BREW = IS_ARM and "/opt/homebrew/bin" or "/usr/local/bin"
-local WMODEL = IS_ARM and "ggml-large-v3-turbo-q5_0.bin"
-            or (CORES <= 2 and "ggml-tiny-q5_1.bin" or "ggml-small-q5_1.bin")
+local WMODEL = IS_ARM and "ggml-large-v3-turbo-q5_0.bin" or "ggml-base.en.bin"
 
 local C = {
   sox         = BREW .. "/sox",
