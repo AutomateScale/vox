@@ -69,6 +69,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var lastRenderTime: CFTimeInterval = 0
     var frameCount: Int = 0
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
+    var trackedBodyRect: CGRect? = nil
     
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
     var currentPresetIndex: Int = 0
@@ -303,6 +304,48 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
                 
+                // 1. Scan Presenter Spatial Body Bounding Envelope in CVPixelBuffer
+                CVPixelBufferLockBaseAddress(maskBuffer, .readOnly)
+                let mw = CVPixelBufferGetWidth(maskBuffer)
+                let mh = CVPixelBufferGetHeight(maskBuffer)
+                let bytesPerRow = CVPixelBufferGetBytesPerRow(maskBuffer)
+                if let baseAddr = CVPixelBufferGetBaseAddress(maskBuffer) {
+                    let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
+                    var minX = mw, maxX = 0, minY = mh, maxY = 0
+                    var bodyPixels = 0
+                    for y in 0..<mh {
+                        let offset = y * bytesPerRow
+                        for x in 0..<mw {
+                            if ptr[offset + x] >= 35 { // High confidence body pixel
+                                if x < minX { minX = x }
+                                if x > maxX { maxX = x }
+                                if y < minY { minY = y }
+                                if y > maxY { maxY = y }
+                                bodyPixels += 1
+                            }
+                        }
+                    }
+                    if bodyPixels > 40 {
+                        let padX = Int(Double(mw) * 0.16) // 16% anatomical movement margin
+                        let padY = Int(Double(mh) * 0.16)
+                        let nMinX = CGFloat(max(0, minX - padX)) / CGFloat(mw)
+                        let nMaxX = CGFloat(min(mw, maxX + padX)) / CGFloat(mw)
+                        let nMinY = CGFloat(max(0, minY - padY)) / CGFloat(mh)
+                        let nMaxY = CGFloat(min(mh, maxY + padY)) / CGFloat(mh)
+                        let targetRect = CGRect(x: nMinX, y: nMinY, width: nMaxX - nMinX, height: nMaxY - nMinY)
+                        if let prev = self.trackedBodyRect {
+                            let smX = prev.origin.x * 0.82 + targetRect.origin.x * 0.18
+                            let smY = prev.origin.y * 0.82 + targetRect.origin.y * 0.18
+                            let smW = prev.size.width * 0.82 + targetRect.size.width * 0.18
+                            let smH = prev.size.height * 0.82 + targetRect.size.height * 0.18
+                            self.trackedBodyRect = CGRect(x: smX, y: smY, width: smW, height: smH)
+                        } else {
+                            self.trackedBodyRect = targetRect
+                        }
+                    }
+                }
+                CVPixelBufferUnlockBaseAddress(maskBuffer, .readOnly)
+
                 // Pure Baseline Noise Gate (-0.02 bias wipes far room noise while leaving 100% natural sRGB colors untouched)
                 let noiseGate = CIFilter(name: "CIColorMatrix")
                 noiseGate?.setValue(scaledMask, forKey: kCIInputImageKey)
@@ -311,7 +354,29 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 noiseGate?.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
                 noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.02), forKey: "inputAVector")
                 noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.02), forKey: "inputBiasVector")
-                let cleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                let rawCleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+
+                let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
+
+                // 2. HARD SPATIAL ERASURE: Erase ALL pixels outside the Dynamic Humanoid Movement Envelope
+                var cleanMask = rawCleanMask
+                if let bRect = self.trackedBodyRect {
+                    let imgW = inputCIImage.extent.width
+                    let imgH = inputCIImage.extent.height
+                    let cropX = bRect.origin.x * imgW
+                    let cropY = (1.0 - bRect.origin.y - bRect.size.height) * imgH // Flips Y for CIImage bottom-left origin
+                    let cropW = bRect.size.width * imgW
+                    let cropH = bRect.size.height * imgH
+                    let envelopeExtent = CGRect(x: cropX, y: cropY, width: cropW, height: cropH)
+                    
+                    let envelopeBox = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)).cropped(to: envelopeExtent)
+                    let spatialMask = envelopeBox.composited(over: transparentBg).cropped(to: inputCIImage.extent)
+                    
+                    let multiplyFilter = CIFilter(name: "CIMultiplyCompositing")
+                    multiplyFilter?.setValue(rawCleanMask, forKey: kCIInputImageKey)
+                    multiplyFilter?.setValue(spatialMask, forKey: kCIInputBackgroundImageKey)
+                    cleanMask = multiplyFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawCleanMask
+                }
 
                 // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
                 let maxFilter = CIFilter(name: "CIMorphologyMaximum")
@@ -331,7 +396,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
 
                 // Mint Green / Glowing Humanoid Outline (Vox Mint: 0.45, 0.97, 0.72)
                 let outlineColor = CIImage(color: CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: 0.85)).cropped(to: inputCIImage.extent)
-                let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
 
                 let outlineImage = CIFilter(name: "CIBlendWithMask")
                 outlineImage?.setValue(outlineColor, forKey: kCIInputImageKey)
