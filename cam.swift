@@ -70,6 +70,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var frameCount: Int = 0
     let segmentationRequest = VNGeneratePersonSegmentationRequest()
     var trackedBodyRect: CGRect? = nil
+    var prevMaskData: [Float]? = nil
     
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
     var currentPresetIndex: Int = 0
@@ -304,19 +305,51 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
                 
-                // 1. Scan Presenter Spatial Body Bounding Envelope in CVPixelBuffer
-                CVPixelBufferLockBaseAddress(maskBuffer, .readOnly)
+                // 1. 60 FPS Temporal Pixel-Level EMA Smoother & Smoothstep Sigmoidal Filter (Eliminates hand/finger edge flickering)
+                CVPixelBufferLockBaseAddress(maskBuffer, [])
                 let mw = CVPixelBufferGetWidth(maskBuffer)
                 let mh = CVPixelBufferGetHeight(maskBuffer)
                 let bytesPerRow = CVPixelBufferGetBytesPerRow(maskBuffer)
+                let totalPixels = mw * mh
+                
+                if self.prevMaskData == nil || self.prevMaskData?.count != totalPixels {
+                    self.prevMaskData = Array(repeating: 0.0, count: totalPixels)
+                }
+                
                 if let baseAddr = CVPixelBufferGetBaseAddress(maskBuffer) {
                     let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
                     var minX = mw, maxX = 0, minY = mh, maxY = 0
                     var bodyPixels = 0
+                    
                     for y in 0..<mh {
-                        let offset = y * bytesPerRow
+                        let rowOffset = y * bytesPerRow
+                        let flatOffset = y * mw
                         for x in 0..<mw {
-                            if ptr[offset + x] >= 35 { // High confidence body pixel
+                            let rawVal = Float(ptr[rowOffset + x]) / 255.0
+                            
+                            // 60 FPS Temporal Exponential Moving Average: 68% history + 32% new frame
+                            // Kills 60Hz edge noise & hand/finger jitter completely!
+                            let prevVal = self.prevMaskData![flatOffset + x]
+                            let smoothedVal = prevVal * 0.68 + rawVal * 0.32
+                            self.prevMaskData![flatOffset + x] = smoothedVal
+                            
+                            // Hermite Smoothstep Sigmoidal Edge Transition:
+                            // Values < 0.10 map to 0 (noise dead)
+                            // Values > 0.78 map to 255 (solid body)
+                            // Mid values interpolate with silky smooth cubic curve!
+                            var finalByte: UInt8 = 0
+                            if smoothedVal >= 0.10 {
+                                if smoothedVal >= 0.78 {
+                                    finalByte = 255
+                                } else {
+                                    let t = (smoothedVal - 0.10) / (0.78 - 0.10)
+                                    let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
+                                    finalByte = UInt8(clamping: Int(smoothstep * 255.0))
+                                }
+                            }
+                            ptr[rowOffset + x] = finalByte
+                            
+                            if finalByte >= 35 {
                                 if x < minX { minX = x }
                                 if x > maxX { maxX = x }
                                 if y < minY { minY = y }
@@ -344,7 +377,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         }
                     }
                 }
-                CVPixelBufferUnlockBaseAddress(maskBuffer, .readOnly)
+                CVPixelBufferUnlockBaseAddress(maskBuffer, [])
 
                 // Pure Baseline Noise Gate (-0.02 bias wipes far room noise while leaving 100% natural sRGB colors untouched)
                 let noiseGate = CIFilter(name: "CIColorMatrix")
