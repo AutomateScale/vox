@@ -55,7 +55,7 @@ local C = {
   whisperSrv  = BREW .. "/whisper-server",  -- fast path
   serverPort  = 8090,
   serverPortFast   = 8092,
-  fastModel        = HOME .. "/vox/models/ggml-base.en.bin",
+  fastModel        = HOME .. "/vox/models/ggml-tiny.en.bin",
   speculativeDraft = true,
   screenRecDir        = HOME .. "/Movies/VoxRecordings",
   screenRecWebcam     = true,
@@ -116,7 +116,7 @@ local C = {
   askKeycode  = 56,                  -- 56 = Left Shift
   askKeyName  = "Left Shift",
   tapLockMax  = 0.35,                -- press shorter than this counts as a tap
-  tailGrace   = 0.35,                -- mic stays open this long after release
+  tailGrace   = 0.15,                -- mic stays open this long after release
                                      -- (last-word syllables are still in the air)
   doubleTapWindow = 0.45,            -- two taps this close = hands-free lock
   minBytes    = 24000,               -- ignore recordings under ~0.7s
