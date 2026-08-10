@@ -2437,21 +2437,44 @@ function showWebcamOverlay()
       targetY = 35
     end
 
+    local camIdx = tostring(hs.settings.get('vox.pref.camDeviceIndex') or 0)
+
     screenRec.camTask = hs.task.new(camBin, function(code)
       log("camTask exit code: " .. tostring(code))
     end, {
       "--size", tostring(size),
       "--position", C.screenRecWebcamPos or "bottom-right",
       "--mode", C.screenRecBgMode or "mint",
+      "--device", camIdx,
       "--alienX", tostring(alienX),
       "--alienY", tostring(alienY),
       "--targetX", tostring(targetX),
       "--targetY", tostring(targetY)
     })
     screenRec.camTask:start()
-    hs.alert.show("🧞‍♂️ Presenter Camera Genie Fly-Out (⌥⇧C)", 1.5)
+    hs.alert.show("🧞‍♂️ Presenter Camera ON (Camera #" .. tostring((tonumber(camIdx) or 0) + 1) .. ")", 1.5)
   end
 end
+
+function cycleCameraDevice()
+  local currentIdx = hs.settings.get('vox.pref.camDeviceIndex') or 0
+  local nextIdx = currentIdx + 1
+  if nextIdx > 4 then nextIdx = 0 end -- Cycle through up to 5 connected camera indices
+
+  hs.settings.set('vox.pref.camDeviceIndex', nextIdx)
+  
+  local p2 = io.popen("pgrep -f cam-bin")
+  local isRunning = (p2 and p2:read("*a") or "") ~= ""
+  if p2 then p2:close() end
+  
+  if isRunning then
+    showWebcamOverlay()
+  else
+    hs.alert.show("📷 Selected Camera #" .. tostring(nextIdx + 1) .. " (⌥⇧C to start)", 1.8)
+  end
+end
+
+hs.hotkey.bind({"option", "shift"}, "V", cycleCameraDevice)
 
 function hideWebcamOverlay()
   if screenRec.camTask then

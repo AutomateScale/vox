@@ -84,10 +84,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var alienStartPoint: CGPoint? = nil
     var targetWindowRect: NSRect? = nil
     
-    init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil) {
+    var deviceParam: String? = nil
+    var prevRowMinData: [Int]? = nil
+    var prevRowMaxData: [Int]? = nil
+    
+    init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil) {
         self.currentSize = size
         self.filterMode = filterMode
         self.alienStartPoint = alienPoint
+        self.deviceParam = deviceName
         
         let primaryScreen = NSScreen.screens.first ?? NSScreen.main
         let screen = primaryScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
@@ -155,7 +160,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         setupMetal()
         setupContentView(width: width, height: height)
-        setupCamera()
+        setupCamera(requestedDevice: deviceName)
         
         // Trigger Genie Fly-Out Spring Animation!
         if alienPoint != nil {
@@ -246,6 +251,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         CATransaction.commit()
     }
     
+    func updateWindowSize(newWidth: CGFloat, newHeight: CGFloat) {
+        guard let window = self.window, let contentView = window.contentView else { return }
+        let frame = window.frame
+        let newRect = NSRect(x: frame.minX, y: frame.minY, width: newWidth, height: newHeight)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        
+        DispatchQueue.main.async {
+            window.setFrame(newRect, display: true, animate: true)
+            contentView.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
+            self.renderLayer?.frame = NSRect(x: 0, y: 0, width: newWidth, height: newHeight)
+            self.renderLayer?.contentsScale = scale
+            self.pillLayer?.frame = CGRect(x: 10, y: 10, width: newWidth - 20, height: 22)
+        }
+    }
+    
     func cycleSizePreset() {
         currentPresetIndex = (currentPresetIndex + 1) % sizePresets.count
         let targetSize = sizePresets[currentPresetIndex]
@@ -279,24 +299,34 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         }
     }
     
-    private func setupCamera() {
-        logMsg("Setting up camera session...")
+    private func setupCamera(requestedDevice: String? = nil) {
+        logMsg("Setting up camera session with requested device: \(requestedDevice ?? "default")...")
         let session = AVCaptureSession()
         
         let videoDevices = AVCaptureDevice.devices(for: .video)
         logMsg("Found \(videoDevices.count) video devices:")
-        for dev in videoDevices {
-            logMsg("  -> Device: \(dev.localizedName) (ID: \(dev.uniqueID))")
+        for (idx, dev) in videoDevices.enumerated() {
+            logMsg("  [\(idx)] Device: \(dev.localizedName) (ID: \(dev.uniqueID))")
         }
         
-        guard let device = videoDevices.first ?? AVCaptureDevice.default(for: .video) else {
+        var selectedDevice: AVCaptureDevice? = nil
+        if let req = requestedDevice, !req.isEmpty {
+            if let idx = Int(req), idx >= 0, idx < videoDevices.count {
+                selectedDevice = videoDevices[idx]
+            } else {
+                selectedDevice = videoDevices.first(where: { $0.localizedName.localizedCaseInsensitiveContains(req) || $0.uniqueID == req })
+            }
+        }
+        
+        let device = selectedDevice ?? videoDevices.first ?? AVCaptureDevice.default(for: .video)
+        guard let dev = device else {
             logMsg("ERROR - No video camera found.")
             return
         }
-        logMsg("Using video device: \(device.localizedName)")
+        logMsg("Using video device: \(dev.localizedName)")
         
         do {
-            let input = try AVCaptureDeviceInput(device: device)
+            let input = try AVCaptureDeviceInput(device: dev)
             if session.canAddInput(input) {
                 session.addInput(input)
                 logMsg("Input added successfully.")
@@ -444,6 +474,27 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 }
                                 cleanRowMin[y] = max(0, rMin - marginPx)
                                 cleanRowMax[y] = min(mw - 1, rMax + marginPx)
+                            }
+                        }
+
+                        // 60 FPS Temporal EMA Row-Boundary Smoothing (Eliminates 1-pixel boundary chatter completely!)
+                        if self.prevRowMinData == nil || self.prevRowMinData?.count != mh {
+                            self.prevRowMinData = cleanRowMin
+                            self.prevRowMaxData = cleanRowMax
+                        } else {
+                            for y in 0..<mh {
+                                let pMin = Double(self.prevRowMinData![y])
+                                let pMax = Double(self.prevRowMaxData![y])
+                                let cMin = Double(cleanRowMin[y])
+                                let cMax = Double(cleanRowMax[y])
+                                
+                                let smMin = Int(round(pMin * 0.70 + cMin * 0.30))
+                                let smMax = Int(round(pMax * 0.70 + cMax * 0.30))
+                                
+                                self.prevRowMinData![y] = smMin
+                                self.prevRowMaxData![y] = smMax
+                                cleanRowMin[y] = smMin
+                                cleanRowMax[y] = smMax
                             }
                         }
 
@@ -667,6 +718,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var aX: CGFloat? = nil, aY: CGFloat? = nil
         var tX: CGFloat? = nil, tY: CGFloat? = nil
         
+        var devName: String? = nil
+        
         let args = CommandLine.arguments
         for i in 0..<args.count {
             if args[i] == "--size", i + 1 < args.count, let s = Double(args[i+1]) {
@@ -678,6 +731,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if args[i] == "--mode", i + 1 < args.count {
                 mode = args[i+1]
             }
+            if args[i] == "--device", i + 1 < args.count {
+                devName = args[i+1]
+            }
             if args[i] == "--alienX", i + 1 < args.count, let v = Double(args[i+1]) { aX = CGFloat(v) }
             if args[i] == "--alienY", i + 1 < args.count, let v = Double(args[i+1]) { aY = CGFloat(v) }
             if args[i] == "--targetX", i + 1 < args.count, let v = Double(args[i+1]) { tX = CGFloat(v) }
@@ -687,7 +743,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let x = aX, let y = aY { alienPt = CGPoint(x: x, y: y) }
         if let x = tX, let y = tY { targetPt = CGPoint(x: x, y: y) }
         
-        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt)
+        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()
