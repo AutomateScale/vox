@@ -677,9 +677,19 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let renderWidth = containerBounds.width * scaleFactor
         let renderHeight = containerBounds.height * scaleFactor
         
-        let originX = finalImage.extent.origin.x
-        let originY = finalImage.extent.origin.y
-        let normalizedImage = finalImage.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
+        // Broadcast 1080p Sharpness Filter (Restores crisp facial, hair, and clothing detail)
+        var sharpenedFinal = finalImage
+        if let sharpenFilter = CIFilter(name: "CISharpenLuminance") {
+            sharpenFilter.setValue(finalImage, forKey: kCIInputImageKey)
+            sharpenFilter.setValue(0.35, forKey: "inputSharpness")
+            if let output = sharpenFilter.outputImage {
+                sharpenedFinal = output.cropped(to: finalImage.extent)
+            }
+        }
+
+        let originX = sharpenedFinal.extent.origin.x
+        let originY = sharpenedFinal.extent.origin.y
+        let normalizedImage = sharpenedFinal.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
         let scale = min(renderWidth / normalizedImage.extent.width, renderHeight / normalizedImage.extent.height)
         let scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
@@ -689,7 +699,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let centeredFinal = scaledImage.transformed(by: CGAffineTransform(translationX: offsetX, y: offsetY))
         
         let renderRect = CGRect(x: 0, y: 0, width: renderWidth, height: renderHeight)
-        if let cgImage = context.createCGImage(centeredFinal, from: renderRect) {
+        let srgbSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        
+        if let cgImage = context.createCGImage(centeredFinal, from: renderRect, format: .RGBA8, colorSpace: srgbSpace) {
             DispatchQueue.main.async {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
