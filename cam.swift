@@ -412,27 +412,38 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let rawVal = Float(ptr[rowOffset + x]) / 255.0
                                 
                                 // 100% Authentic Natural Human Geometry: Zero artificial shape or morphology alteration!
-                                // Continuous Smooth Velocity Interpolation (Zero step-function jumping, 100% rock-solid zero flicker!)
+                                let normY = Double(y) / Double(mh) // y=0 is TOP (head), y=mh is BOTTOM (chest)
+                                let normX = Double(x) / Double(mw) // x=0 is LEFT, x=mw is RIGHT
+                                
+                                let isRightSideOuter = (normX > 0.72) // Right-side background region
+                                let isLeftSideOuter  = (normX < 0.28) // Left-side background region
+                                let isOuterBackground = (isRightSideOuter || isLeftSideOuter) && (normY < 0.85)
+                                
+                                // True Anatomical Neck & Jawline Zone (y=0.24 to 0.56)
+                                let isNeckJawZone = (normY >= 0.24 && normY <= 0.56) && (normX >= 0.25 && normX <= 0.75)
+                                
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
-                                let blendWeight: Float = max(0.12, min(0.75, 0.12 + (delta / 0.18) * 0.63))
+                                
+                                // Anti-Spike Flash Suppression on Outer Background (Eliminates 1-frame room flashes on right side!)
+                                var blendWeight: Float = max(0.10, min(0.75, 0.10 + (delta / 0.18) * 0.65))
+                                if isOuterBackground && prevVal < 0.18 && rawVal > 0.18 {
+                                    blendWeight = 0.05 // Heavy damping on rising ambient noise flashes!
+                                }
+                                
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
                                 
-                                // Anatomical Neck/Collar & Outer Shoulder Region Noise Eraser Gate (Eliminates shoulder & neck flickering completely)
-                                let normY = Double(y) / Double(mh)
-                                let normX = Double(x) / Double(mw)
-                                let isShoulderOuter = (normY >= 0.25 && normY <= 0.82) && (normX < 0.22 || normX > 0.78)
-                                let isNeckZone = (normY >= 0.42 && normY <= 0.78)
-                                let gateThreshold: Float = isShoulderOuter ? 0.28 : (isNeckZone ? 0.24 : 0.15)
+                                // Adaptive Threshold: Strict on outer background (0.30), refined on neck/jawline (0.22)
+                                let gateThreshold: Float = isOuterBackground ? 0.30 : (isNeckJawZone ? 0.22 : 0.16)
                                 
                                 // Cubic Hermite Sigmoidal Edge Transition with Hysteresis Gate
                                 var finalByte: UInt8 = 0
                                 if smoothedVal >= gateThreshold {
-                                    if smoothedVal >= 0.70 {
+                                    if smoothedVal >= 0.68 {
                                         finalByte = 255
                                     } else {
-                                        let t = (smoothedVal - gateThreshold) / (0.70 - gateThreshold)
+                                        let t = (smoothedVal - gateThreshold) / (0.68 - gateThreshold)
                                         let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
                                         finalByte = UInt8(clamping: Int(smoothstep * 255.0))
                                     }
