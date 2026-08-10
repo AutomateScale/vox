@@ -363,13 +363,18 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
                                 
+                                // Anatomical Neck/Collar Region Noise Suppression (Eliminates neck perimeter flickering completely)
+                                let normY = Double(y) / Double(mh)
+                                let isNeckRegion = (normY >= 0.42 && normY <= 0.78)
+                                let gateThreshold: Float = isNeckRegion ? 0.24 : 0.15
+                                
                                 // Cubic Hermite Sigmoidal Edge Transition with Hysteresis Gate
                                 var finalByte: UInt8 = 0
-                                if smoothedVal >= 0.15 {
+                                if smoothedVal >= gateThreshold {
                                     if smoothedVal >= 0.70 {
                                         finalByte = 255
                                     } else {
-                                        let t = (smoothedVal - 0.15) / (0.70 - 0.15)
+                                        let t = (smoothedVal - gateThreshold) / (0.70 - gateThreshold)
                                         let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
                                         finalByte = UInt8(clamping: Int(smoothstep * 255.0))
                                     }
@@ -441,7 +446,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
                     let maxFilter = CIFilter(name: "CIMorphologyMaximum")
                     maxFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
-                    maxFilter?.setValue(3, forKey: kCIInputRadiusKey)
+                    maxFilter?.setValue(2, forKey: kCIInputRadiusKey)
                     let dilatedMask = maxFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
 
                     let minFilter = CIFilter(name: "CIMorphologyMinimum")
