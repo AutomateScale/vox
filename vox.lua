@@ -54,6 +54,9 @@ local C = {
   whisper     = BREW .. "/whisper-cli",     -- fallback only
   whisperSrv  = BREW .. "/whisper-server",  -- fast path
   serverPort  = 8090,
+  serverPortFast   = 8092,
+  fastModel        = HOME .. "/vox/models/ggml-base.en.bin",
+  speculativeDraft = true,
   screenRecDir        = HOME .. "/Movies/VoxRecordings",
   screenRecWebcam     = true,
   screenRecWebcamSize = 180,
@@ -2490,8 +2493,29 @@ local function serverRunning()
   return out ~= nil and out ~= ""
 end
 
+local function fastServerRunning()
+  local p = io.popen("/usr/bin/pgrep -f 'whisper-serve[r].*" .. C.serverPortFast .. "' 2>/dev/null")
+  local out = p:read("*a"); p:close()
+  return out ~= nil and out ~= ""
+end
+
+local function ensureFastServer()
+  if C.whisperHost ~= "127.0.0.1" then return end
+  if not (C.speculativeDraft and hs.fs.attributes(C.fastModel)) then return end
+  if fastServerRunning() then return end
+  M.fastServerTask = hs.task.new(C.whisperSrv, function(code)
+    log("whisper-server-fast exited (code " .. tostring(code) .. ")")
+  end, {
+    "-m", C.fastModel, "--host", C.serverBind, "--port", tostring(C.serverPortFast),
+    "-t", "2", "-l", C.language, "-bo", "1", "-nf", "--prompt", fullVocabulary(),
+  })
+  M.fastServerTask:start()
+  log("whisper-server-fast starting on " .. C.serverBind .. ":" .. C.serverPortFast)
+end
+
 local function ensureServer()
   if C.whisperHost ~= "127.0.0.1" then return end  -- thin client: server is remote
+  ensureFastServer()
   if serverRunning() then return end
   local spawnedAt = hs.timer.secondsSinceEpoch()
   M.serverTask = hs.task.new(C.whisperSrv, function(code)
@@ -4415,7 +4439,7 @@ local function transcribe()
   -- clean + normalize quiet mics, then hit the persistent server
   local langArg = (C.language ~= "auto")
       and (" -F language=" .. C.language) or ""
-  local function buildCmd(timeLimit)
+  local function buildCmdPort(port, timeLimit)
     return string.format(
       "%s %s %s highpass 80 norm -3 reverse silence 1 0.30 0.6%% reverse pad 0 0.15 2>/dev/null || cp %s %s; " ..
       "SIZE=$(/usr/bin/stat -f%%z %s 2>/dev/null || echo 0); " ..
@@ -4425,12 +4449,51 @@ local function transcribe()
       C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm,
       C.wavNorm,
       timeLimit, C.wavNorm,
-      promptStr, langArg, C.whisperHost, C.serverPort)
+      promptStr, langArg, C.whisperHost, port)
   end
 
   local myGen = recGen
+  local specDraftState = nil
+  local specKeyTap = nil
+  local pass1Done, pass2Done = false, false
+
+  local function stopSpecWatcher()
+    if specKeyTap then pcall(function() specKeyTap:stop() end); specKeyTap = nil end
+  end
+
+  if C.speculativeDraft and fastServerRunning() then
+    M.fastSttTask = hs.task.new("/bin/sh", function(code, out)
+      if pass2Done then return end
+      if code == 0 and out and #out:gsub("%s", "") > 0 and not out:find('"error"') then
+        pass1Done = true
+        local draftText = out:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        draftText = draftText:gsub("%s*\n%s*", " ")
+        draftText = applyCorrections(draftText)
+        draftText = cleanFillers(draftText)
+        draftText = collapseRepeats(draftText)
+        local cleanedText = parseSendTrigger(draftText)
+        draftText = applyVoiceCommands(cleanedText)
+        if #draftText > 0 and state == "processing" and not pass2Done then
+          log("speculative engine: FAST DRAFT landed (" .. draftText:sub(1, 40) .. ")")
+          specDraftState = { text = draftText, app = context.app, time = hs.timer.secondsSinceEpoch(), userTyped = false }
+          insertText(draftText)
+          stopSpecWatcher()
+          specKeyTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function()
+            if specDraftState then specDraftState.userTyped = true end
+            stopSpecWatcher()
+            return false
+          end)
+          specKeyTap:start()
+        end
+      end
+    end, { "-c", buildCmdPort(C.serverPortFast, 4) })
+    M.fastSttTask:start()
+  end
+
   local function run(attempt)
     M.sttTask = hs.task.new("/bin/sh", function(code, out, err)
+      pass2Done = true
+      stopSpecWatcher()
       if code == 42 then
         log("accidental tap — no speech in recording, discarded quietly")
         reset()
@@ -4440,7 +4503,35 @@ local function transcribe()
                  and not out:find('"error"')
       if ok then
         noteTranscribeSuccess(hs.timer.secondsSinceEpoch() - t0)
-        handleTranscript(out, t0)
+        local finalText = out:gsub("%[BLANK_AUDIO%]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        finalText = finalText:gsub("%s*\n%s*", " ")
+        finalText = applyCorrections(finalText)
+        finalText = cleanFillers(finalText)
+        finalText = collapseRepeats(finalText)
+        local cleanedFinal, trig = parseSendTrigger(finalText)
+        if trig then activeSendTrigger = trig; finalText = cleanedFinal end
+        local cmdRes
+        finalText, cmdRes = applyVoiceCommands(finalText)
+        if type(cmdRes) == "table" or cmdRes == "undo" then
+          handleTranscript(out, t0)
+          return
+        end
+        if specDraftState and not specDraftState.userTyped
+           and context.app == specDraftState.app
+           and (hs.timer.secondsSinceEpoch() - specDraftState.time) < 4.0 then
+          if finalText ~= specDraftState.text and #finalText > 0 then
+            log(string.format("speculative engine: REVISING draft '%s' -> '%s'", specDraftState.text, finalText))
+            screenRevise(specDraftState.text, finalText)
+            rememberPaste(finalText)
+            play("done")
+          else
+            log("speculative engine: PERFECT MATCH! Fast draft was 100% accurate.")
+          end
+          learnFrom(finalText)
+          reset()
+        else
+          handleTranscript(out, t0)
+        end
       elseif C.whisperHost ~= "127.0.0.1" then
         noteRemoteFail()
         -- remote brain unreachable: fall back to the local model if we have one
@@ -4463,7 +4554,7 @@ local function transcribe()
         ensureServer()
         transcribeCLI(t0)
       end
-    end, { "-c", buildCmd(maxTime * attempt) })
+    end, { "-c", buildCmdPort(C.serverPort, maxTime * attempt) })
     M.sttTask:start()
   end
   run(1)
