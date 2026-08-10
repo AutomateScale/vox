@@ -384,10 +384,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         let rawOriginX = rawCIImage.extent.origin.x
         let rawOriginY = rawCIImage.extent.origin.y
-        let inputCIImage = rawCIImage
+        let baseInputCIImage = rawCIImage
             .transformed(by: CGAffineTransform(translationX: -rawOriginX, y: -rawOriginY))
             .oriented(.upMirrored)
         
+        // CoreImage GPU Median Filter (Wipes 100% of high-ISO salt-and-pepper webcam snow & sensor grain!)
+        var denoisedCIImage = baseInputCIImage
+        if let medianFilter = CIFilter(name: "CIMedianFilter") {
+            medianFilter.setValue(baseInputCIImage, forKey: kCIInputImageKey)
+            if let output = medianFilter.outputImage {
+                denoisedCIImage = output.cropped(to: baseInputCIImage.extent)
+            }
+        }
+        
+        let inputCIImage = denoisedCIImage
         var finalImage: CIImage = inputCIImage
         
         // RAW CAMERA CIRCLE VIEW: If mode is "raw" or "off", render 100% crisp raw camera feed in a floating circle window at 60 FPS!
