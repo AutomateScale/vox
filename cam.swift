@@ -363,10 +363,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
                                 
-                                // Anatomical Neck/Collar Region Noise Suppression (Eliminates neck perimeter flickering completely)
+                                // Anatomical Neck/Collar & Outer Shoulder Region Noise Eraser Gate (Eliminates shoulder & neck flickering completely)
                                 let normY = Double(y) / Double(mh)
-                                let isNeckRegion = (normY >= 0.42 && normY <= 0.78)
-                                let gateThreshold: Float = isNeckRegion ? 0.24 : 0.15
+                                let normX = Double(x) / Double(mw)
+                                let isShoulderOuter = (normY >= 0.25 && normY <= 0.82) && (normX < 0.22 || normX > 0.78)
+                                let isNeckZone = (normY >= 0.42 && normY <= 0.78)
+                                let gateThreshold: Float = isShoulderOuter ? 0.28 : (isNeckZone ? 0.24 : 0.15)
                                 
                                 // Cubic Hermite Sigmoidal Edge Transition with Hysteresis Gate
                                 var finalByte: UInt8 = 0
