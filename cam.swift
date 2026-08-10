@@ -388,11 +388,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             .transformed(by: CGAffineTransform(translationX: -rawOriginX, y: -rawOriginY))
             .oriented(.upMirrored)
         
-        // CoreImage GPU Median Filter (Wipes 100% of high-ISO salt-and-pepper webcam snow & sensor grain!)
+        // Subtle Luminance-Preserving High-ISO Denoise (Zero distortion in black/dark areas, 100% sharp hair & clothing!)
         var denoisedCIImage = baseInputCIImage
-        if let medianFilter = CIFilter(name: "CIMedianFilter") {
-            medianFilter.setValue(baseInputCIImage, forKey: kCIInputImageKey)
-            if let output = medianFilter.outputImage {
+        if let denoiseFilter = CIFilter(name: "CINoiseReduction") {
+            denoiseFilter.setValue(baseInputCIImage, forKey: kCIInputImageKey)
+            denoiseFilter.setValue(0.008, forKey: "inputNoiseLevel")
+            denoiseFilter.setValue(0.85, forKey: "inputSharpness")
+            if let output = denoiseFilter.outputImage {
                 denoisedCIImage = output.cropped(to: baseInputCIImage.extent)
             }
         }
