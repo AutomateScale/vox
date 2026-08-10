@@ -143,7 +143,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     private func setupMetal() {
         if let device = MTLCreateSystemDefaultDevice() {
             self.metalDevice = device
-            self.ciContext = CIContext(mtlDevice: device)
+            self.ciContext = CIContext(mtlDevice: device, options: [
+                .useSoftwareRenderer: false,
+                .highQualityDownsample: true,
+                .cacheIntermediates: true
+            ])
         } else {
             self.ciContext = CIContext()
         }
@@ -239,6 +243,38 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         logMsg("Using video device: \(device.localizedName)")
         
         do {
+            try device.lockForConfiguration()
+            
+            // Continuous High-Precision Auto-Focus, Exposure, and White Balance
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            
+            // Query & Select Highest Available Resolution Camera Format (4K / 1080p 60 FPS)
+            var bestFormat: AVCaptureDevice.Format? = nil
+            var maxWidth: Int32 = 0
+            for format in device.formats {
+                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                if dims.width > maxWidth {
+                    maxWidth = dims.width
+                    bestFormat = format
+                }
+            }
+            if let maxFmt = bestFormat {
+                device.activeFormat = maxFmt
+                let dims = CMVideoFormatDescriptionGetDimensions(maxFmt.formatDescription)
+                logMsg("Unlocked Max Camera Quality Format: \(dims.width)x\(dims.height)")
+            }
+            
+            device.unlockForConfiguration()
+        } catch {
+            logMsg("Could not lock device for configuration: \(error)")
+        }
+        
+        do {
             let input = try AVCaptureDeviceInput(device: device)
             if session.canAddInput(input) {
                 session.addInput(input)
@@ -249,9 +285,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             return
         }
         
-        if session.canSetSessionPreset(.hd1920x1080) {
+        if session.canSetSessionPreset(.hd4K3840x2160) {
+            session.sessionPreset = .hd4K3840x2160
+            logMsg("Camera session preset set to 4K Ultra HD (3840x2160)")
+        } else if session.canSetSessionPreset(.hd1920x1080) {
             session.sessionPreset = .hd1920x1080
-            logMsg("Camera session preset set to 1080p Full HD (1920x1080)")
+            logMsg("Camera session preset set to 1080p Full HD")
         } else if session.canSetSessionPreset(.high) {
             session.sessionPreset = .high
             logMsg("Camera session preset set to High")
