@@ -903,13 +903,23 @@ local MW, MH, MOFF = 118, 30, 45        -- canvas w/h, alien x-offset
 
 local function showAlienToolsMenu()
   local menu = hs.menubar.new(false)
+  local function setCamMode(m, name)
+    pref("screenRecBgMode", m)
+    if screenRec and screenRec.camTask then
+      showWebcamOverlay()
+    end
+    hs.alert.show("Webcam Mode: " .. name, 1.5)
+  end
   menu:setMenu({
     { title = "📹 Toggle Presenter Camera Overlay (⌥⇧C)", fn = function() toggleWebcamOverlay() end },
     { title = (screenRec and screenRec.active) and "🛑 Stop Voom Screen Recording (⌥⇧R)" or "▶ Start Voom Screen Recording (⌥⇧R)", fn = function() toggleScreenRecording() end },
     { title = "-" },
-    { title = "🟢 GPU Chroma Key (Green Screen)", fn = function() pref("screenRecBgMode", "chroma"); hs.alert.show("Webcam: GPU Chroma Key 🟢", 1.5) end },
-    { title = "✨ AI Person Cutout (Auto Background)", fn = function() pref("screenRecBgMode", "cutout"); hs.alert.show("Webcam: AI Cutout ✨", 1.5) end },
-    { title = "📷 Raw Camera Circle", fn = function() pref("screenRecBgMode", "off"); hs.alert.show("Webcam: Raw Camera 📷", 1.5) end },
+    { title = "Camera Presets & Fun Filters:", disabled = true },
+    { title = "  ✨ Mint Humanoid Outline", fn = function() setCamMode("mint", "✨ Mint Humanoid Outline") end },
+    { title = "  💪 Hero Male Frame (Muscular Shoulder Highlight)", fn = function() setCamMode("hero", "💪 Hero Male Frame") end },
+    { title = "  👑 Goddess Fem Frame (Rose-Gold Contour)", fn = function() setCamMode("goddess", "👑 Goddess Fem Frame") end },
+    { title = "  ⚡ Cyberpunk Neon Contour", fn = function() setCamMode("cyber", "⚡ Cyberpunk Neon") end },
+    { title = "  📷 Raw Camera Floating Circle", fn = function() setCamMode("raw", "📷 Raw Camera Circle") end },
     { title = "-" },
     { title = "🎨 Content Expansion Mode (C)", fn = function() if mini.act.content then mini.act.content() end end },
     { title = "📸 Absorb Screen Text OCR (P)", fn = function() if mini.act.grab then mini.act.grab() end end },
@@ -2408,7 +2418,8 @@ function showWebcamOverlay()
       log("camTask exit code: " .. tostring(code))
     end, {
       "--size", tostring(C.screenRecWebcamSize or 260),
-      "--position", C.screenRecWebcamPos or "bottom-left"
+      "--position", C.screenRecWebcamPos or "bottom-left",
+      "--mode", C.screenRecBgMode or "mint"
     })
     screenRec.camTask:start()
     hs.alert.show("📹 Presenter Camera Overlay ON (⌥⇧C)", 1.5)

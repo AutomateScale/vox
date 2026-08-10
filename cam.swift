@@ -72,11 +72,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var trackedBodyRect: CGRect? = nil
     var prevMaskData: [Float]? = nil
     
+    var filterMode: String = "mint"
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
     var currentPresetIndex: Int = 0
     
-    init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left") {
+    init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left", filterMode: String = "mint") {
         self.currentSize = size
+        self.filterMode = filterMode
         let primaryScreen = NSScreen.screens.first ?? NSScreen.main
         let screen = primaryScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         let margin: CGFloat = 35.0
@@ -293,166 +295,205 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         var finalImage: CIImage = inputCIImage
         
-        // Fast Person Neural ML Segmentation
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
-        do {
-            try handler.perform([segmentationRequest])
-            if let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
-                let maskRaw = CIImage(cvPixelBuffer: maskBuffer)
-                let maskNorm = maskRaw.transformed(by: CGAffineTransform(translationX: -maskRaw.extent.origin.x, y: -maskRaw.extent.origin.y))
-                
-                let scaleX = inputCIImage.extent.width / maskNorm.extent.width
-                let scaleY = inputCIImage.extent.height / maskNorm.extent.height
-                let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
-                
-                // 1. 60 FPS Temporal Pixel-Level EMA Smoother & Smoothstep Sigmoidal Filter (Eliminates hand/finger edge flickering)
-                CVPixelBufferLockBaseAddress(maskBuffer, [])
-                let mw = CVPixelBufferGetWidth(maskBuffer)
-                let mh = CVPixelBufferGetHeight(maskBuffer)
-                let bytesPerRow = CVPixelBufferGetBytesPerRow(maskBuffer)
-                let totalPixels = mw * mh
-                
-                if self.prevMaskData == nil || self.prevMaskData?.count != totalPixels {
-                    self.prevMaskData = Array(repeating: 0.0, count: totalPixels)
-                }
-                
-                if let baseAddr = CVPixelBufferGetBaseAddress(maskBuffer) {
-                    let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
-                    var minX = mw, maxX = 0, minY = mh, maxY = 0
-                    var bodyPixels = 0
+        // RAW CAMERA CIRCLE VIEW: If mode is "raw" or "off", render 100% crisp raw camera feed in a floating circle window at 60 FPS!
+        if self.filterMode == "raw" || self.filterMode == "off" {
+            let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
+            let radius = min(inputCIImage.extent.width, inputCIImage.extent.height) * 0.46
+            let center = CGPoint(x: inputCIImage.extent.width / 2.0, y: inputCIImage.extent.height / 2.0)
+            let circleRect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2.0, height: radius * 2.0)
+            
+            let circleGen = CIFilter(name: "CIRoundedRectangleGenerator")
+            circleGen?.setValue(circleRect, forKey: "inputExtent")
+            circleGen?.setValue(radius, forKey: "inputRadius")
+            let circleMask = circleGen?.outputImage?.cropped(to: inputCIImage.extent) ?? inputCIImage
+            
+            let rawBlend = CIFilter(name: "CIBlendWithMask")
+            rawBlend?.setValue(inputCIImage, forKey: kCIInputImageKey)
+            rawBlend?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+            rawBlend?.setValue(circleMask, forKey: kCIInputMaskImageKey)
+            finalImage = rawBlend?.outputImage ?? inputCIImage
+        } else {
+            // Neural Segmentation Modes: mint, hero, goddess, cyber
+            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
+            do {
+                try handler.perform([segmentationRequest])
+                if let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
+                    let maskRaw = CIImage(cvPixelBuffer: maskBuffer)
+                    let maskNorm = maskRaw.transformed(by: CGAffineTransform(translationX: -maskRaw.extent.origin.x, y: -maskRaw.extent.origin.y))
                     
-                    for y in 0..<mh {
-                        let rowOffset = y * bytesPerRow
-                        let flatOffset = y * mw
-                        for x in 0..<mw {
-                            let rawVal = Float(ptr[rowOffset + x]) / 255.0
+                    let scaleX = inputCIImage.extent.width / maskNorm.extent.width
+                    let scaleY = inputCIImage.extent.height / maskNorm.extent.height
+                    let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
+                    
+                    // 1. 60 FPS Temporal Pixel-Level EMA Smoother & Smoothstep Sigmoidal Filter (Eliminates hand/finger edge flickering)
+                    CVPixelBufferLockBaseAddress(maskBuffer, [])
+                    let mw = CVPixelBufferGetWidth(maskBuffer)
+                    let mh = CVPixelBufferGetHeight(maskBuffer)
+                    let bytesPerRow = CVPixelBufferGetBytesPerRow(maskBuffer)
+                    let totalPixels = mw * mh
+                    
+                    if self.prevMaskData == nil || self.prevMaskData?.count != totalPixels {
+                        self.prevMaskData = Array(repeating: 0.0, count: totalPixels)
+                    }
+                    
+                    let isHeroMode = (self.filterMode == "hero" || self.filterMode == "male")
+                    
+                    if let baseAddr = CVPixelBufferGetBaseAddress(maskBuffer) {
+                        let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
+                        var minX = mw, maxX = 0, minY = mh, maxY = 0
+                        var bodyPixels = 0
+                        
+                        for y in 0..<mh {
+                            let rowOffset = y * bytesPerRow
+                            let flatOffset = y * mw
+                            let isShoulderZone = isHeroMode && (Double(y) / Double(mh) >= 0.25 && Double(y) / Double(mh) <= 0.72)
                             
-                            // 60 FPS Temporal Exponential Moving Average: 68% history + 32% new frame
-                            // Kills 60Hz edge noise & hand/finger jitter completely!
-                            let prevVal = self.prevMaskData![flatOffset + x]
-                            let smoothedVal = prevVal * 0.68 + rawVal * 0.32
-                            self.prevMaskData![flatOffset + x] = smoothedVal
-                            
-                            // Hermite Smoothstep Sigmoidal Edge Transition:
-                            // Values < 0.10 map to 0 (noise dead)
-                            // Values > 0.78 map to 255 (solid body)
-                            // Mid values interpolate with silky smooth cubic curve!
-                            var finalByte: UInt8 = 0
-                            if smoothedVal >= 0.10 {
-                                if smoothedVal >= 0.78 {
-                                    finalByte = 255
-                                } else {
-                                    let t = (smoothedVal - 0.10) / (0.78 - 0.10)
-                                    let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
-                                    finalByte = UInt8(clamping: Int(smoothstep * 255.0))
+                            for x in 0..<mw {
+                                var rawVal = Float(ptr[rowOffset + x]) / 255.0
+                                
+                                // Hero Male Frame Morphology: Broadens shoulder/trap contour (+10% shoulder highlight)
+                                if isShoulderZone && rawVal > 0.15 {
+                                    rawVal = min(1.0, rawVal * 1.25)
+                                }
+                                
+                                // 60 FPS Temporal Exponential Moving Average: 70% history + 30% new frame
+                                let prevVal = self.prevMaskData![flatOffset + x]
+                                let smoothedVal = prevVal * 0.70 + rawVal * 0.30
+                                self.prevMaskData![flatOffset + x] = smoothedVal
+                                
+                                // Hermite Smoothstep Sigmoidal Edge Transition
+                                var finalByte: UInt8 = 0
+                                if smoothedVal >= 0.10 {
+                                    if smoothedVal >= 0.78 {
+                                        finalByte = 255
+                                    } else {
+                                        let t = (smoothedVal - 0.10) / (0.78 - 0.10)
+                                        let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
+                                        finalByte = UInt8(clamping: Int(smoothstep * 255.0))
+                                    }
+                                }
+                                ptr[rowOffset + x] = finalByte
+                                
+                                if finalByte >= 35 {
+                                    if x < minX { minX = x }
+                                    if x > maxX { maxX = x }
+                                    if y < minY { minY = y }
+                                    if y > maxY { maxY = y }
+                                    bodyPixels += 1
                                 }
                             }
-                            ptr[rowOffset + x] = finalByte
-                            
-                            if finalByte >= 35 {
-                                if x < minX { minX = x }
-                                if x > maxX { maxX = x }
-                                if y < minY { minY = y }
-                                if y > maxY { maxY = y }
-                                bodyPixels += 1
+                        }
+                        if bodyPixels > 40 {
+                            let padX = Int(Double(mw) * 0.16) // 16% anatomical movement margin
+                            let padY = Int(Double(mh) * 0.16)
+                            let nMinX = CGFloat(max(0, minX - padX)) / CGFloat(mw)
+                            let nMaxX = CGFloat(min(mw, maxX + padX)) / CGFloat(mw)
+                            let nMinY = CGFloat(max(0, minY - padY)) / CGFloat(mh)
+                            let nMaxY = CGFloat(min(mh, maxY + padY)) / CGFloat(mh)
+                            let targetRect = CGRect(x: nMinX, y: nMinY, width: nMaxX - nMinX, height: nMaxY - nMinY)
+                            if let prev = self.trackedBodyRect {
+                                let smX = prev.origin.x * 0.82 + targetRect.origin.x * 0.18
+                                let smY = prev.origin.y * 0.82 + targetRect.origin.y * 0.18
+                                let smW = prev.size.width * 0.82 + targetRect.size.width * 0.18
+                                let smH = prev.size.height * 0.82 + targetRect.size.height * 0.18
+                                self.trackedBodyRect = CGRect(x: smX, y: smY, width: smW, height: smH)
+                            } else {
+                                self.trackedBodyRect = targetRect
                             }
                         }
                     }
-                    if bodyPixels > 40 {
-                        let padX = Int(Double(mw) * 0.16) // 16% anatomical movement margin
-                        let padY = Int(Double(mh) * 0.16)
-                        let nMinX = CGFloat(max(0, minX - padX)) / CGFloat(mw)
-                        let nMaxX = CGFloat(min(mw, maxX + padX)) / CGFloat(mw)
-                        let nMinY = CGFloat(max(0, minY - padY)) / CGFloat(mh)
-                        let nMaxY = CGFloat(min(mh, maxY + padY)) / CGFloat(mh)
-                        let targetRect = CGRect(x: nMinX, y: nMinY, width: nMaxX - nMinX, height: nMaxY - nMinY)
-                        if let prev = self.trackedBodyRect {
-                            let smX = prev.origin.x * 0.82 + targetRect.origin.x * 0.18
-                            let smY = prev.origin.y * 0.82 + targetRect.origin.y * 0.18
-                            let smW = prev.size.width * 0.82 + targetRect.size.width * 0.18
-                            let smH = prev.size.height * 0.82 + targetRect.size.height * 0.18
-                            self.trackedBodyRect = CGRect(x: smX, y: smY, width: smW, height: smH)
-                        } else {
-                            self.trackedBodyRect = targetRect
-                        }
+                    CVPixelBufferUnlockBaseAddress(maskBuffer, [])
+
+                    // Pure Baseline Noise Gate (-0.02 bias wipes far room noise while leaving 100% natural sRGB colors untouched)
+                    let noiseGate = CIFilter(name: "CIColorMatrix")
+                    noiseGate?.setValue(scaledMask, forKey: kCIInputImageKey)
+                    noiseGate?.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+                    noiseGate?.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+                    noiseGate?.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+                    noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.02), forKey: "inputAVector")
+                    noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.02), forKey: "inputBiasVector")
+                    let rawCleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+
+                    let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
+
+                    // 2. HARD SPATIAL ERASURE: Erase ALL pixels outside the Dynamic Humanoid Movement Envelope
+                    var cleanMask = rawCleanMask
+                    if let bRect = self.trackedBodyRect {
+                        let imgW = inputCIImage.extent.width
+                        let imgH = inputCIImage.extent.height
+                        let cropX = bRect.origin.x * imgW
+                        let cropY = (1.0 - bRect.origin.y - bRect.size.height) * imgH // Flips Y for CIImage bottom-left origin
+                        let cropW = bRect.size.width * imgW
+                        let cropH = bRect.size.height * imgH
+                        let envelopeExtent = CGRect(x: cropX, y: cropY, width: cropW, height: cropH)
+                        
+                        let envelopeBox = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)).cropped(to: envelopeExtent)
+                        let spatialMask = envelopeBox.composited(over: transparentBg).cropped(to: inputCIImage.extent)
+                        
+                        let multiplyFilter = CIFilter(name: "CIMultiplyCompositing")
+                        multiplyFilter?.setValue(rawCleanMask, forKey: kCIInputImageKey)
+                        multiplyFilter?.setValue(spatialMask, forKey: kCIInputBackgroundImageKey)
+                        cleanMask = multiplyFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawCleanMask
+                    }
+
+                    // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
+                    let maxFilter = CIFilter(name: "CIMorphologyMaximum")
+                    maxFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
+                    maxFilter?.setValue(3, forKey: kCIInputRadiusKey)
+                    let dilatedMask = maxFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                    let minFilter = CIFilter(name: "CIMorphologyMinimum")
+                    minFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
+                    minFilter?.setValue(1, forKey: kCIInputRadiusKey)
+                    let erodedMask = minFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                    let subtractFilter = CIFilter(name: "CISubtractBlendMode")
+                    subtractFilter?.setValue(dilatedMask, forKey: kCIInputImageKey)
+                    subtractFilter?.setValue(erodedMask, forKey: kCIInputBackgroundImageKey)
+                    let outlineStrokeMask = subtractFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                    // Select Color Preset Based on Mode
+                    var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: 0.85) // Mint Default
+                    if self.filterMode == "hero" || self.filterMode == "male" {
+                        outlineCIColor = CIColor(red: 0.30, green: 0.75, blue: 1.0, alpha: 0.85) // Electric Blue / Slate Hero
+                    } else if self.filterMode == "goddess" || self.filterMode == "fem" {
+                        outlineCIColor = CIColor(red: 1.0, green: 0.82, blue: 0.88, alpha: 0.85) // Champagne Rose Gold
+                    } else if self.filterMode == "cyber" || self.filterMode == "neon" {
+                        outlineCIColor = CIColor(red: 0.0, green: 1.0, blue: 0.95, alpha: 0.90) // Electric Cyan
+                    }
+                    
+                    let outlineColor = CIImage(color: outlineCIColor).cropped(to: inputCIImage.extent)
+
+                    let outlineImage = CIFilter(name: "CIBlendWithMask")
+                    outlineImage?.setValue(outlineColor, forKey: kCIInputImageKey)
+                    outlineImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    outlineImage?.setValue(outlineStrokeMask, forKey: kCIInputMaskImageKey)
+
+                    // 100% Baseline Subject Cutout (Zero color or light modifications)
+                    let cutoutFilter = CIFilter(name: "CIBlendWithMask")
+                    cutoutFilter?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                    cutoutFilter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                    let subjectCutout = cutoutFilter?.outputImage ?? inputCIImage
+
+                    // Composite Dynamic Humanoid Outline over Baseline Subject Cutout
+                    let overFilter = CIFilter(name: "CISourceOverCompositing")
+                    overFilter?.setValue(outlineImage?.outputImage, forKey: kCIInputImageKey)
+                    overFilter?.setValue(subjectCutout, forKey: kCIInputBackgroundImageKey)
+
+                    // ABSOLUTE 100.00% OUTER SAFETY GUARD: Mask final render by dilatedMask so NOTHING outside the outline can ever render!
+                    let finalSafetyGuard = CIFilter(name: "CIBlendWithMask")
+                    finalSafetyGuard?.setValue(overFilter?.outputImage, forKey: kCIInputImageKey)
+                    finalSafetyGuard?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    finalSafetyGuard?.setValue(dilatedMask, forKey: kCIInputMaskImageKey)
+
+                    if let blended = finalSafetyGuard?.outputImage {
+                        finalImage = blended
                     }
                 }
-                CVPixelBufferUnlockBaseAddress(maskBuffer, [])
-
-                // Pure Baseline Noise Gate (-0.02 bias wipes far room noise while leaving 100% natural sRGB colors untouched)
-                let noiseGate = CIFilter(name: "CIColorMatrix")
-                noiseGate?.setValue(scaledMask, forKey: kCIInputImageKey)
-                noiseGate?.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
-                noiseGate?.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
-                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
-                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.02), forKey: "inputAVector")
-                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.02), forKey: "inputBiasVector")
-                let rawCleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
-
-                let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
-
-                // 2. HARD SPATIAL ERASURE: Erase ALL pixels outside the Dynamic Humanoid Movement Envelope
-                var cleanMask = rawCleanMask
-                if let bRect = self.trackedBodyRect {
-                    let imgW = inputCIImage.extent.width
-                    let imgH = inputCIImage.extent.height
-                    let cropX = bRect.origin.x * imgW
-                    let cropY = (1.0 - bRect.origin.y - bRect.size.height) * imgH // Flips Y for CIImage bottom-left origin
-                    let cropW = bRect.size.width * imgW
-                    let cropH = bRect.size.height * imgH
-                    let envelopeExtent = CGRect(x: cropX, y: cropY, width: cropW, height: cropH)
-                    
-                    let envelopeBox = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)).cropped(to: envelopeExtent)
-                    let spatialMask = envelopeBox.composited(over: transparentBg).cropped(to: inputCIImage.extent)
-                    
-                    let multiplyFilter = CIFilter(name: "CIMultiplyCompositing")
-                    multiplyFilter?.setValue(rawCleanMask, forKey: kCIInputImageKey)
-                    multiplyFilter?.setValue(spatialMask, forKey: kCIInputBackgroundImageKey)
-                    cleanMask = multiplyFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawCleanMask
-                }
-
-                // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
-                let maxFilter = CIFilter(name: "CIMorphologyMaximum")
-                maxFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
-                maxFilter?.setValue(3, forKey: kCIInputRadiusKey)
-                let dilatedMask = maxFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
-
-                let minFilter = CIFilter(name: "CIMorphologyMinimum")
-                minFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
-                minFilter?.setValue(1, forKey: kCIInputRadiusKey)
-                let erodedMask = minFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
-
-                let subtractFilter = CIFilter(name: "CISubtractBlendMode")
-                subtractFilter?.setValue(dilatedMask, forKey: kCIInputImageKey)
-                subtractFilter?.setValue(erodedMask, forKey: kCIInputBackgroundImageKey)
-                let outlineStrokeMask = subtractFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
-
-                // Mint Green / Glowing Humanoid Outline (Vox Mint: 0.45, 0.97, 0.72)
-                let outlineColor = CIImage(color: CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: 0.85)).cropped(to: inputCIImage.extent)
-
-                let outlineImage = CIFilter(name: "CIBlendWithMask")
-                outlineImage?.setValue(outlineColor, forKey: kCIInputImageKey)
-                outlineImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                outlineImage?.setValue(outlineStrokeMask, forKey: kCIInputMaskImageKey)
-
-                // 100% Baseline Subject Cutout (Zero color or light modifications)
-                let cutoutFilter = CIFilter(name: "CIBlendWithMask")
-                cutoutFilter?.setValue(inputCIImage, forKey: kCIInputImageKey)
-                cutoutFilter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
-                let subjectCutout = cutoutFilter?.outputImage ?? inputCIImage
-
-                // Composite Dynamic Humanoid Outline over Baseline Subject Cutout
-                let overFilter = CIFilter(name: "CISourceOverCompositing")
-                overFilter?.setValue(outlineImage?.outputImage, forKey: kCIInputImageKey)
-                overFilter?.setValue(subjectCutout, forKey: kCIInputBackgroundImageKey)
-
-                if let blended = overFilter?.outputImage {
-                    finalImage = blended
-                }
+            } catch {
+                logMsg("Segmentation error: \(error)")
             }
-        } catch {
-            logMsg("Segmentation error: \(error)")
         }
         
         guard let context = self.ciContext,
@@ -497,6 +538,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         var size: CGFloat = 340.0
         var position = "bottom-left"
+        var mode = "mint"
         
         let args = CommandLine.arguments
         for i in 0..<args.count {
@@ -506,9 +548,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if args[i] == "--position", i + 1 < args.count {
                 position = args[i+1]
             }
+            if args[i] == "--mode", i + 1 < args.count {
+                mode = args[i+1]
+            }
         }
         
-        let wc = WebcamWindowController(size: size, cornerPosition: position)
+        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()
