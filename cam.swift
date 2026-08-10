@@ -388,7 +388,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     
                     let scaleX = inputCIImage.extent.width / maskNorm.extent.width
                     let scaleY = inputCIImage.extent.height / maskNorm.extent.height
-                    let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
                     
                     // 1. 60 FPS Temporal Pixel-Level EMA Smoother & Smoothstep Sigmoidal Filter (Eliminates hand/finger edge flickering)
                     CVPixelBufferLockBaseAddress(maskBuffer, [])
@@ -470,15 +469,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     }
                     CVPixelBufferUnlockBaseAddress(maskBuffer, [])
 
+                    // Re-create CIImage from the SMOOTHED, NOISE-ERASED CVPixelBuffer bytes!
+                    let smoothedMaskRaw = CIImage(cvPixelBuffer: maskBuffer)
+                    let smoothedMaskNorm = smoothedMaskRaw.transformed(by: CGAffineTransform(translationX: -smoothedMaskRaw.extent.origin.x, y: -smoothedMaskRaw.extent.origin.y))
+                    let cleanScaledMask = smoothedMaskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
+
                     // Pure Baseline Noise Gate (-0.02 bias wipes far room noise while leaving 100% natural sRGB colors untouched)
                     let noiseGate = CIFilter(name: "CIColorMatrix")
-                    noiseGate?.setValue(scaledMask, forKey: kCIInputImageKey)
+                    noiseGate?.setValue(cleanScaledMask, forKey: kCIInputImageKey)
                     noiseGate?.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
                     noiseGate?.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
                     noiseGate?.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
                     noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.02), forKey: "inputAVector")
                     noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.02), forKey: "inputBiasVector")
-                    let rawCleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
+                    let rawCleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanScaledMask
 
                     let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
 
