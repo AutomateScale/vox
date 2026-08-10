@@ -68,7 +68,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var currentSize: CGFloat = 340.0
     var lastRenderTime: CFTimeInterval = 0
     var frameCount: Int = 0
-    let segmentationRequest = VNGeneratePersonSegmentationRequest()
+    let segmentationRequest: VNGeneratePersonSegmentationRequest = {
+        let req = VNGeneratePersonSegmentationRequest()
+        req.qualityLevel = .accurate
+        req.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        return req
+    }()
     var trackedBodyRect: CGRect? = nil
     var prevMaskData: [Float]? = nil
     
@@ -244,9 +249,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             return
         }
         
-        if session.canSetSessionPreset(.high) {
+        if session.canSetSessionPreset(.hd1920x1080) {
+            session.sessionPreset = .hd1920x1080
+            logMsg("Camera session preset set to 1080p Full HD (1920x1080)")
+        } else if session.canSetSessionPreset(.high) {
             session.sessionPreset = .high
-            logMsg("Preset set to High")
+            logMsg("Camera session preset set to High")
         }
         
         let output = AVCaptureVideoDataOutput()
@@ -444,7 +452,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let subtractFilter = CIFilter(name: "CISubtractBlendMode")
                     subtractFilter?.setValue(dilatedMask, forKey: kCIInputImageKey)
                     subtractFilter?.setValue(erodedMask, forKey: kCIInputBackgroundImageKey)
-                    let outlineStrokeMask = subtractFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+                    let rawOutlineStroke = subtractFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                    // High-Quality Studio Anti-Aliased Contour Stroke Filter (Silky smooth broadcast finish)
+                    let antiAliasFilter = CIFilter(name: "CIGaussianBlur")
+                    antiAliasFilter?.setValue(rawOutlineStroke, forKey: kCIInputImageKey)
+                    antiAliasFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
+                    let outlineStrokeMask = antiAliasFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawOutlineStroke
 
                     // Select Color Preset Based on Mode
                     var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: 0.85) // Mint Default
