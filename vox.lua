@@ -899,7 +899,26 @@ local mini = { canvas = nil, timer = nil, phase = 0,
 local bubble = { canvas = nil, timer = nil, hold = nil,
                  dir = nil, open = false, phase = 0,
                  targetW = 0, animStart = 0 }
-local MW, MH, MOFF = 74, 30, 24        -- canvas w/h, alien x-offset
+local MW, MH, MOFF = 118, 30, 45        -- canvas w/h, alien x-offset
+
+local function showAlienToolsMenu()
+  local menu = hs.menubar.new(false)
+  menu:setMenu({
+    { title = "📹 Toggle Presenter Camera Overlay (⌥⇧C)", fn = function() toggleWebcamOverlay() end },
+    { title = (screenRec and screenRec.active) and "🛑 Stop Voom Screen Recording (⌥⇧R)" or "▶ Start Voom Screen Recording (⌥⇧R)", fn = function() toggleScreenRecording() end },
+    { title = "-" },
+    { title = "🟢 GPU Chroma Key (Green Screen)", fn = function() pref("screenRecBgMode", "chroma"); hs.alert.show("Webcam: GPU Chroma Key 🟢", 1.5) end },
+    { title = "✨ AI Person Cutout (Auto Background)", fn = function() pref("screenRecBgMode", "cutout"); hs.alert.show("Webcam: AI Cutout ✨", 1.5) end },
+    { title = "📷 Raw Camera Circle", fn = function() pref("screenRecBgMode", "off"); hs.alert.show("Webcam: Raw Camera 📷", 1.5) end },
+    { title = "-" },
+    { title = "🎨 Content Expansion Mode (C)", fn = function() if mini.act.content then mini.act.content() end end },
+    { title = "📸 Absorb Screen Text OCR (P)", fn = function() if mini.act.grab then mini.act.grab() end end },
+    { title = "💬 Hands-free AI Dictation (Click Alien)", fn = function() if mini.act.talk then mini.act.talk() end end },
+    { title = "-" },
+    { title = "📂 Open Recordings Folder", fn = function() hs.execute("open '" .. (C.screenRecDir or (HOME .. "/Movies/VoxRecordings")) .. "'") end },
+  })
+  menu:popupMenu(hs.mouse.absolutePosition())
+end
 
 local function miniEnsure()
   if mini.canvas then return end
@@ -931,24 +950,44 @@ local function miniEnsure()
   c[8] = { type = "oval", action = "fill",
            fillColor = { red = 1, green = 1, blue = 1, alpha = 0.85 },
            frame = { x = MOFF + 15.7, y = 17.2, w = 1.2, h = 1.4 } }
-  -- C button (content) and P button (absorb screen)
+  -- 5 Alien Tool Buttons:
+  -- 1. Camera Toggle (📹) | 2. Content Mode (C) | 3. Alien Head (Talk) | 4. Absorb Screen (P) | 5. Screen Rec (🔴)
   local btnBg = { red = 0.10, green = 0.12, blue = 0.20, alpha = 0.85 }
   c[9]  = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 2, y = 12, w = 17, h = 17 } }
-  c[10] = { type = "text", text = "C", textSize = 10,
-            textColor = { red = 0.45, green = 0.97, blue = 0.72, alpha = 1 },
-            textAlignment = "center", frame = { x = 2, y = 14.5, w = 17, h = 13 } }
+  c[10] = { type = "text", text = "📹", textSize = 9,
+            textAlignment = "center", frame = { x = 2, y = 13.5, w = 17, h = 13 } }
   c[11] = { type = "oval", action = "fill", fillColor = btnBg,
-            frame = { x = MW - 19, y = 12, w = 17, h = 17 } }
-  c[12] = { type = "text", text = "P", textSize = 10,
+            frame = { x = 22, y = 12, w = 17, h = 17 } }
+  c[12] = { type = "text", text = "C", textSize = 10,
+            textColor = { red = 0.45, green = 0.97, blue = 0.72, alpha = 1 },
+            textAlignment = "center", frame = { x = 22, y = 14.5, w = 17, h = 13 } }
+  c[13] = { type = "oval", action = "fill", fillColor = btnBg,
+            frame = { x = 79, y = 12, w = 17, h = 17 } }
+  c[14] = { type = "text", text = "P", textSize = 10,
             textColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = 1 },
-            textAlignment = "center", frame = { x = MW - 19, y = 14.5, w = 17, h = 13 } }
+            textAlignment = "center", frame = { x = 79, y = 14.5, w = 17, h = 13 } }
+  c[15] = { type = "oval", action = "fill", fillColor = btnBg,
+            frame = { x = 99, y = 12, w = 17, h = 17 } }
+  c[16] = { type = "text", text = "🔴", textSize = 9,
+            textAlignment = "center", frame = { x = 99, y = 13.5, w = 17, h = 13 } }
+
   c:alpha(0.95)
-  c:canvasMouseEvents(true, false, false, false)
+  c:canvasMouseEvents(true, false, false, true)
   c:mouseCallback(function(_, event, _, x, y)
+    if event == "rightMouseDown" then
+      showAlienToolsMenu()
+      return
+    end
     if event ~= "mouseDown" then return end
-    if x <= 22 and mini.act.content then mini.act.content()
-    elseif x >= MW - 22 and mini.act.grab then mini.act.grab()
+    if x <= 20 then
+      toggleWebcamOverlay()
+    elseif x > 20 and x <= 40 and mini.act.content then
+      mini.act.content()
+    elseif x >= 78 and x <= 97 and mini.act.grab then
+      mini.act.grab()
+    elseif x > 97 then
+      toggleScreenRecording()
     else
       local mods = hs.eventtap.checkKeyboardModifiers()
       if mods.alt or mods.shift then
