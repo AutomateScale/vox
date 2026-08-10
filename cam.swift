@@ -445,7 +445,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let rawVal = Float(ptr[rowOffset + x]) / 255.0
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
-                                let blendWeight: Float = max(0.12, min(0.75, 0.12 + (delta / 0.18) * 0.63))
+                                let blendWeight: Float = max(0.06, min(0.60, 0.06 + (delta / 0.18) * 0.54))
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
 
@@ -620,18 +620,18 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     outlineImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     outlineImage?.setValue(outlineStrokeMask, forKey: kCIInputMaskImageKey)
 
-                    // 1. Sleek 3D Studio Soft Drop-Shadow Layer Behind Cutout
+                    // 1. Noise-Absorbing Soft Studio Shadow Cushion (Absorbs edge chatter & black flickering!)
                     let shadowMaxFilter = CIFilter(name: "CIMorphologyMaximum")
                     shadowMaxFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
-                    shadowMaxFilter?.setValue(5, forKey: kCIInputRadiusKey)
+                    shadowMaxFilter?.setValue(8, forKey: kCIInputRadiusKey)
                     let shadowBaseMask = shadowMaxFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
 
                     let shadowBlur = CIFilter(name: "CIGaussianBlur")
                     shadowBlur?.setValue(shadowBaseMask, forKey: kCIInputImageKey)
-                    shadowBlur?.setValue(6.0, forKey: kCIInputRadiusKey)
+                    shadowBlur?.setValue(10.0, forKey: kCIInputRadiusKey)
                     let softShadowMask = shadowBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? shadowBaseMask
 
-                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.55)).cropped(to: inputCIImage.extent)
+                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.65)).cropped(to: inputCIImage.extent)
                     let shadowImage = CIFilter(name: "CIBlendWithMask")
                     shadowImage?.setValue(darkShadowColor, forKey: kCIInputImageKey)
                     shadowImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
