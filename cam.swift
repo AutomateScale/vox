@@ -303,30 +303,54 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 let scaleY = inputCIImage.extent.height / maskNorm.extent.height
                 let scaledMask = maskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
                 
-                // Pure Baseline Noise Gate (-0.015 bias only, leaves 100% of baseline quality, skin tones, and edge gradient untouched)
+                // Pure Baseline Noise Gate (-0.02 bias wipes far room noise while leaving 100% natural sRGB colors untouched)
                 let noiseGate = CIFilter(name: "CIColorMatrix")
                 noiseGate?.setValue(scaledMask, forKey: kCIInputImageKey)
                 noiseGate?.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
                 noiseGate?.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
                 noiseGate?.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
-                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.015), forKey: "inputAVector")
-                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.015), forKey: "inputBiasVector")
+                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.02), forKey: "inputAVector")
+                noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.02), forKey: "inputBiasVector")
                 let cleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? scaledMask
 
-                // Natural Edge Feathering (1.0px Gaussian Blur)
-                let blurFilter = CIFilter(name: "CIGaussianBlur")
-                blurFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
-                blurFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
-                let finalMask = blurFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
-                
+                // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
+                let maxFilter = CIFilter(name: "CIMorphologyMaximum")
+                maxFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
+                maxFilter?.setValue(3, forKey: kCIInputRadiusKey)
+                let dilatedMask = maxFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                let minFilter = CIFilter(name: "CIMorphologyMinimum")
+                minFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
+                minFilter?.setValue(1, forKey: kCIInputRadiusKey)
+                let erodedMask = minFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                let subtractFilter = CIFilter(name: "CISubtractBlendMode")
+                subtractFilter?.setValue(dilatedMask, forKey: kCIInputImageKey)
+                subtractFilter?.setValue(erodedMask, forKey: kCIInputBackgroundImageKey)
+                let outlineStrokeMask = subtractFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                // Mint Green / Glowing Humanoid Outline (Vox Mint: 0.45, 0.97, 0.72)
+                let outlineColor = CIImage(color: CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: 0.85)).cropped(to: inputCIImage.extent)
                 let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
-                
-                let filter = CIFilter(name: "CIBlendWithMask")
-                filter?.setValue(inputCIImage, forKey: kCIInputImageKey)
-                filter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                filter?.setValue(finalMask, forKey: kCIInputMaskImageKey)
-                
-                if let blended = filter?.outputImage {
+
+                let outlineImage = CIFilter(name: "CIBlendWithMask")
+                outlineImage?.setValue(outlineColor, forKey: kCIInputImageKey)
+                outlineImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                outlineImage?.setValue(outlineStrokeMask, forKey: kCIInputMaskImageKey)
+
+                // 100% Baseline Subject Cutout (Zero color or light modifications)
+                let cutoutFilter = CIFilter(name: "CIBlendWithMask")
+                cutoutFilter?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                cutoutFilter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                let subjectCutout = cutoutFilter?.outputImage ?? inputCIImage
+
+                // Composite Dynamic Humanoid Outline over Baseline Subject Cutout
+                let overFilter = CIFilter(name: "CISourceOverCompositing")
+                overFilter?.setValue(outlineImage?.outputImage, forKey: kCIInputImageKey)
+                overFilter?.setValue(subjectCutout, forKey: kCIInputBackgroundImageKey)
+
+                if let blended = overFilter?.outputImage {
                     finalImage = blended
                 }
             }
