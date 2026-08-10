@@ -78,8 +78,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevMaskData: [Float]? = nil
     
     var filterMode: String = "mint"
-    let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
-    var currentPresetIndex: Int = 0
+    let sizePresets: [CGFloat] = [380.0, 520.0, 720.0, 1040.0]
+    var currentPresetIndex: Int = 2
     
     var alienStartPoint: CGPoint? = nil
     var targetWindowRect: NSRect? = nil
@@ -89,7 +89,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevRowMaxData: [Int]? = nil
     var currentMotionVelocity: Double = 0.0
     
-    init(size: CGFloat = 520.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil) {
+    init(size: CGFloat = 720.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil) {
         self.currentSize = size
         self.filterMode = filterMode
         self.alienStartPoint = alienPoint
