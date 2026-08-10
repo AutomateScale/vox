@@ -239,6 +239,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         logMsg("Using video device: \(device.localizedName)")
         
         do {
+            try device.lockForConfiguration()
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            device.unlockForConfiguration()
+        } catch {
+            logMsg("Could not lock device for exposure config: \(error)")
+        }
+        
+        do {
             let input = try AVCaptureDeviceInput(device: device)
             if session.canAddInput(input) {
                 session.addInput(input)
@@ -297,10 +307,31 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         let rawOriginX = rawCIImage.extent.origin.x
         let rawOriginY = rawCIImage.extent.origin.y
-        let inputCIImage = rawCIImage
+        let baseInputCIImage = rawCIImage
             .transformed(by: CGAffineTransform(translationX: -rawOriginX, y: -rawOriginY))
             .oriented(.upMirrored)
         
+        // Studio Low-Light GPU Denoise & Adaptive Shadow Recovery Pipeline
+        var enhancedCIImage = baseInputCIImage
+        if let denoiseFilter = CIFilter(name: "CINoiseReduction") {
+            denoiseFilter.setValue(baseInputCIImage, forKey: kCIInputImageKey)
+            denoiseFilter.setValue(0.015, forKey: "inputNoiseLevel")
+            denoiseFilter.setValue(0.35, forKey: "inputSharpness")
+            if let output = denoiseFilter.outputImage {
+                enhancedCIImage = output.cropped(to: baseInputCIImage.extent)
+            }
+        }
+        
+        if let shadowFilter = CIFilter(name: "CIShadowHighlight") {
+            shadowFilter.setValue(enhancedCIImage, forKey: kCIInputImageKey)
+            shadowFilter.setValue(0.22, forKey: "inputShadowAmount") // Gently lifts underexposed dark shadows
+            shadowFilter.setValue(0.0, forKey: "inputHighlightAmount")
+            if let output = shadowFilter.outputImage {
+                enhancedCIImage = output.cropped(to: baseInputCIImage.extent)
+            }
+        }
+        
+        let inputCIImage = enhancedCIImage
         var finalImage: CIImage = inputCIImage
         
         // RAW CAMERA CIRCLE VIEW: If mode is "raw" or "off", render 100% crisp raw camera feed in a floating circle window at 60 FPS!
