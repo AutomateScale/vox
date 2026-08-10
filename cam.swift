@@ -331,12 +331,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let mh = CVPixelBufferGetHeight(maskBuffer)
                     let bytesPerRow = CVPixelBufferGetBytesPerRow(maskBuffer)
                     let totalPixels = mw * mh
-                    
                     if self.prevMaskData == nil || self.prevMaskData?.count != totalPixels {
                         self.prevMaskData = Array(repeating: 0.0, count: totalPixels)
                     }
-                    
-                    let isHeroMode = (self.filterMode == "hero" || self.filterMode == "male")
                     
                     if let baseAddr = CVPixelBufferGetBaseAddress(maskBuffer) {
                         let ptr = baseAddr.assumingMemoryBound(to: UInt8.self)
@@ -346,20 +343,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         for y in 0..<mh {
                             let rowOffset = y * bytesPerRow
                             let flatOffset = y * mw
-                            let isShoulderZone = isHeroMode && (Double(y) / Double(mh) >= 0.25 && Double(y) / Double(mh) <= 0.72)
                             
                             for x in 0..<mw {
-                                var rawVal = Float(ptr[rowOffset + x]) / 255.0
+                                let rawVal = Float(ptr[rowOffset + x]) / 255.0
                                 
-                                // Hero Male Frame Morphology: Broadens shoulder/trap contour (+10% shoulder highlight)
-                                if isShoulderZone && rawVal > 0.15 {
-                                    rawVal = min(1.0, rawVal * 1.25)
-                                }
-                                
+                                // 100% Authentic Natural Human Geometry: Zero artificial shape or morphology alteration!
                                 // Adaptive Velocity-Aware Motion Filter (Eliminates motion trailing on fast movement while keeping zero-flicker stability when still)
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
-                                let blendWeight: Float = (delta > 0.12) ? 0.82 : 0.28 // Fast motion: 82% new frame (snaps in 16ms)! Stationary: 28% new frame (silky smooth)!
+                                let blendWeight: Float = (delta > 0.12) ? 0.82 : 0.28
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
                                 
