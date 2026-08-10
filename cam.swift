@@ -81,9 +81,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
     var currentPresetIndex: Int = 0
     
-    init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left", filterMode: String = "mint") {
+    var alienStartPoint: CGPoint? = nil
+    var targetWindowRect: NSRect? = nil
+    
+    init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil) {
         self.currentSize = size
         self.filterMode = filterMode
+        self.alienStartPoint = alienPoint
+        
         let primaryScreen = NSScreen.screens.first ?? NSScreen.main
         let screen = primaryScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         let margin: CGFloat = 35.0
@@ -91,24 +96,36 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let width = size * 1.4
         let height = size * 0.95
         
-        var x: CGFloat = screen.minX + margin
-        var y: CGFloat = screen.minY + margin
+        var targetX: CGFloat = screen.minX + margin
+        var targetY: CGFloat = screen.minY + margin
         
-        if cornerPosition.contains("right") {
-            x = screen.maxX - width - margin
+        if let tp = targetPoint {
+            targetX = tp.x
+            targetY = tp.y
+        } else {
+            if cornerPosition.contains("right") {
+                targetX = screen.maxX - width - margin
+            }
+            if cornerPosition.contains("top") {
+                targetY = screen.maxY - height - margin
+            }
+            targetX = max(screen.minX + margin, min(screen.maxX - width - margin, targetX))
+            targetY = max(screen.minY + margin, min(screen.maxY - height - margin, targetY))
         }
-        if cornerPosition.contains("top") {
-            y = screen.maxY - height - margin
+        
+        let finalRect = NSRect(x: targetX, y: targetY, width: width, height: height)
+        self.targetWindowRect = finalRect
+        
+        // If Alien hub point is provided, start tiny at Alien location for Genie Fly-Out!
+        var initRect = finalRect
+        if let ap = alienPoint {
+            initRect = NSRect(x: ap.x - 15, y: ap.y - 15, width: 30, height: 30)
         }
         
-        x = max(screen.minX + margin, min(screen.maxX - width - margin, x))
-        y = max(screen.minY + margin, min(screen.maxY - height - margin, y))
-        
-        let rect = NSRect(x: x, y: y, width: width, height: height)
-        logMsg("Creating window at rect: \(rect)")
+        logMsg("Creating window at initRect: \(initRect), targetRect: \(finalRect)")
         
         let window = NSWindow(
-            contentRect: rect,
+            contentRect: initRect,
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -123,6 +140,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.hidesOnDeactivate = false
         window.sharingType = .readWrite
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        
+        if alienPoint != nil {
+            window.alphaValue = 0.05
+        }
+        
         window.orderFrontRegardless()
         
         super.init(window: window)
@@ -134,6 +156,41 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         setupMetal()
         setupContentView(width: width, height: height)
         setupCamera()
+        
+        // Trigger Genie Fly-Out Spring Animation!
+        if alienPoint != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                self.animateGenieFlyOut()
+            }
+        }
+    }
+    
+    func animateGenieFlyOut() {
+        guard let win = self.window, let targetRect = self.targetWindowRect else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.48
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+            win.animator().setFrame(targetRect, display: true)
+            win.animator().alphaValue = 1.0
+        }, completionHandler: nil)
+    }
+    
+    func animateGenieFlyIn(completion: @escaping () -> Void) {
+        guard let win = self.window, let ap = self.alienStartPoint else {
+            closeWebcam()
+            completion()
+            return
+        }
+        let returnRect = NSRect(x: ap.x - 15, y: ap.y - 15, width: 30, height: 30)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.38
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.7, 0.0, 0.84, 0.0)
+            win.animator().setFrame(returnRect, display: true)
+            win.animator().alphaValue = 0.0
+        }, completionHandler: {
+            self.closeWebcam()
+            completion()
+        })
     }
     
     required init?(coder: NSCoder) {
@@ -576,6 +633,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var size: CGFloat = 340.0
         var position = "bottom-left"
         var mode = "mint"
+        var alienPt: CGPoint? = nil
+        var targetPt: CGPoint? = nil
+        
+        var aX: CGFloat? = nil, aY: CGFloat? = nil
+        var tX: CGFloat? = nil, tY: CGFloat? = nil
         
         let args = CommandLine.arguments
         for i in 0..<args.count {
@@ -588,9 +650,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if args[i] == "--mode", i + 1 < args.count {
                 mode = args[i+1]
             }
+            if args[i] == "--alienX", i + 1 < args.count, let v = Double(args[i+1]) { aX = CGFloat(v) }
+            if args[i] == "--alienY", i + 1 < args.count, let v = Double(args[i+1]) { aY = CGFloat(v) }
+            if args[i] == "--targetX", i + 1 < args.count, let v = Double(args[i+1]) { tX = CGFloat(v) }
+            if args[i] == "--targetY", i + 1 < args.count, let v = Double(args[i+1]) { tY = CGFloat(v) }
         }
         
-        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode)
+        if let x = aX, let y = aY { alienPt = CGPoint(x: x, y: y) }
+        if let x = tX, let y = tY { targetPt = CGPoint(x: x, y: y) }
+        
+        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()

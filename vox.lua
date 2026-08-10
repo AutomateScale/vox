@@ -2414,15 +2414,42 @@ function showWebcamOverlay()
   end
   if hs.fs.attributes(camBin) then
     os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+
+    -- 1. Calculate Alien Hub Origin (Floating Widget)
+    local mainScreen = hs.screen.mainScreen():frame()
+    local alienPos = C.alienPos or { x = mainScreen.w / 2, y = mainScreen.h / 2 }
+    local alienX = alienPos.x + 35
+    local alienY = (mainScreen.h - alienPos.y) - 35
+
+    -- 2. Calculate Active Focused Window Bottom-Right Docking Frame
+    local size = C.screenRecWebcamSize or 260
+    local width = size * 1.4
+    local height = size * 0.95
+    local targetX, targetY
+
+    local win = hs.window.focusedWindow()
+    if win and win:title() ~= "" and win:role() == "AXWindow" then
+      local f = win:frame()
+      targetX = f.x + f.w - width - 15
+      targetY = (mainScreen.h - (f.y + f.h)) + 15
+    else
+      targetX = mainScreen.w - width - 35
+      targetY = 35
+    end
+
     screenRec.camTask = hs.task.new(camBin, function(code)
       log("camTask exit code: " .. tostring(code))
     end, {
-      "--size", tostring(C.screenRecWebcamSize or 260),
-      "--position", C.screenRecWebcamPos or "bottom-left",
-      "--mode", C.screenRecBgMode or "mint"
+      "--size", tostring(size),
+      "--position", C.screenRecWebcamPos or "bottom-right",
+      "--mode", C.screenRecBgMode or "mint",
+      "--alienX", tostring(alienX),
+      "--alienY", tostring(alienY),
+      "--targetX", tostring(targetX),
+      "--targetY", tostring(targetY)
     })
     screenRec.camTask:start()
-    hs.alert.show("📹 Presenter Camera Overlay ON (⌥⇧C)", 1.5)
+    hs.alert.show("🧞‍♂️ Presenter Camera Genie Fly-Out (⌥⇧C)", 1.5)
   end
 end
 
