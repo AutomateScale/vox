@@ -116,10 +116,10 @@ local C = {
   askKeycode  = 56,                  -- 56 = Left Shift
   askKeyName  = "Left Shift",
   tapLockMax  = 0.35,                -- press shorter than this counts as a tap
-  tailGrace   = 0.15,                -- mic stays open this long after release
+  tailGrace   = 0.25,                -- mic stays open this long after release
                                      -- (last-word syllables are still in the air)
   doubleTapWindow = 0.45,            -- two taps this close = hands-free lock
-  minBytes    = 24000,               -- ignore recordings under ~0.7s
+  minBytes    = 12000,               -- allow short 1-2 word utterances
   maxRecordSecs = 180,               -- auto-stop a forgotten locked recording
 
   -- Keep the transcript in the clipboard after pasting, so ⌘V re-pastes it
@@ -4441,7 +4441,7 @@ local function transcribe()
       and (" -F language=" .. C.language) or ""
   local function buildCmdPort(port, timeLimit)
     return string.format(
-      "%s %s %s highpass 80 norm -3 reverse silence 1 0.30 0.6%% reverse pad 0 0.15 2>/dev/null || cp %s %s; " ..
+      "%s %s %s highpass 80 norm -3 reverse silence 1 0.25 0.4%% reverse pad 0.10 0.25 2>/dev/null || cp %s %s; " ..
       "SIZE=$(/usr/bin/stat -f%%z %s 2>/dev/null || echo 0); " ..
       "[ \"$SIZE\" -lt 1200 ] && exit 42; " ..
       "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 -F best_of=1 -F no_fallback=true " ..
