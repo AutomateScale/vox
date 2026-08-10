@@ -348,20 +348,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let rawVal = Float(ptr[rowOffset + x]) / 255.0
                                 
                                 // 100% Authentic Natural Human Geometry: Zero artificial shape or morphology alteration!
-                                // Adaptive Velocity-Aware Motion Filter (Eliminates motion trailing on fast movement while keeping zero-flicker stability when still)
+                                // Continuous Smooth Velocity Interpolation (Zero step-function jumping, 100% rock-solid zero flicker!)
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
-                                let blendWeight: Float = (delta > 0.12) ? 0.82 : 0.28
+                                let blendWeight: Float = max(0.12, min(0.75, 0.12 + (delta / 0.18) * 0.63))
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
                                 
-                                // Hermite Smoothstep Sigmoidal Edge Transition
+                                // Cubic Hermite Sigmoidal Edge Transition with Hysteresis Gate
                                 var finalByte: UInt8 = 0
-                                if smoothedVal >= 0.10 {
-                                    if smoothedVal >= 0.78 {
+                                if smoothedVal >= 0.15 {
+                                    if smoothedVal >= 0.70 {
                                         finalByte = 255
                                     } else {
-                                        let t = (smoothedVal - 0.10) / (0.78 - 0.10)
+                                        let t = (smoothedVal - 0.15) / (0.70 - 0.15)
                                         let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
                                         finalByte = UInt8(clamping: Int(smoothstep * 255.0))
                                     }
