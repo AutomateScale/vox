@@ -87,6 +87,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var deviceParam: String? = nil
     var prevRowMinData: [Int]? = nil
     var prevRowMaxData: [Int]? = nil
+    var currentMotionVelocity: Double = 0.0
     
     init(size: CGFloat = 340.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil) {
         self.currentSize = size
@@ -462,6 +463,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         var globalMinY = mh, globalMaxY = 0
                         var totalBodyCount = 0
 
+                        var totalDeltaSum: Float = 0.0
                         for y in 0..<mh {
                             let rowOffset = y * bytesPerRow
                             let flatOffset = y * mw
@@ -469,6 +471,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let rawVal = Float(ptr[rowOffset + x]) / 255.0
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
+                                totalDeltaSum += delta
                                 let blendWeight: Float = max(0.06, min(0.60, 0.06 + (delta / 0.18) * 0.54))
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
@@ -482,6 +485,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 }
                             }
                         }
+                        
+                        let frameMotion = totalBodyCount > 0 ? Double(totalDeltaSum / Float(totalBodyCount)) : 0.0
+                        self.currentMotionVelocity = self.currentMotionVelocity * 0.70 + frameMotion * 0.30
 
                         // Smooth row extremities vertically (3-row rolling envelope margin)
                         var cleanRowMin = rowMin
@@ -661,6 +667,39 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     shadowImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     shadowImage?.setValue(softShadowMask, forKey: kCIInputMaskImageKey)
 
+                    // Motion-Activated Luminous Energy Aura Field ("Children of the Light" Aura)
+                    let motionScale = min(1.0, max(0.0, (self.currentMotionVelocity - 0.005) / 0.03))
+                    let auraAlpha = 0.25 + motionScale * 0.55 // Glows intensely as you move!
+                    
+                    let auraMax = CIFilter(name: "CIMorphologyMaximum")
+                    auraMax?.setValue(cleanMask, forKey: kCIInputImageKey)
+                    auraMax?.setValue(Int(6 + motionScale * 6), forKey: kCIInputRadiusKey)
+                    let auraExpanded = auraMax?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+
+                    let auraBlur = CIFilter(name: "CIGaussianBlur")
+                    auraBlur?.setValue(auraExpanded, forKey: kCIInputImageKey)
+                    auraBlur?.setValue(8.0 + motionScale * 6.0, forKey: kCIInputRadiusKey)
+                    let softAuraMask = auraBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? auraExpanded
+
+                    // Chromatic Luminous Energy Pulse: Mint Green -> Electric Cyan -> Solar Gold
+                    let time = CACurrentMediaTime()
+                    let rGlow = 0.35 + sin(time * 3.0 + motionScale * 2.0) * 0.30
+                    let gGlow = 0.85 + cos(time * 2.5) * 0.15
+                    let bGlow = 0.90 + sin(time * 2.0) * 0.10
+                    
+                    let auraCIColor = CIColor(red: CGFloat(rGlow), green: CGFloat(gGlow), blue: CGFloat(bGlow), alpha: CGFloat(auraAlpha))
+                    let auraColorImg = CIImage(color: auraCIColor).cropped(to: inputCIImage.extent)
+
+                    let auraImage = CIFilter(name: "CIBlendWithMask")
+                    auraImage?.setValue(auraColorImg, forKey: kCIInputImageKey)
+                    auraImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    auraImage?.setValue(softAuraMask, forKey: kCIInputMaskImageKey)
+
+                    // Composite Luminous Aura OVER Studio Drop-Shadow
+                    let auraWithShadow = CIFilter(name: "CISourceOverCompositing")
+                    auraWithShadow?.setValue(auraImage?.outputImage, forKey: kCIInputImageKey)
+                    auraWithShadow?.setValue(shadowImage?.outputImage, forKey: kCIInputBackgroundImageKey)
+
                     // 100% Baseline Subject Cutout (Zero color or light modifications)
                     let cutoutFilter = CIFilter(name: "CIBlendWithMask")
                     cutoutFilter?.setValue(inputCIImage, forKey: kCIInputImageKey)
@@ -668,15 +707,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
                     let subjectCutout = cutoutFilter?.outputImage ?? inputCIImage
 
-                    // Composite Subject Cutout OVER Sleek 3D Studio Drop-Shadow
-                    let subjectWithShadow = CIFilter(name: "CISourceOverCompositing")
-                    subjectWithShadow?.setValue(subjectCutout, forKey: kCIInputImageKey)
-                    subjectWithShadow?.setValue(shadowImage?.outputImage, forKey: kCIInputBackgroundImageKey)
+                    // Composite Subject Cutout OVER Aura + Shadow
+                    let subjectWithAura = CIFilter(name: "CISourceOverCompositing")
+                    subjectWithAura?.setValue(subjectCutout, forKey: kCIInputImageKey)
+                    subjectWithAura?.setValue(auraWithShadow?.outputImage, forKey: kCIInputBackgroundImageKey)
 
-                    // Composite Dynamic Humanoid Outline OVER Subject + Shadow
+                    // Composite Dynamic Humanoid Outline OVER Subject + Aura + Shadow
                     let overFilter = CIFilter(name: "CISourceOverCompositing")
                     overFilter?.setValue(outlineImage?.outputImage, forKey: kCIInputImageKey)
-                    overFilter?.setValue(subjectWithShadow?.outputImage, forKey: kCIInputBackgroundImageKey)
+                    overFilter?.setValue(subjectWithAura?.outputImage, forKey: kCIInputBackgroundImageKey)
 
                     // ABSOLUTE 100.00% OUTER SAFETY GUARD: Mask final render by softShadowMask so NOTHING outside shadow bounds can ever render!
                     let finalSafetyGuard = CIFilter(name: "CIBlendWithMask")
