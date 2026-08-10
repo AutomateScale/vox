@@ -2422,7 +2422,7 @@ function showWebcamOverlay()
     local alienY = (mainScreen.h - alienPos.y) - 35
 
     -- 2. Calculate Active Focused Window Bottom-Right Docking Frame
-    local size = C.screenRecWebcamSize or 1040 -- Doubled 1040pt 5.75M 4K Ultra Cinema Default (2912x1976 Retina physical pixels!)
+    local size = C.screenRecWebcamSize or 380 -- Clean 380pt default
     local width = size * 1.4
     local height = size * 0.95
     local targetX, targetY
