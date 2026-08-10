@@ -18,10 +18,16 @@ no surprise platform updates. You own every line of it.
 | Personal memory + knowledge graph | **Yes, local, browsable** | No | Style memory | Custom dictionary |
 | Voice actions (apps, screenshots…) | **Yes, deterministic** | Text edits only | No | No |
 | Works offline | **Yes** | No | No | No |
+| **Voom**: screen recording + AI presenter cutout | **Yes — built in, free** | No | No | No |
 | Platforms | macOS | Mac/Win/iOS/Android | Mac/Win | Mac/Win |
 
 *Competitor pricing/features as of August 2026 from public pages — tell us if
 they've changed; an honest comparison is the only useful kind.*
+
+**Voom** (⌥⇧R or just say *"Voom"*) also covers what [Loom](https://www.loom.com)
+charges $15–18/user/mo for — screen recording with voice narration — plus the
+transparent AI person-cutout overlay that is mmhmm's flagship feature. Local,
+instant MP4s, no upload, no seat license.
 
 ## How it works
 
