@@ -2415,11 +2415,20 @@ function showWebcamOverlay()
   if hs.fs.attributes(camBin) then
     os.execute("/usr/bin/killall cam-bin 2>/dev/null")
 
-    -- 1. Calculate Alien Hub Origin (Floating Widget)
+    -- 1. Calculate Alien Hub Origin. C.alienPos is the position PREFERENCE
+    -- table ({window=true,...}), NOT coordinates — reading .x off it nil-
+    -- crashed this entire path (cam button did nothing). Use the actual
+    -- mini-alien canvas frame when visible; else bottom-center fallback.
     local mainScreen = hs.screen.mainScreen():frame()
-    local alienPos = C.alienPos or { x = mainScreen.w / 2, y = mainScreen.h / 2 }
-    local alienX = alienPos.x + 35
-    local alienY = (mainScreen.h - alienPos.y) - 35
+    local ax, ay = mainScreen.w / 2, mainScreen.h - 120
+    local ok, mf = pcall(function()
+      if mini and mini.canvas and mini.canvas:isShowing() then
+        return mini.canvas:frame()
+      end
+    end)
+    if ok and mf then ax, ay = mf.x + mf.w, mf.y end
+    local alienX = ax + 35
+    local alienY = (mainScreen.h - ay) - 35
 
     -- 2. Calculate Active Focused Window Bottom-Right Docking Frame
     local size = C.screenRecWebcamSize or 380 -- Clean 380pt default
@@ -2456,21 +2465,37 @@ function showWebcamOverlay()
   end
 end
 
-function cycleCameraDevice()
-  local currentIdx = hs.settings.get('vox.pref.camDeviceIndex') or 0
-  local nextIdx = currentIdx + 1
-  if nextIdx > 4 then nextIdx = 0 end -- Cycle through up to 5 connected camera indices
+function listCameraDevices()
+  local camBin = HOME .. "/vox/cam-bin"
+  local names = {}
+  local p = io.popen("'" .. camBin .. "' --list 2>/dev/null")
+  if p then
+    for line in p:lines() do
+      local idx, name = line:match("^(%d+)\t(.+)$")
+      if idx then names[tonumber(idx) + 1] = name end
+    end
+    p:close()
+  end
+  return names
+end
 
+function cycleCameraDevice()
+  local cams = listCameraDevices()
+  local count = math.max(#cams, 1)
+  local currentIdx = hs.settings.get('vox.pref.camDeviceIndex') or 0
+  local nextIdx = (currentIdx + 1) % count
   hs.settings.set('vox.pref.camDeviceIndex', nextIdx)
-  
+
+  local label = cams[nextIdx + 1] or ("Camera #" .. tostring(nextIdx + 1))
   local p2 = io.popen("pgrep -f cam-bin")
   local isRunning = (p2 and p2:read("*a") or "") ~= ""
   if p2 then p2:close() end
-  
+
   if isRunning then
     showWebcamOverlay()
+    hs.alert.show("📷 " .. label .. " (" .. (nextIdx + 1) .. "/" .. count .. ")", 1.8)
   else
-    hs.alert.show("📷 Selected Camera #" .. tostring(nextIdx + 1) .. " (⌥⇧C to start)", 1.8)
+    hs.alert.show("📷 " .. label .. " (" .. (nextIdx + 1) .. "/" .. count .. ") — ⌥⇧C to start", 1.8)
   end
 end
 

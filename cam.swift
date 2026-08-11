@@ -838,6 +838,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         let args = CommandLine.arguments
         for i in 0..<args.count {
+            if args[i] == "--list" {
+                for (idx, dev) in AVCaptureDevice.devices(for: .video).enumerated() {
+                    print("\(idx)\t\(dev.localizedName)")
+                }
+                exit(0)
+            }
             if args[i] == "--size", i + 1 < args.count, let s = Double(args[i+1]) {
                 size = CGFloat(s)
             }
