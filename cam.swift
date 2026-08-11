@@ -874,6 +874,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// --list runs BEFORE the single-instance guard: it's a query, not an
+// instance — it must work even while a presenter window is up (the
+// camera cycler depends on it).
+if CommandLine.arguments.contains("--list") {
+    for (idx, dev) in AVCaptureDevice.devices(for: .video).enumerated() {
+        print("\(idx)\t\(dev.localizedName)")
+    }
+    exit(0)
+}
+
 // Single instance enforcement guard (Exact PID filtering)
 let myPID = getpid()
 let duplicateCount = NSWorkspace.shared.runningApplications.filter { app in
@@ -881,8 +891,17 @@ let duplicateCount = NSWorkspace.shared.runningApplications.filter { app in
 }.count
 
 if duplicateCount > 0 {
-    logMsg("cam-bin is already running (PID != \(myPID)). Terminating duplicate instance.")
-    exit(0)
+    // The launcher killalls the old instance right before spawning us —
+    // the corpse can still be in the process table. Wait it out once.
+    Thread.sleep(forTimeInterval: 0.6)
+    let stillThere = NSWorkspace.shared.runningApplications.filter { app in
+        return app.executableURL?.lastPathComponent == "cam-bin" && app.processIdentifier != myPID
+    }.count
+    if stillThere > 0 {
+        logMsg("cam-bin is already running (PID != \(myPID)). Terminating duplicate instance.")
+        exit(0)
+    }
+    logMsg("previous instance finished dying — continuing as the only cam-bin")
 }
 
 let app = NSApplication.shared
