@@ -767,9 +767,54 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     finalSafetyGuard?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     finalSafetyGuard?.setValue(softShadowMask, forKey: kCIInputMaskImageKey)
 
-                    if let blended = finalSafetyGuard?.outputImage {
-                        finalImage = blended
+                    var stagedFinal = finalSafetyGuard?.outputImage ?? finalImage
+
+                    // BUST MODE: when the presenter window floats mid-page
+                    // (not hugging the screen bottom), the hard crop line
+                    // looks wrong — dissolve the lower body smoothly like a
+                    // bust emerging from the page, and set a soft glowing
+                    // pedestal ellipse (mode color) underneath. Docked at
+                    // the bottom edge -> classic hard cut, untouched.
+                    let winBottomY = self.window?.frame.origin.y ?? 0
+                    if winBottomY > 80 {
+                        let ext = inputCIImage.extent
+                        if let fade = CIFilter(name: "CISmoothLinearGradient") {
+                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.06), forKey: "inputPoint0")
+                            fade.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 0), forKey: "inputColor0")
+                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.40), forKey: "inputPoint1")
+                            fade.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor1")
+                            if let grad = fade.outputImage?.cropped(to: ext) {
+                                let bustBlend = CIFilter(name: "CIBlendWithMask")
+                                bustBlend?.setValue(stagedFinal, forKey: kCIInputImageKey)
+                                bustBlend?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                                bustBlend?.setValue(grad, forKey: kCIInputMaskImageKey)
+                                if let faded = bustBlend?.outputImage {
+                                    stagedFinal = faded
+                                }
+                            }
+                        }
+                        // pedestal glow: squashed radial in the mode's aura color
+                        let pedY = ext.height * 0.14
+                        let squash: CGFloat = 0.28
+                        if let radial = CIFilter(name: "CIRadialGradient") {
+                            radial.setValue(CIVector(x: ext.midX, y: pedY / squash), forKey: "inputCenter")
+                            radial.setValue(10, forKey: "inputRadius0")
+                            radial.setValue(ext.width * 0.34, forKey: "inputRadius1")
+                            radial.setValue(CIColor(red: auraR, green: auraG, blue: auraB, alpha: 0.40), forKey: "inputColor0")
+                            radial.setValue(CIColor(red: auraR, green: auraG, blue: auraB, alpha: 0.0), forKey: "inputColor1")
+                            if let ped = radial.outputImage?
+                                .transformed(by: CGAffineTransform(scaleX: 1.0, y: squash))
+                                .cropped(to: ext) {
+                                let over = CIFilter(name: "CISourceOverCompositing")
+                                over?.setValue(stagedFinal, forKey: kCIInputImageKey)
+                                over?.setValue(ped, forKey: kCIInputBackgroundImageKey)
+                                if let together = over?.outputImage {
+                                    stagedFinal = together
+                                }
+                            }
+                        }
                     }
+                    finalImage = stagedFinal
             }
         }
         
