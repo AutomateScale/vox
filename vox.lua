@@ -2118,20 +2118,33 @@ function startScreenRecording()
     end
   end
 
-  local screenDeviceInput = tostring(targetScreenIndex) .. ":none"
+  -- avfoundation indexes CAMERAS FIRST, then screens — a bare numeric
+  -- index recorded the Cam Link feed (or died on a sleeping Camo device)
+  -- on multi-camera rigs, leaving ZERO files. Address the screen by NAME
+  -- ("Capture screen N"), which is camera-count-proof. And capture the
+  -- default mic — Voom promises narration; ":none" shipped silent takes.
+  local screenCapName = "Capture screen " .. tostring(targetScreenIndex - 1)
+  local micDev = hs.audiodevice.defaultInputDevice()
+  local micName = micDev and micDev:name() or nil
+  local screenDeviceInput = screenCapName .. ":" .. (micName or "0")
 
   local args = {
     "-f", "avfoundation",
     "-pixel_format", "nv12",
+    "-framerate", "30",
     "-i", screenDeviceInput,
     "-vf", "scale=2560:-2",
     "-c:v", "h264_videotoolbox",
     "-allow_sw", "1",
     "-b:v", "6M",
+    "-ac", "1",              -- multitrack interfaces (RODECaster: 14ch) crash AAC without a downmix
+    "-c:a", "aac",
+    "-b:a", "96k",
     "-movflags", "+frag_keyframe+empty_moov",
     "-y",
     screenRec.outputPath
   }
+  log("Voom capture: [" .. screenDeviceInput .. "] -> " .. screenRec.outputPath)
 
   screenRec.task = hs.task.new(ffmpegBin, function(code, stdOut, stdErr)
     log("ffmpeg finished code: " .. tostring(code) .. " stdErr: " .. tostring(stdErr))
