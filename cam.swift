@@ -476,7 +476,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
 
-                                if smoothedVal >= 0.18 {
+                                if smoothedVal >= 0.28 {
                                     if x < rowMin[y] { rowMin[y] = x }
                                     if x > rowMax[y] { rowMax[y] = x }
                                     if y < globalMinY { globalMinY = y }
@@ -540,12 +540,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 var finalByte: UInt8 = 0
                                 if isBodyRow && x >= minAllowedX && x <= maxAllowedX {
                                     let smoothedVal = self.prevMaskData![flatOffset + x]
-                                    if smoothedVal >= 0.16 {
-                                        if smoothedVal >= 0.68 {
+                                    // Low-Light Dark Room Noise Gate (Erases dark background specks & locks smooth borders)
+                                    if smoothedVal >= 0.32 {
+                                        if smoothedVal >= 0.78 {
                                             finalByte = 255
                                         } else {
-                                            let t = (smoothedVal - 0.16) / (0.68 - 0.16)
-                                            let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite
+                                            let t = (smoothedVal - 0.32) / (0.78 - 0.32)
+                                            let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite Sigmoid
                                             finalByte = UInt8(clamping: Int(smoothstep * 255.0))
                                         }
                                     }
