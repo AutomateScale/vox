@@ -2069,10 +2069,31 @@ function toggleScreenRecording()
 end
 _G.toggleScreenRecording = toggleScreenRecording
 
-function startScreenRecording()
+function startScreenRecording(windowOnly)
   if screenRec.active then
     stopScreenRecording()
     return
+  end
+  -- WINDOW-SCOPED VOOM: capture the screen but CROP to the focused
+  -- window's frame (avfoundation can't grab a single window; a pixel
+  -- crop is visually identical). Coordinates are scaled to physical
+  -- pixels and snapped to even numbers for h264.
+  screenRec.cropRect = nil
+  if windowOnly then
+    local win = hs.window.focusedWindow()
+    local scr = win and win:screen()
+    if win and scr then
+      local wf, sf = win:frame(), scr:fullFrame()
+      local scale = scr:currentMode() and scr:currentMode().scale or 2.0
+      local cx = math.max(0, math.floor((wf.x - sf.x) * scale / 2) * 2)
+      local cy = math.max(0, math.floor((wf.y - sf.y) * scale / 2) * 2)
+      local cw = math.floor(wf.w * scale / 2) * 2
+      local ch = math.floor(wf.h * scale / 2) * 2
+      screenRec.cropRect = { x = cx, y = cy, w = cw, h = ch }
+      screenRec.cropScreen = scr
+    else
+      hs.alert.show("⚠️ No focused window — recording full screen", 2)
+    end
   end
 
   local recDir = C.screenRecDir or (HOME .. "/Movies/VoxRecordings")
@@ -2108,7 +2129,7 @@ function startScreenRecording()
   if not hs.fs.attributes(ffmpegBin) then ffmpegBin = "/opt/homebrew/bin/ffmpeg" end
   if not hs.fs.attributes(ffmpegBin) then ffmpegBin = "/usr/bin/ffmpeg" end
 
-  local activeScreen = hs.mouse.getCurrentScreen() or hs.screen.mainScreen()
+  local activeScreen = screenRec.cropScreen or hs.mouse.getCurrentScreen() or hs.screen.mainScreen()
   local allScreens = hs.screen.allScreens()
   local targetScreenIndex = 1
   for idx, scr in ipairs(allScreens) do
@@ -2133,7 +2154,11 @@ function startScreenRecording()
     "-pixel_format", "nv12",
     "-framerate", "30",
     "-i", screenDeviceInput,
-    "-vf", "scale=2560:-2",
+    "-vf", (screenRec.cropRect
+      and string.format("crop=%d:%d:%d:%d,scale='min(2560,iw)':-2",
+        screenRec.cropRect.w, screenRec.cropRect.h,
+        screenRec.cropRect.x, screenRec.cropRect.y)
+      or "scale=2560:-2"),
     "-c:v", "h264_videotoolbox",
     "-allow_sw", "1",
     "-b:v", "6M",
@@ -2146,16 +2171,26 @@ function startScreenRecording()
   }
   log("Voom capture: [" .. screenDeviceInput .. "] -> " .. screenRec.outputPath)
 
+  screenRec.recConfirmed = false
   screenRec.task = hs.task.new(ffmpegBin, function(code, stdOut, stdErr)
     log("ffmpeg finished code: " .. tostring(code) .. " stdErr: " .. tostring(stdErr))
     if code ~= 0 then
       os.execute("echo 'FFMPEG ERR (" .. tostring(code) .. "): " .. (stdErr or ""):gsub("'", "") .. "' >> /tmp/vox_ffmpeg.log")
     end
+  end, function(task, so, se)
+    -- avfoundation takes 1-2s to warm up; the old alert claimed
+    -- 'Started' instantly, which read as lag/brokenness. Announce only
+    -- when ffmpeg reports actual captured time.
+    if not screenRec.recConfirmed and ((se or "") .. (so or "")):find("time=") then
+      screenRec.recConfirmed = true
+      play("start")
+      hs.alert.show("🔴 REC — capturing" .. (screenRec.cropRect and " (window)" or "") .. "  (⌥⇧R to stop)", 2.0)
+    end
+    return screenRec.active == true
   end, args)
 
   screenRec.task:start()
-  play("start")
-  hs.alert.show("🎥 Voom Started (⌥⇧R to stop)", 2.0)
+  hs.alert.show("🎥 Voom warming up…", 1.2)
 
   -- 3. Create Screen Recording HUD Widget
   local mainScreen = hs.screen.mainScreen()
@@ -2513,6 +2548,7 @@ function cycleCameraDevice()
 end
 
 hs.hotkey.bind({"option", "shift"}, "V", cycleCameraDevice)
+hs.hotkey.bind({"option", "shift"}, "W", function() startScreenRecording(true) end)
 
 function hideWebcamOverlay()
   if screenRec.camTask then
