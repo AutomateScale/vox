@@ -76,6 +76,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }()
     var trackedBodyRect: CGRect? = nil
     var prevMaskData: [Float]? = nil
+    var segFrameCounter: Int = 0          // adaptive segmentation cadence
+    var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
     var filterMode: String = "mint"
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
@@ -434,6 +436,18 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             finalImage = rawBlend?.outputImage ?? inputCIImage
         } else {
             // Neural Segmentation Modes: mint, hero, goddess, cyber
+            let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
+            // ADAPTIVE SEGMENTATION CADENCE: when the silhouette is still
+            // (talking-head mode — most of any recording), run the ML
+            // segmentation + CPU mask passes on every 3rd frame and reuse
+            // the cached matte between. Mask staleness is capped at ~0.1s;
+            // the raw VIDEO under the matte still refreshes every frame.
+            // High motion -> every frame, exactly as before.
+            self.segFrameCounter &+= 1
+            let runSeg = self.cachedCleanMask == nil
+                      || self.currentMotionVelocity > 0.006
+                      || (self.segFrameCounter % 3 == 0)
+            if runSeg {
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
             do {
                 try handler.perform([segmentationRequest])
@@ -590,8 +604,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.02), forKey: "inputBiasVector")
                     let rawCleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanScaledMask
 
-                    let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
-
                     // 2. HARD SPATIAL ERASURE: Erase ALL pixels outside the Dynamic Humanoid Movement Envelope
                     var cleanMask = rawCleanMask
                     if let bRect = self.trackedBodyRect {
@@ -611,6 +623,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         multiplyFilter?.setValue(spatialMask, forKey: kCIInputBackgroundImageKey)
                         cleanMask = multiplyFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawCleanMask
                     }
+                    self.cachedCleanMask = cleanMask
+                }
+            } catch {
+                logMsg("Segmentation error: \(error)")
+            }
+            }
+            // PHASE 2 — compositing runs EVERY frame (all GPU) from the
+            // freshest matte, so the live video never freezes even when
+            // segmentation is coasting on the cache.
+            if let cleanMask = self.cachedCleanMask {
 
                     // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
                     let maxFilter = CIFilter(name: "CIMorphologyMaximum")
@@ -708,11 +730,25 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     auraWithShadow?.setValue(auraImage?.outputImage, forKey: kCIInputImageKey)
                     auraWithShadow?.setValue(shadowImage?.outputImage, forKey: kCIInputBackgroundImageKey)
 
+                    // MATTE REFINEMENT: erode 1px then feather 0.8px — pulls the
+                    // matte just inside the true silhouette so no background
+                    // fringe halos around hair/fingers (the "sticker" tell).
+                    // Only the SUBJECT matte: outline/shadow/aura keep the
+                    // crisp geometry mask above.
+                    let matteErode = CIFilter(name: "CIMorphologyMinimum")
+                    matteErode?.setValue(cleanMask, forKey: kCIInputImageKey)
+                    matteErode?.setValue(1, forKey: kCIInputRadiusKey)
+                    let matteEroded = matteErode?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanMask
+                    let matteFeather = CIFilter(name: "CIGaussianBlur")
+                    matteFeather?.setValue(matteEroded, forKey: kCIInputImageKey)
+                    matteFeather?.setValue(0.8, forKey: kCIInputRadiusKey)
+                    let subjectMatte = matteFeather?.outputImage?.cropped(to: inputCIImage.extent) ?? matteEroded
+
                     // 100% Baseline Subject Cutout (Zero color or light modifications)
                     let cutoutFilter = CIFilter(name: "CIBlendWithMask")
                     cutoutFilter?.setValue(inputCIImage, forKey: kCIInputImageKey)
                     cutoutFilter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                    cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                    cutoutFilter?.setValue(subjectMatte, forKey: kCIInputMaskImageKey)
                     let subjectCutout = cutoutFilter?.outputImage ?? inputCIImage
 
                     // Composite Subject Cutout OVER Aura + Shadow
@@ -734,9 +770,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     if let blended = finalSafetyGuard?.outputImage {
                         finalImage = blended
                     }
-                }
-            } catch {
-                logMsg("Segmentation error: \(error)")
             }
         }
         
