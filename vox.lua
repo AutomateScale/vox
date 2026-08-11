@@ -2519,7 +2519,14 @@ function hideWebcamOverlay()
     screenRec.camTask:terminate()
     screenRec.camTask = nil
   end
+  -- TERM, then guaranteed KILL: a cam-bin wedged on a dead virtual camera
+  -- survived killall for hours, making every toggle report "OFF" against
+  -- an invisible ghost
   os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+  timers.camKill = hs.timer.doAfter(0.8, function()
+    timers.camKill = nil
+    os.execute("/usr/bin/killall -9 cam-bin 2>/dev/null")
+  end)
   hs.alert.show("📹 Presenter Camera Overlay OFF", 1.5)
 end
 
