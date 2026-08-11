@@ -5444,6 +5444,29 @@ menubar:setMenu(function()
         pref("alienPlayByPlay", not C.alienPlayByPlay)
         hs.alert.show("Alien play-by-play: " .. (C.alienPlayByPlay and "ON" or "OFF"), 1.5)
       end },
+    { title = "🎥 Voom camera", menu = (function()
+        local items = {}
+        local cams = listCameraDevices()
+        local cur = hs.settings.get('vox.pref.camDeviceIndex') or 0
+        if #cams == 0 then
+          items[1] = { title = "No cameras found", disabled = true }
+        end
+        for i, name in ipairs(cams) do
+          items[#items + 1] = {
+            title = name,
+            checked = (i - 1) == cur,
+            fn = function()
+              hs.settings.set('vox.pref.camDeviceIndex', i - 1)
+              hs.alert.show("📷 " .. name, 1.5)
+              local p = io.popen("pgrep -f cam-bin")
+              local running = (p and p:read("*a") or "") ~= ""
+              if p then p:close() end
+              if running then showWebcamOverlay() end  -- live-switch
+            end,
+          }
+        end
+        return items
+      end)() },
     { title = "Live word-by-word typing (experimental)", checked = C.convLive,
       fn = function()
         pref("convLive", not C.convLive)
