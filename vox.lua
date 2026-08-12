@@ -3785,6 +3785,51 @@ local function collapseRepeats(text)
   return table.concat(out)
 end
 
+-- Voom by voice: the sales page promises "just say Voom" — these keep it
+-- true on every path (hold-key dictation, Hey Vox, conversation mode).
+-- EXACT whole-utterance match only, so dictating a sentence that merely
+-- contains "voom" can never hijack a recording.
+VOOM_PHRASES = {  -- global: main-chunk local limit (see GLOBALS-BY-DESIGN note)
+  ["voom"] = "start", ["vroom"] = "start", ["start voom"] = "start",
+  ["voom start"] = "start", ["start the voom"] = "start",
+  ["record screen"] = "start", ["record the screen"] = "start",
+  ["record my screen"] = "start", ["start screen recording"] = "start",
+  ["start recording screen"] = "start", ["start recording the screen"] = "start",
+  ["start recording my screen"] = "start",
+  ["voom window"] = "start_window", ["voom this window"] = "start_window",
+  ["record window"] = "start_window", ["record this window"] = "start_window",
+  ["record the window"] = "start_window",
+  ["stop voom"] = "stop", ["voom stop"] = "stop", ["end voom"] = "stop",
+  ["stop recording"] = "stop", ["stop the recording"] = "stop",
+  ["stop screen recording"] = "stop", ["stop the screen recording"] = "stop",
+  ["end recording"] = "stop", ["end screen recording"] = "stop",
+  ["save recording"] = "stop", ["save the recording"] = "stop",
+  ["cancel voom"] = "cancel", ["cancel recording"] = "cancel",
+  ["cancel the recording"] = "cancel", ["scrap recording"] = "cancel",
+  ["scrap the recording"] = "cancel",
+}
+function voomCommand(text)  -- global: same reason
+  local bare = text:lower():gsub("^[%p%s]+", ""):gsub("[%p%s]+$", ""):gsub("%s+", " ")
+  return VOOM_PHRASES[bare]
+end
+VOOM_LABELS = { start = "Voom — recording", start_window = "Voom — this window",
+                      stop = "Voom — saving", cancel = "Voom — cancelled" }
+function execVoom(act)  -- global: same reason
+  if act == "start" or act == "start_window" then
+    if screenRec.active then
+      stopScreenRecording()          -- spoken "voom" toggles when already rolling
+    else
+      startScreenRecording(act == "start_window")
+    end
+  elseif act == "stop" then
+    if screenRec.active then stopScreenRecording()
+    else hs.alert.show("🎥 Voom isn't recording", 1.4) end
+  elseif act == "cancel" then
+    if screenRec.active then cancelScreenRecording()
+    else hs.alert.show("🎥 Voom isn't recording", 1.4) end
+  end
+end
+
 -- spoken commands: deterministic, pattern-matched voice control
 local function applyVoiceCommands(text)
   if not C.voiceCommands then return text, nil end
@@ -3807,6 +3852,11 @@ local function applyVoiceCommands(text)
   }
   if UNDO_PHRASES[bare] then
     return "", "undo"
+  end
+
+  local voomAct = VOOM_PHRASES[bare]
+  if voomAct then
+    return "", { fn = function() execVoom(voomAct) end, label = VOOM_LABELS[voomAct] }
   end
 
   -- Navigation: Back / Forward / Refresh
@@ -4307,6 +4357,13 @@ function convTranscribe(chunk)
     text = cleanFillers(text)
     text = collapseRepeats(text)
     local cleaned, trig = parseSendTrigger(text)
+    local vAct = C.voiceCommands and voomCommand(cleaned) or nil
+    if vAct and not trig then
+      log("conv chunk: voom voice command (" .. vAct .. ")")
+      hs.alert.show("🎥 " .. VOOM_LABELS[vAct], 1.4)
+      execVoom(vAct)
+      return
+    end
     if #cleaned > 0 then convLastTail = cleaned:sub(-160) end
     log("conv chunk: " .. (trig and ("[" .. trig .. "] ") or "") .. cleaned:sub(1, 60))
     if #cleaned > 0 then insertText(cleaned) end
@@ -4537,6 +4594,16 @@ function convTranscribeLive(chunk)
     text = applyCorrections(text)
     text = text:gsub("%s*%.%.%.+", ""):gsub("%s*…+", ""):gsub("%s+", " ")
     local cleaned, trig = parseSendTrigger(text)
+    local vAct = C.voiceCommands and voomCommand(cleaned) or nil
+    if vAct and not trig then
+      liveSync("", true)            -- erase the partial-typed command word
+      convLedger = convLedger .. convTypedBuf
+      convTypedBuf = ""
+      log("live final: voom voice command (" .. vAct .. ")")
+      hs.alert.show("🎥 " .. VOOM_LABELS[vAct], 1.4)
+      execVoom(vAct)
+      return
+    end
     liveSync(cleaned, true)
     if #cleaned > 0 then
       convLastTail = cleaned:sub(-160)
