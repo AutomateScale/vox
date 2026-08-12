@@ -6184,6 +6184,16 @@ local function warmUp()
   hudDance()          -- heartbeat you can see: a subtle groove per ping
 end
 
+-- STALE SETTINGS SWEEP: every reload orphans an open Settings window —
+-- it looks alive but its controls post into a DEAD Lua session, so
+-- every click silently does nothing ('X don't work' reports). Close any
+-- orphans at boot; the user reopens a live one from the menu.
+for _, w in ipairs(hs.window.allWindows()) do
+  pcall(function()
+    if w:title() == "Vox Settings" then w:close() end
+  end)
+end
+
 M.wakeWatcher = hs.caffeinate.watcher.new(function(ev)
   if ev == hs.caffeinate.watcher.systemDidWake
      or ev == hs.caffeinate.watcher.screensDidUnlock then

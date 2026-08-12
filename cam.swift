@@ -318,6 +318,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     private func setupCamera(requestedDevice: String? = nil) {
+        logMsg("Config: mode=\(filterMode) shape=\(rawShape) framing=\(framing) follow=\(followEnabled)")
         logMsg("Setting up camera session with requested device: \(requestedDevice ?? "default")...")
         let session = AVCaptureSession()
         
@@ -429,7 +430,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             }
         }
         
-        let inputCIImage = denoisedCIImage
+        var inputCIImage = denoisedCIImage
+        // RAW/CHROMA: apply the framing crop FIRST, dead-center — the shape
+        // masks then build on final geometry and are centered by
+        // construction in every framing (no tracking exists in these modes,
+        // so nothing can shove the crop around).
+        let isSegMode = !(self.filterMode == "raw" || self.filterMode == "off"
+                       || self.filterMode == "chroma" || self.filterMode == "keygreen")
+        if !isSegMode && (self.framing == "tall" || self.framing == "square") {
+            let fext = inputCIImage.extent
+            let w = fext.height * (self.framing == "square" ? 1.0 : 0.75)
+            let x = fext.midX - w / 2
+            let rect = CGRect(x: x, y: fext.minY, width: w, height: fext.height)
+            inputCIImage = inputCIImage.cropped(to: rect)
+                .transformed(by: CGAffineTransform(translationX: -rect.origin.x, y: -rect.origin.y))
+        }
         var finalImage: CIImage = inputCIImage
         
         // REAL GREEN-SCREEN CHROMA KEY: 'chroma'/'keygreen' previously fell
@@ -934,7 +949,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         // person horizontally (smoothed) — full sensor height on screen, and
         // the subject can roam the camera's whole field of view while the
         // crop keeps them centered. Pure crop: zero distortion.
-        if self.framing == "tall" || self.framing == "square" {
+        if isSegMode && (self.framing == "tall" || self.framing == "square") {
             let fext = inputCIImage.extent
             var cx = fext.midX
             if self.followEnabled, let b = self.trackedBodyRect, b.size.width > 0 {
