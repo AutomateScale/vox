@@ -112,8 +112,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let screen = primaryScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         let margin: CGFloat = 35.0
         
-        let width = (framing == "tall") ? size * 0.75 : size
-        let height = size
+        let width = (framing == "tall") ? size * 0.75
+                  : (framing == "wide") ? size * 1.3 : size
+        let height = (framing == "wide") ? size * 0.75 : size
         
         var targetX: CGFloat = screen.minX + margin
         var targetY: CGFloat = screen.minY + margin
@@ -299,8 +300,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         guard let window = self.window, let contentView = window.contentView else { return }
         currentSize = newSize
         let frame = window.frame
-        let newWidth = (self.framing == "tall") ? newSize * 0.75 : newSize
-        let newHeight = newSize
+        let newWidth = (self.framing == "tall") ? newSize * 0.75
+                     : (self.framing == "wide") ? newSize * 1.3 : newSize
+        let newHeight = (self.framing == "wide") ? newSize * 0.75 : newSize
         let newRect = NSRect(x: frame.minX, y: frame.minY, width: newWidth, height: newHeight)
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
@@ -930,14 +932,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         // person horizontally (smoothed) — full sensor height on screen, and
         // the subject can roam the camera's whole field of view while the
         // crop keeps them centered. Pure crop: zero distortion.
-        if self.framing == "tall" {
+        if self.framing == "tall" || self.framing == "square" {
             let fext = inputCIImage.extent
             var cx = fext.midX
             if let b = self.trackedBodyRect, b.size.width > 0 {
                 cx = (b.origin.x + b.size.width / 2) * fext.width
             }
             self.followX = (self.followX == 0) ? cx : (self.followX * 0.88 + cx * 0.12)
-            let w = fext.height * 0.75
+            // square = full sensor height at 1:1 (max width that keeps it);
+            // tall = tighter 3:4 portrait
+            let w = fext.height * (self.framing == "square" ? 1.0 : 0.75)
             let x = max(fext.minX, min(fext.maxX - w, self.followX - w / 2))
             let rect = CGRect(x: x, y: fext.minY, width: w, height: fext.height)
             finalImage = finalImage.cropped(to: rect)
