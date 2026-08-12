@@ -2119,10 +2119,7 @@ function startScreenRecording(windowOnly)
     if hs.fs.attributes(camBin) then
       screenRec.camTask = hs.task.new(camBin, function(code)
         log("camTask exit code: " .. tostring(code))
-      end, {
-        "--size", tostring(C.screenRecWebcamSize or 520),
-        "--position", C.screenRecWebcamPos or "bottom-left"
-      })
+      end, voxCamArgs({ "--position", C.screenRecWebcamPos or "bottom-left" }))
       screenRec.camTask:start()
     end
   end
@@ -2328,10 +2325,8 @@ function startScreenRecording(windowOnly)
         elseif C.screenRecWebcam then
           local camBin = HOME .. "/vox/cam-bin"
           if hs.fs.attributes(camBin) then
-            screenRec.camTask = hs.task.new(camBin, nil, {
-              "--size", tostring(C.screenRecWebcamSize or 520),
-              "--position", C.screenRecWebcamPos or "bottom-left"
-            })
+            screenRec.camTask = hs.task.new(camBin, nil,
+              voxCamArgs({ "--position", C.screenRecWebcamPos or "bottom-left" }))
             screenRec.camTask:start()
           end
         end
@@ -2457,6 +2452,19 @@ function cancelScreenRecording()
   hs.alert.show("🗑️ Recording cancelled", 1.5)
 end
 
+-- ONE canonical presenter arg list — every spawn site uses this, so
+-- Settings choices (camera, mode, shape, size) apply everywhere.
+function voxCamArgs(extra)
+  local args = {
+    "--size", tostring(C.screenRecWebcamSize or 520),
+    "--mode", C.screenRecBgMode or "mint",
+    "--shape", C.screenRecShape or "circle",
+    "--device", tostring(hs.settings.get('vox.pref.camDeviceIndex') or 0),
+  }
+  for _, v in ipairs(extra or {}) do args[#args + 1] = v end
+  return args
+end
+
 function showWebcamOverlay()
   local camBin = HOME .. "/vox/cam-bin"
   local camSwift = HOME .. "/vox/cam.swift"
@@ -2497,21 +2505,15 @@ function showWebcamOverlay()
       targetY = 35
     end
 
-    local camIdx = tostring(hs.settings.get('vox.pref.camDeviceIndex') or 0)
-
     screenRec.camTask = hs.task.new(camBin, function(code)
       log("camTask exit code: " .. tostring(code))
-    end, {
-      "--size", tostring(size),
+    end, voxCamArgs({
       "--position", C.screenRecWebcamPos or "bottom-right",
-      "--mode", C.screenRecBgMode or "mint",
-      "--shape", C.screenRecShape or "circle",
-      "--device", camIdx,
       "--alienX", tostring(alienX),
       "--alienY", tostring(alienY),
       "--targetX", tostring(targetX),
       "--targetY", tostring(targetY)
-    })
+    }))
     screenRec.camTask:start()
     hs.alert.show("🧞‍♂️ Presenter Camera ON (Camera #" .. tostring((tonumber(camIdx) or 0) + 1) .. ")", 1.5)
   end
@@ -6003,6 +6005,14 @@ window.addEventListener('keydown', function(e) {
       pref("soundTheme", v); loadSounds(); play("done")
     elseif k == "alienVoiceName" then
       pref("alienVoiceName", v); speakAlien("This is my voice now.")
+    elseif k == "screenRecShape" or k == "screenRecBgMode"
+        or k == "screenRecWebcamSize" then
+      pref(k, v)
+      local p = io.popen("pgrep -f cam-bin")
+      local running = (p and p:read("*a") or "") ~= ""
+      if p then p:close() end
+      if running then showWebcamOverlay() end   -- hot-apply
+      hs.alert.show("🎛 applied", 0.8)
     elseif k == "setkey" then
       local saved = hs.settings.get("vox.pref.actionKeys") or {}
       if v.clear then
