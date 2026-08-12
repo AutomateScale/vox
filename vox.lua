@@ -5399,6 +5399,7 @@ local function selfTest(interactive)
     local ok = (code == 0) and out
                and out:lower():gsub("[%-%.]", " "):find("self%s+test") ~= nil
     if ok then
+      M.stFails = 0
       noteTranscribeSuccess(secs)
       log(string.format("pipeline self-test PASSED in %.1fs via %s",
           secs, C.whisperHost))
@@ -5445,6 +5446,14 @@ local function selfTest(interactive)
         noteRemoteFail()               -- may lock to local
         timers.selfRetry = hs.timer.doAfter(3, function() selfTest(interactive) end)
       else
+        -- process-alive-but-port-dead wedge: serverRunning() passes, so
+        -- ensureServer() would never respawn. Two consecutive failures
+        -- means the listener is gone even if the pid isn't — force it.
+        M.stFails = (M.stFails or 0) + 1
+        if M.stFails >= 2 then
+          log("self-test failed " .. M.stFails .. "x — killing wedged whisper-server")
+          os.execute("/usr/bin/pkill -9 -f 'whisper-serve[r].*" .. C.serverPort .. "'")
+        end
         ensureServer()                 -- server may have died; heal + retry once
         if not timers.selfHealed then
           timers.selfHealed = hs.timer.doAfter(15, function()
