@@ -11,6 +11,23 @@ info() { printf "  ·  %s\n" "$1"; }
 echo "== Vox doctor =="
 
 echo "[1] Dependencies"
+# Voom (screen recording + presenter camera) checks
+if [ -x "$HOME/vox/cam-bin" ]; then
+  echo "  ok   cam-bin present (presenter camera ready)"
+else
+  if command -v swiftc >/dev/null 2>&1; then
+    echo "  FIX  cam-bin missing but swiftc exists — run: swiftc -O ~/vox/cam.swift -o ~/vox/cam-bin"
+  else
+    echo "  FIX  cam-bin missing and NO swiftc — run: xcode-select --install, then re-run ~/vox/install.sh (presenter camera needs this)"
+  fi
+fi
+SCR=$(sqlite3 ~/Library/"Application Support"/com.apple.TCC/TCC.db   "select auth_value from access where service='kTCCServiceScreenCapture' and client='org.hammerspoon.Hammerspoon';" 2>/dev/null)
+case "$SCR" in
+  2) echo "  ok   Hammerspoon has Screen Recording permission (Voom can capture)";;
+  0|1) echo "  FIX  Hammerspoon DENIED Screen Recording — System Settings > Privacy & Security > Screen Recording > enable Hammerspoon (Voom saves nothing without it)";;
+  *) echo "  info couldn't read Screen Recording TCC — check System Settings > Privacy & Security > Screen Recording for Hammerspoon";;
+esac
+
 for b in sox ffmpeg whisper-cli whisper-server; do
   [ -x "$BREW/$b" ] && ok "$b" || bad "$b missing — run: bash ~/vox/install.sh"
 done
