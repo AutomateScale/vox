@@ -5420,7 +5420,7 @@ if M and M.menubar then pcall(function() M.menubar:delete() end); M.menubar = ni
 if menubar then pcall(function() menubar:delete() end); menubar = nil end
 menubar = hs.menubar.new()
 menubar:setIcon(icons.idle, true)
-menubar:setMenu(function()
+function voxSettingsMenu()
   return {
     { title = "Vox — local dictation, by AutomateScale", fn = function()
         hs.urlevent.openURL("https://automatescale.com/vox")
@@ -5758,6 +5758,67 @@ menubar:setMenu(function()
         os.execute("/usr/bin/pkill -f 'whisper-serve[r].*" .. C.serverPort .. "'")
         timers.srvRestart = hs.timer.doAfter(1, ensureServer)
       end },
+  }
+end
+
+-- SLIM MENUBAR: Adam ('our menu navigation has gotten crazy') — only the
+-- verbs live at the top level; the entire old tree survives untouched
+-- under "⚙️ All Settings". A dedicated Settings WINDOW is the planned v2.
+menubar:setMenu(function()
+  local camItems = {}
+  do
+    local cams = listCameraDevices()
+    local cur = hs.settings.get('vox.pref.camDeviceIndex') or 0
+    if #cams == 0 then camItems[1] = { title = "No cameras found", disabled = true } end
+    for i, name in ipairs(cams) do
+      camItems[#camItems + 1] = { title = name, checked = (i - 1) == cur,
+        fn = function()
+          hs.settings.set('vox.pref.camDeviceIndex', i - 1)
+          hs.alert.show("📷 " .. name, 1.5)
+          local p = io.popen("pgrep -f cam-bin")
+          local running = (p and p:read("*a") or "") ~= ""
+          if p then p:close() end
+          if running then showWebcamOverlay() end
+        end }
+    end
+  end
+  return {
+    { title = "Hold " .. C.holdKeyName .. " to talk  ·  Fn+⌥ = conversation", disabled = true },
+    { title = "-" },
+    { title = convMode and "🟢 Conversation Mode — ON" or "⚪️ Conversation Mode", fn = function()
+        convMode = not convMode
+        convLedger, convTypedBuf = "", ""
+        convLastActivity = hs.timer.secondsSinceEpoch()
+        if convMode then
+          play("start")
+          hs.alert.show("👽 Conversation Mode ON — say 'send' to submit (Fn+⌥ to stop)", 2)
+          duckDown(true)
+          ensureServer()
+          if state == "recording" then convMode = false; cancelRecording(); convMode = true end
+          if state == "idle" then
+            convCalibrate(function()
+              if convMode and state == "idle" then locked = true; startRecording() end
+            end)
+          end
+        else
+          play("done")
+          hs.alert.show("Conversation Mode OFF", 1.5)
+          if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+          if timers.convRearm then timers.convRearm:stop(); timers.convRearm = nil end
+          if state == "recording" then stopRecording() end
+          duckUp()
+        end
+      end },
+    { title = (screenRec and screenRec.active) and "🛑 Stop Voom Recording (⌥⇧R)" or "🎬 Record Screen (⌥⇧R)",
+      fn = function() startScreenRecording() end },
+    { title = "🎯 Record Focused Window (⌥⇧W)", fn = function() startScreenRecording(true) end },
+    { title = "🧍 Presenter Camera on/off (⌥⇧C)", fn = function() toggleWebcamOverlay() end },
+    { title = "🎥 Camera", menu = camItems },
+    { title = "-" },
+    { title = "📂 Recordings Folder", fn = function()
+        hs.execute("open '" .. (C.screenRecDir or (HOME .. "/Movies/VoxRecordings")) .. "'")
+      end },
+    { title = "⚙️ All Settings", menu = voxSettingsMenu() },
   }
 end)
 
