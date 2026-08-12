@@ -60,6 +60,7 @@ local C = {
   screenRecDir        = HOME .. "/Movies/VoxRecordings",
   screenRecWebcamSize = 520,           -- presenter window scale (px-ish)
   screenRecShape      = "circle",      -- raw mode: circle|squircle|portrait|hex
+  screenRecFraming    = "wide",        -- wide (16:9) | tall (portrait, follows you)
   screenRecWebcam     = true,
   screenRecWebcamSize = 180,
   screenRecWebcamPos  = "bottom-left",
@@ -247,7 +248,7 @@ local PREFS = { "holdKeycode", "holdKeyName", "duckMode", "duckAudio", "convLive
                 "keepInClipboard", "llmCleanup", "translateTo",
                 "alienVoiceName", "soundTheme", "language", "memory",
                 "screenRecWebcam", "screenRecWebcamPos", "screenRecBgMode",
-                "screenRecWebcamSize", "screenRecShape" }
+                "screenRecWebcamSize", "screenRecShape", "screenRecFraming" }
 local function pref(key, val)
   C[key] = val
   hs.settings.set("vox.pref." .. key, val)
@@ -2459,6 +2460,7 @@ function voxCamArgs(extra)
     "--size", tostring(C.screenRecWebcamSize or 520),
     "--mode", C.screenRecBgMode or "mint",
     "--shape", C.screenRecShape or "circle",
+    "--framing", C.screenRecFraming or "wide",
     "--device", tostring(hs.settings.get('vox.pref.camDeviceIndex') or 0),
   }
   for _, v in ipairs(extra or {}) do args[#args + 1] = v end
@@ -5960,6 +5962,8 @@ function showVoxSettings()
   <div class="row"><span>Raw shape</span><select onchange="send('screenRecShape', this.value)">
     <option value="circle"%s>⭕ Circle</option><option value="squircle"%s>🔲 Squircle</option>
     <option value="portrait"%s>🖼 Portrait</option><option value="hex"%s>⬡ Hexagon</option></select></div>
+  <div class="row"><span>Framing</span><select onchange="send('screenRecFraming', this.value)">
+    <option value="wide"%s>Wide 16:9</option><option value="tall"%s>Tall — follows you</option></select></div>
   <div class="row"><span>Window size</span><select onchange="send('screenRecWebcamSize', parseInt(this.value))">
     <option value="380"%s>Compact</option><option value="520"%s>Standard</option>
     <option value="680"%s>Large</option><option value="840"%s>Huge</option></select></div>
@@ -6018,6 +6022,7 @@ window.addEventListener('keydown', function(e) {
     sel(C.screenRecBgMode, "cutout"), sel(C.screenRecBgMode, "chroma"), sel(C.screenRecBgMode, "raw"),
     sel(C.screenRecShape, "circle"), sel(C.screenRecShape, "squircle"),
     sel(C.screenRecShape, "portrait"), sel(C.screenRecShape, "hex"),
+    sel(C.screenRecFraming, "wide"), sel(C.screenRecFraming, "tall"),
     sel(C.screenRecWebcamSize, 380), sel(C.screenRecWebcamSize, 520),
     sel(C.screenRecWebcamSize, 680), sel(C.screenRecWebcamSize, 840),
     shortcutRows)
@@ -6039,7 +6044,7 @@ window.addEventListener('keydown', function(e) {
     elseif k == "alienVoiceName" then
       pref("alienVoiceName", v); speakAlien("This is my voice now.")
     elseif k == "screenRecShape" or k == "screenRecBgMode"
-        or k == "screenRecWebcamSize" then
+        or k == "screenRecWebcamSize" or k == "screenRecFraming" then
       pref(k, v)
       if k == "screenRecShape" and C.screenRecBgMode ~= "raw" then
         -- shape only shows in Raw style — don't blink the presenter for

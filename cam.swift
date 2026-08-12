@@ -84,6 +84,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevMaskData: [Float]? = nil
     var segFrameCounter: Int = 0          // adaptive segmentation cadence
     var rawShape: String = "circle"       // circle | squircle | portrait | hex
+    var framing: String = "wide"          // wide (16:9) | tall (portrait, follows you)
+    var followX: CGFloat = 0              // smoothed person-center for tall framing
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
     var filterMode: String = "mint"
@@ -98,10 +100,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevRowMaxData: [Int]? = nil
     var currentMotionVelocity: Double = 0.0
     
-    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle") {
+    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle", framing: String = "wide") {
         self.currentSize = size
         self.filterMode = filterMode
         self.rawShape = shape
+        self.framing = framing
         self.alienStartPoint = alienPoint
         self.deviceParam = deviceName
         
@@ -109,7 +112,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let screen = primaryScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         let margin: CGFloat = 35.0
         
-        let width = size          // square: equal roaming room every direction
+        let width = (framing == "tall") ? size * 0.75 : size
         let height = size
         
         var targetX: CGFloat = screen.minX + margin
@@ -296,7 +299,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         guard let window = self.window, let contentView = window.contentView else { return }
         currentSize = newSize
         let frame = window.frame
-        let newWidth = newSize
+        let newWidth = (self.framing == "tall") ? newSize * 0.75 : newSize
         let newHeight = newSize
         let newRect = NSRect(x: frame.minX, y: frame.minY, width: newWidth, height: newHeight)
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -923,6 +926,24 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             }
         }
         
+        // TALL FRAMING: center-crop the 16:9 feed to portrait and FOLLOW the
+        // person horizontally (smoothed) — full sensor height on screen, and
+        // the subject can roam the camera's whole field of view while the
+        // crop keeps them centered. Pure crop: zero distortion.
+        if self.framing == "tall" {
+            let fext = inputCIImage.extent
+            var cx = fext.midX
+            if let b = self.trackedBodyRect, b.size.width > 0 {
+                cx = (b.origin.x + b.size.width / 2) * fext.width
+            }
+            self.followX = (self.followX == 0) ? cx : (self.followX * 0.88 + cx * 0.12)
+            let w = fext.height * 0.75
+            let x = max(fext.minX, min(fext.maxX - w, self.followX - w / 2))
+            let rect = CGRect(x: x, y: fext.minY, width: w, height: fext.height)
+            finalImage = finalImage.cropped(to: rect)
+                .transformed(by: CGAffineTransform(translationX: -rect.origin.x, y: -rect.origin.y))
+        }
+
         guard let context = self.ciContext,
               let window = self.window else { return }
         
@@ -986,6 +1007,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         var devName: String? = nil
         var requestedShape = "circle"
+        var requestedFraming = "wide"
         
         let args = CommandLine.arguments
         for i in 0..<args.count {
@@ -1004,6 +1026,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if args[i] == "--shape", i + 1 < args.count {
                 requestedShape = args[i+1]
             }
+            if args[i] == "--framing", i + 1 < args.count {
+                requestedFraming = args[i+1]
+            }
             if args[i] == "--mode", i + 1 < args.count {
                 mode = args[i+1]
             }
@@ -1019,7 +1044,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let x = aX, let y = aY { alienPt = CGPoint(x: x, y: y) }
         if let x = tX, let y = tY { targetPt = CGPoint(x: x, y: y) }
         
-        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName, shape: requestedShape)
+        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName, shape: requestedShape, framing: requestedFraming)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()
