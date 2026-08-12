@@ -5,6 +5,12 @@ import CoreImage
 import Metal
 import QuartzCore
 
+enum CamState {
+    static var chromaCube: Data? = nil
+    static var hexMask: CIImage? = nil
+    static var hexMaskSize: CGSize = .zero
+}
+
 func logMsg(_ msg: String) {
     fputs("CAM_LOG: \(msg)\n", stderr)
     fflush(stderr)
@@ -77,6 +83,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var trackedBodyRect: CGRect? = nil
     var prevMaskData: [Float]? = nil
     var segFrameCounter: Int = 0          // adaptive segmentation cadence
+    var rawShape: String = "circle"       // circle | squircle | portrait | hex
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
     var filterMode: String = "mint"
@@ -91,9 +98,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevRowMaxData: [Int]? = nil
     var currentMotionVelocity: Double = 0.0
     
-    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil) {
+    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle") {
         self.currentSize = size
         self.filterMode = filterMode
+        self.rawShape = shape
         self.alienStartPoint = alienPoint
         self.deviceParam = deviceName
         
@@ -417,17 +425,96 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let inputCIImage = denoisedCIImage
         var finalImage: CIImage = inputCIImage
         
-        // RAW CAMERA CIRCLE VIEW: If mode is "raw" or "off", render 100% crisp raw camera feed in a floating circle window at 60 FPS!
-        if self.filterMode == "raw" || self.filterMode == "off" {
+        // REAL GREEN-SCREEN CHROMA KEY: 'chroma'/'keygreen' previously fell
+        // through to the ML cutout (label without implementation). A color
+        // cube zeroes alpha on green-dominant pixels — crisper edges and a
+        // fraction of the CPU when a physical green screen exists.
+        if self.filterMode == "chroma" || self.filterMode == "keygreen" {
+            if CamState.chromaCube == nil {
+                let size = 32
+                var cube = [Float](repeating: 0, count: size * size * size * 4)
+                var o = 0
+                for b in 0..<size {
+                    for g in 0..<size {
+                        for r in 0..<size {
+                            let rf = Float(r) / Float(size - 1)
+                            let gf = Float(g) / Float(size - 1)
+                            let bf = Float(b) / Float(size - 1)
+                            // green-dominant test with soft falloff
+                            let dominance = gf - max(rf, bf)
+                            let alpha: Float = dominance > 0.18 ? 0
+                                : (dominance > 0.08 ? (0.18 - dominance) / 0.10 : 1)
+                            cube[o] = rf * alpha; cube[o+1] = gf * alpha
+                            cube[o+2] = bf * alpha; cube[o+3] = alpha
+                            o += 4
+                        }
+                    }
+                }
+                CamState.chromaCube = cube.withUnsafeBufferPointer { Data(buffer: $0) }
+            }
+            if let cubeData = CamState.chromaCube,
+               let keyer = CIFilter(name: "CIColorCubeWithColorSpace") {
+                keyer.setValue(32, forKey: "inputCubeDimension")
+                keyer.setValue(cubeData, forKey: "inputCubeData")
+                keyer.setValue(CGColorSpace(name: CGColorSpace.sRGB), forKey: "inputColorSpace")
+                keyer.setValue(inputCIImage, forKey: kCIInputImageKey)
+                if let keyed = keyer.outputImage?.cropped(to: inputCIImage.extent) {
+                    finalImage = keyed
+                }
+            }
+        }
+        // RAW CAMERA SHAPE VIEW: crisp raw feed clipped to the chosen shape
+        else if self.filterMode == "raw" || self.filterMode == "off" {
             let transparentBg = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: inputCIImage.extent)
-            let radius = min(inputCIImage.extent.width, inputCIImage.extent.height) * 0.46
-            let center = CGPoint(x: inputCIImage.extent.width / 2.0, y: inputCIImage.extent.height / 2.0)
-            let circleRect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2.0, height: radius * 2.0)
-            
-            let circleGen = CIFilter(name: "CIRoundedRectangleGenerator")
-            circleGen?.setValue(circleRect, forKey: "inputExtent")
-            circleGen?.setValue(radius, forKey: "inputRadius")
-            let circleMask = circleGen?.outputImage?.cropped(to: inputCIImage.extent) ?? inputCIImage
+            let ext = inputCIImage.extent
+            let center = CGPoint(x: ext.width / 2.0, y: ext.height / 2.0)
+            let side = min(ext.width, ext.height)
+            var circleMask: CIImage = inputCIImage
+
+            func roundedMask(_ rect: CGRect, _ radius: CGFloat) -> CIImage? {
+                let gen = CIFilter(name: "CIRoundedRectangleGenerator")
+                gen?.setValue(rect, forKey: "inputExtent")
+                gen?.setValue(radius, forKey: "inputRadius")
+                return gen?.outputImage?.cropped(to: ext)
+            }
+
+            switch self.rawShape {
+            case "squircle":
+                let s = side * 0.92
+                let rect = CGRect(x: center.x - s/2, y: center.y - s/2, width: s, height: s)
+                circleMask = roundedMask(rect, s * 0.28) ?? inputCIImage
+            case "portrait":
+                let h = ext.height * 0.94, w = min(ext.width * 0.94, h * 0.75)
+                let rect = CGRect(x: center.x - w/2, y: center.y - h/2, width: w, height: h)
+                circleMask = roundedMask(rect, side * 0.10) ?? inputCIImage
+            case "hex":
+                if CamState.hexMask == nil || CamState.hexMaskSize != ext.size {
+                    let img = NSImage(size: ext.size)
+                    img.lockFocus()
+                    NSColor.black.setFill()
+                    NSRect(origin: .zero, size: ext.size).fill()
+                    let R = side * 0.47
+                    let path = NSBezierPath()
+                    for i in 0..<6 {
+                        let ang = CGFloat(i) * .pi / 3 + .pi / 6
+                        let pt = NSPoint(x: center.x + R * cos(ang), y: center.y + R * sin(ang))
+                        if i == 0 { path.move(to: pt) } else { path.line(to: pt) }
+                    }
+                    path.close()
+                    NSColor.white.setFill()
+                    path.fill()
+                    img.unlockFocus()
+                    if let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                        CamState.hexMask = CIImage(cgImage: cg)
+                        CamState.hexMaskSize = ext.size
+                    }
+                }
+                circleMask = CamState.hexMask?.cropped(to: ext) ?? inputCIImage
+            default: // circle
+                let radius = side * 0.46
+                let rect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+                circleMask = roundedMask(rect, radius) ?? inputCIImage
+            }
             
             let rawBlend = CIFilter(name: "CIBlendWithMask")
             rawBlend?.setValue(inputCIImage, forKey: kCIInputImageKey)
@@ -775,13 +862,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     // bust emerging from the page, and set a soft glowing
                     // pedestal ellipse (mode color) underneath. Docked at
                     // the bottom edge -> classic hard cut, untouched.
-                    let winBottomY = self.window?.frame.origin.y ?? 0
+                    // window-bottom RELATIVE TO ITS SCREEN — global AppKit
+                    // coords made this always-false (or always-true) on
+                    // multi-monitor rigs, so the bust effect never showed
+                    var winBottomY: CGFloat = 0
+                    if let w = self.window {
+                        let scrY = (w.screen ?? NSScreen.main)?.frame.origin.y ?? 0
+                        winBottomY = w.frame.origin.y - scrY
+                    }
                     if winBottomY > 80 {
                         let ext = inputCIImage.extent
                         if let fade = CIFilter(name: "CISmoothLinearGradient") {
-                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.06), forKey: "inputPoint0")
+                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.03), forKey: "inputPoint0")
                             fade.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 0), forKey: "inputColor0")
-                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.40), forKey: "inputPoint1")
+                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.24), forKey: "inputPoint1")
                             fade.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor1")
                             if let grad = fade.outputImage?.cropped(to: ext) {
                                 let bustBlend = CIFilter(name: "CIBlendWithMask")
@@ -794,13 +888,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                             }
                         }
                         // pedestal glow: squashed radial in the mode's aura color
-                        let pedY = ext.height * 0.14
-                        let squash: CGFloat = 0.28
+                        let pedY = ext.height * 0.10
+                        let squash: CGFloat = 0.20
                         if let radial = CIFilter(name: "CIRadialGradient") {
                             radial.setValue(CIVector(x: ext.midX, y: pedY / squash), forKey: "inputCenter")
                             radial.setValue(10, forKey: "inputRadius0")
-                            radial.setValue(ext.width * 0.34, forKey: "inputRadius1")
-                            radial.setValue(CIColor(red: auraR, green: auraG, blue: auraB, alpha: 0.40), forKey: "inputColor0")
+                            radial.setValue(ext.width * 0.44, forKey: "inputRadius1")
+                            radial.setValue(CIColor(red: auraR, green: auraG, blue: auraB, alpha: 0.20), forKey: "inputColor0")
                             radial.setValue(CIColor(red: auraR, green: auraG, blue: auraB, alpha: 0.0), forKey: "inputColor1")
                             if let ped = radial.outputImage?
                                 .transformed(by: CGAffineTransform(scaleX: 1.0, y: squash))
@@ -880,6 +974,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var tX: CGFloat? = nil, tY: CGFloat? = nil
         
         var devName: String? = nil
+        var requestedShape = "circle"
         
         let args = CommandLine.arguments
         for i in 0..<args.count {
@@ -894,6 +989,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if args[i] == "--position", i + 1 < args.count {
                 position = args[i+1]
+            }
+            if args[i] == "--shape", i + 1 < args.count {
+                requestedShape = args[i+1]
             }
             if args[i] == "--mode", i + 1 < args.count {
                 mode = args[i+1]
@@ -910,7 +1008,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let x = aX, let y = aY { alienPt = CGPoint(x: x, y: y) }
         if let x = tX, let y = tY { targetPt = CGPoint(x: x, y: y) }
         
-        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName)
+        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName, shape: requestedShape)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()

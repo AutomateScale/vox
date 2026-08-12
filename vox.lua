@@ -58,6 +58,8 @@ local C = {
   fastModel        = HOME .. "/vox/models/ggml-tiny.en.bin",
   speculativeDraft = true,
   screenRecDir        = HOME .. "/Movies/VoxRecordings",
+  screenRecWebcamSize = 520,           -- presenter window scale (px-ish)
+  screenRecShape      = "circle",      -- raw mode: circle|squircle|portrait|hex
   screenRecWebcam     = true,
   screenRecWebcamSize = 180,
   screenRecWebcamPos  = "bottom-left",
@@ -244,7 +246,8 @@ end
 local PREFS = { "holdKeycode", "holdKeyName", "duckMode", "duckAudio", "convLive", "alienPlayByPlay",
                 "keepInClipboard", "llmCleanup", "translateTo",
                 "alienVoiceName", "soundTheme", "language", "memory",
-                "screenRecWebcam", "screenRecWebcamPos", "screenRecBgMode" }
+                "screenRecWebcam", "screenRecWebcamPos", "screenRecBgMode",
+                "screenRecWebcamSize", "screenRecShape" }
 local function pref(key, val)
   C[key] = val
   hs.settings.set("vox.pref." .. key, val)
@@ -2117,7 +2120,7 @@ function startScreenRecording(windowOnly)
       screenRec.camTask = hs.task.new(camBin, function(code)
         log("camTask exit code: " .. tostring(code))
       end, {
-        "--size", tostring(C.screenRecWebcamSize or 240),
+        "--size", tostring(C.screenRecWebcamSize or 520),
         "--position", C.screenRecWebcamPos or "bottom-left"
       })
       screenRec.camTask:start()
@@ -2326,7 +2329,7 @@ function startScreenRecording(windowOnly)
           local camBin = HOME .. "/vox/cam-bin"
           if hs.fs.attributes(camBin) then
             screenRec.camTask = hs.task.new(camBin, nil, {
-              "--size", tostring(C.screenRecWebcamSize or 180),
+              "--size", tostring(C.screenRecWebcamSize or 520),
               "--position", C.screenRecWebcamPos or "bottom-left"
             })
             screenRec.camTask:start()
@@ -2479,7 +2482,7 @@ function showWebcamOverlay()
     local alienY = (mainScreen.h - ay) - 35
 
     -- 2. Calculate Active Focused Window Bottom-Right Docking Frame
-    local size = C.screenRecWebcamSize or 380 -- Clean 380pt default
+    local size = C.screenRecWebcamSize or 520 -- Clean 380pt default
     local width = size * 1.4
     local height = size * 0.95
     local targetX, targetY
@@ -2502,6 +2505,7 @@ function showWebcamOverlay()
       "--size", tostring(size),
       "--position", C.screenRecWebcamPos or "bottom-right",
       "--mode", C.screenRecBgMode or "mint",
+      "--shape", C.screenRecShape or "circle",
       "--device", camIdx,
       "--alienX", tostring(alienX),
       "--alienY", tostring(alienY),
@@ -5917,7 +5921,13 @@ function showVoxSettings()
   <label><input type="checkbox"%s onchange="send('screenRecWebcam', this.checked)"> Webcam bubble in recordings</label>
   <div class="row"><span>Presenter style</span><select onchange="send('screenRecBgMode', this.value)">
     <option value="cutout"%s>✨ AI cutout</option><option value="chroma"%s>🟢 Chroma key</option>
-    <option value="raw"%s>📷 Raw circle</option></select></div>
+    <option value="raw"%s>📷 Raw shape</option></select></div>
+  <div class="row"><span>Raw shape</span><select onchange="send('screenRecShape', this.value)">
+    <option value="circle"%s>⭕ Circle</option><option value="squircle"%s>🔲 Squircle</option>
+    <option value="portrait"%s>🖼 Portrait</option><option value="hex"%s>⬡ Hexagon</option></select></div>
+  <div class="row"><span>Window size</span><select onchange="send('screenRecWebcamSize', parseInt(this.value))">
+    <option value="380"%s>Compact</option><option value="520"%s>Standard</option>
+    <option value="680"%s>Large</option><option value="840"%s>Huge</option></select></div>
 </div>
 
 <div class="card wide"><h2>Shortcuts</h2>
@@ -5971,6 +5981,10 @@ window.addEventListener('keydown', function(e) {
     camOpts,
     chk(C.screenRecWebcam),
     sel(C.screenRecBgMode, "cutout"), sel(C.screenRecBgMode, "chroma"), sel(C.screenRecBgMode, "raw"),
+    sel(C.screenRecShape, "circle"), sel(C.screenRecShape, "squircle"),
+    sel(C.screenRecShape, "portrait"), sel(C.screenRecShape, "hex"),
+    sel(C.screenRecWebcamSize, 380), sel(C.screenRecWebcamSize, 520),
+    sel(C.screenRecWebcamSize, 680), sel(C.screenRecWebcamSize, 840),
     shortcutRows)
 
   local uc = hs.webview.usercontent.new("voxprefs")
