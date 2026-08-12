@@ -2461,7 +2461,8 @@ function voxCamArgs(extra)
     "--mode", C.screenRecBgMode or "mint",
     "--shape", C.screenRecShape or "circle",
     "--framing", C.screenRecFraming or "wide",
-    "--device", tostring(hs.settings.get('vox.pref.camDeviceIndex') or 0),
+    "--device", tostring(hs.settings.get('vox.pref.camDeviceName')
+                 or hs.settings.get('vox.pref.camDeviceIndex') or 0),
   }
   for _, v in ipairs(extra or {}) do args[#args + 1] = v end
   return args
@@ -2548,9 +2549,8 @@ function spawnPresenter()
       "--targetY", tostring(targetY)
     }))
     screenRec.camTask:start()
-    local cams = listCameraDevices()
-    local ci = (hs.settings.get('vox.pref.camDeviceIndex') or 0) + 1
-    hs.alert.show("🧞‍♂️ Presenter ON — " .. (cams[ci] or ("camera " .. ci)), 1.5)
+    local camName = hs.settings.get('vox.pref.camDeviceName') or "default camera"
+    hs.alert.show("🧞‍♂️ Presenter ON — " .. camName, 1.5)
   end
 end
 
@@ -2571,11 +2571,12 @@ end
 function cycleCameraDevice()
   local cams = listCameraDevices()
   local count = math.max(#cams, 1)
-  local currentIdx = hs.settings.get('vox.pref.camDeviceIndex') or 0
-  local nextIdx = (currentIdx + 1) % count
-  hs.settings.set('vox.pref.camDeviceIndex', nextIdx)
-
+  local curName = hs.settings.get('vox.pref.camDeviceName')
+  local curPos = 0
+  for i, n in ipairs(cams) do if n == curName then curPos = i - 1 end end
+  local nextIdx = (curPos + 1) % count
   local label = cams[nextIdx + 1] or ("Camera #" .. tostring(nextIdx + 1))
+  hs.settings.set('vox.pref.camDeviceName', label)
   local p2 = io.popen("pgrep -f cam-bin")
   local isRunning = (p2 and p2:read("*a") or "") ~= ""
   if p2 then p2:close() end
@@ -5537,16 +5538,16 @@ function voxSettingsMenu()
     { title = "🎥 Voom camera", menu = (function()
         local items = {}
         local cams = listCameraDevices()
-        local cur = hs.settings.get('vox.pref.camDeviceIndex') or 0
+        local curName = hs.settings.get('vox.pref.camDeviceName')
         if #cams == 0 then
           items[1] = { title = "No cameras found", disabled = true }
         end
         for i, name in ipairs(cams) do
           items[#items + 1] = {
             title = name,
-            checked = (i - 1) == cur,
+            checked = (name == curName),
             fn = function()
-              hs.settings.set('vox.pref.camDeviceIndex', i - 1)
+              hs.settings.set('vox.pref.camDeviceName', name)
               hs.alert.show("📷 " .. name, 1.5)
               local p = io.popen("pgrep -f cam-bin")
               local running = (p and p:read("*a") or "") ~= ""
@@ -5878,11 +5879,11 @@ function showVoxSettings()
   if M.settingsView then pcall(function() M.settingsView:delete() end); M.settingsView = nil end
 
   local cams = listCameraDevices()
-  local curCam = hs.settings.get('vox.pref.camDeviceIndex') or 0
+  local savedName = hs.settings.get('vox.pref.camDeviceName')
   local camOpts = ""
   for i, name in ipairs(cams) do
-    camOpts = camOpts .. string.format('<option value="%d"%s>%s</option>',
-      i - 1, ((i - 1) == curCam) and " selected" or "", name)
+    camOpts = camOpts .. string.format('<option value="%s"%s>%s</option>',
+      name, (name == savedName) and " selected" or "", name)
   end
   if camOpts == "" then camOpts = '<option value="0">No cameras found</option>' end
 
@@ -6037,8 +6038,12 @@ window.addEventListener('keydown', function(e) {
       pref("holdKeycode", tonumber(v)); pref("holdKeyName", names[tostring(v)] or "?")
       hs.alert.show("Vox key: " .. (names[tostring(v)] or v), 1.2)
     elseif k == "camera" then
-      hs.settings.set('vox.pref.camDeviceIndex', tonumber(v) or 0)
-      hs.alert.show("📷 camera set", 1)
+      hs.settings.set('vox.pref.camDeviceName', v)
+      hs.alert.show("📷 " .. tostring(v), 1.2)
+      local p = io.popen("pgrep -f cam-bin")
+      local running = (p and p:read("*a") or "") ~= ""
+      if p then p:close() end
+      if running then showWebcamOverlay() end
     elseif k == "soundTheme" then
       pref("soundTheme", v); loadSounds(); play("done")
     elseif k == "alienVoiceName" then
@@ -6095,12 +6100,12 @@ menubar:setMenu(function()
   local camItems = {}
   do
     local cams = listCameraDevices()
-    local cur = hs.settings.get('vox.pref.camDeviceIndex') or 0
+    local curName = hs.settings.get('vox.pref.camDeviceName')
     if #cams == 0 then camItems[1] = { title = "No cameras found", disabled = true } end
     for i, name in ipairs(cams) do
-      camItems[#camItems + 1] = { title = name, checked = (i - 1) == cur,
+      camItems[#camItems + 1] = { title = name, checked = (name == curName),
         fn = function()
-          hs.settings.set('vox.pref.camDeviceIndex', i - 1)
+          hs.settings.set('vox.pref.camDeviceName', name)
           hs.alert.show("📷 " .. name, 1.5)
           local p = io.popen("pgrep -f cam-bin")
           local running = (p and p:read("*a") or "") ~= ""
