@@ -5761,6 +5761,123 @@ function voxSettingsMenu()
   }
 end
 
+-- ---------------- Settings window (webview + prefs bridge) ----
+function showVoxSettings()
+  if M.settingsView then pcall(function() M.settingsView:delete() end); M.settingsView = nil end
+
+  local cams = listCameraDevices()
+  local curCam = hs.settings.get('vox.pref.camDeviceIndex') or 0
+  local camOpts = ""
+  for i, name in ipairs(cams) do
+    camOpts = camOpts .. string.format('<option value="%d"%s>%s</option>',
+      i - 1, ((i - 1) == curCam) and " selected" or "", name)
+  end
+  if camOpts == "" then camOpts = '<option value="0">No cameras found</option>' end
+
+  local function chk(v) return v and " checked" or "" end
+  local function sel(a, b) return (a == b) and " selected" or "" end
+
+  local html = string.format([[
+<!doctype html><html><head><meta charset="utf-8"><style>
+  body { background:#0f1420; color:#e8ecf4; font: 13px -apple-system, sans-serif; margin:0; padding:18px 22px; }
+  h1 { font-size:17px; margin:0 0 4px } .sub { color:#8b94a7; font-size:12px; margin-bottom:14px }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#5ee0b0; margin:18px 0 8px; border-top:1px solid #232b3d; padding-top:14px }
+  label { display:flex; align-items:center; gap:8px; padding:5px 0; cursor:pointer }
+  select { background:#1a2233; color:#e8ecf4; border:1px solid #2b3550; border-radius:6px; padding:4px 8px; font-size:13px }
+  .row { display:flex; align-items:center; justify-content:space-between; padding:5px 0 }
+  input[type=checkbox], input[type=radio] { accent-color:#5ee0b0 }
+</style></head><body>
+<h1>Vox Settings</h1><div class="sub">Changes apply instantly and persist.</div>
+
+<h2>Dictation</h2>
+<div class="row"><span>Hold key</span><select onchange="send('holdKey', this.value)">
+  <option value="61"%s>Right Option ⌥</option><option value="54"%s>Right Command ⌘</option>
+  <option value="58"%s>Left Option ⌥</option><option value="55"%s>Left Command ⌘</option></select></div>
+<div class="row"><span>Language</span><select onchange="send('language', this.value)">
+  <option value="en"%s>English</option><option value="fr"%s>French</option><option value="auto"%s>Auto-detect</option></select></div>
+<label><input type="checkbox"%s onchange="send('keepInClipboard', this.checked)"> Keep dictation in clipboard</label>
+
+<h2>Conversation Mode</h2>
+<label><input type="checkbox"%s onchange="send('convLive', this.checked)"> Live word-by-word typing</label>
+<label><input type="checkbox"%s onchange="send('alienPlayByPlay', this.checked)"> Alien play-by-play commentary</label>
+
+<h2>Audio</h2>
+<label><input type="checkbox"%s onchange="send('duckAudio', this.checked)"> Duck music while dictating</label>
+<div class="row"><span>Duck style</span><select onchange="send('duckMode', this.value)">
+  <option value="duck"%s>Lower to 15%%</option><option value="mute"%s>Mute</option><option value="pause"%s>Pause media</option></select></div>
+<div class="row"><span>Sound theme</span><select onchange="send('soundTheme', this.value)">
+  <option value="sleek"%s>Sleek</option><option value="classic"%s>Classic</option></select></div>
+
+<h2>AI</h2>
+<div class="row"><span>Alien voice</span><select onchange="send('alienVoiceName', this.value)">
+  <option value="vox"%s>Vox</option><option value="af_heart"%s>Heart</option><option value="af_bella"%s>Bella</option>
+  <option value="af_river"%s>River</option><option value="af_nova"%s>Nova</option><option value="am_adam"%s>Adam</option>
+  <option value="am_fenrir"%s>Fenrir</option></select></div>
+<div class="row"><span>Translate to</span><select onchange="send('translateTo', this.value)">
+  <option value="off"%s>Off</option><option value="English"%s>English</option><option value="French"%s>French</option>
+  <option value="Spanish"%s>Spanish</option><option value="Dutch"%s>Dutch</option></select></div>
+<label><input type="checkbox"%s onchange="send('llmCleanup', this.checked)"> AI cleanup pass (slower, may reword)</label>
+<label><input type="checkbox"%s onchange="send('memory', this.checked)"> Remember dictations (the brain)</label>
+
+<h2>Voom — Screen &amp; Presenter</h2>
+<div class="row"><span>Camera</span><select onchange="send('camera', this.value)">%s</select></div>
+<label><input type="checkbox"%s onchange="send('screenRecWebcam', this.checked)"> Include webcam bubble in recordings</label>
+<div class="row"><span>Presenter style</span><select onchange="send('screenRecBgMode', this.value)">
+  <option value="cutout"%s>✨ AI person cutout</option><option value="chroma"%s>🟢 Green-screen chroma key</option>
+  <option value="raw"%s>📷 Raw circle</option></select></div>
+
+<script>function send(k, v) { window.webkit.messageHandlers.voxprefs.postMessage({key:k, value:v}); }</script>
+</body></html>]],
+    sel(C.holdKeycode, 61), sel(C.holdKeycode, 54), sel(C.holdKeycode, 58), sel(C.holdKeycode, 55),
+    sel(C.language, "en"), sel(C.language, "fr"), sel(C.language, "auto"),
+    chk(C.keepInClipboard),
+    chk(C.convLive), chk(C.alienPlayByPlay),
+    chk(C.duckAudio),
+    sel(C.duckMode, "duck"), sel(C.duckMode, "mute"), sel(C.duckMode, "pause"),
+    sel(C.soundTheme, "sleek"), sel(C.soundTheme, "classic"),
+    sel(C.alienVoiceName, "vox"), sel(C.alienVoiceName, "af_heart"), sel(C.alienVoiceName, "af_bella"),
+    sel(C.alienVoiceName, "af_river"), sel(C.alienVoiceName, "af_nova"), sel(C.alienVoiceName, "am_adam"),
+    sel(C.alienVoiceName, "am_fenrir"),
+    sel(C.translateTo, "off"), sel(C.translateTo, "English"), sel(C.translateTo, "French"),
+    sel(C.translateTo, "Spanish"), sel(C.translateTo, "Dutch"),
+    chk(C.llmCleanup), chk(C.memory),
+    camOpts,
+    chk(C.screenRecWebcam),
+    sel(C.screenRecBgMode, "cutout"), sel(C.screenRecBgMode, "chroma"), sel(C.screenRecBgMode, "raw"))
+
+  local uc = hs.webview.usercontent.new("voxprefs")
+  uc:setCallback(function(msg)
+    local b = msg.body or {}
+    local k, v = b.key, b.value
+    if k == "holdKey" then
+      local names = { ["61"] = "Right Option", ["54"] = "Right Command",
+                      ["58"] = "Left Option", ["55"] = "Left Command" }
+      pref("holdKeycode", tonumber(v)); pref("holdKeyName", names[tostring(v)] or "?")
+      hs.alert.show("Vox key: " .. (names[tostring(v)] or v), 1.2)
+    elseif k == "camera" then
+      hs.settings.set('vox.pref.camDeviceIndex', tonumber(v) or 0)
+      hs.alert.show("📷 camera set", 1)
+    elseif k == "soundTheme" then
+      pref("soundTheme", v); loadSounds(); play("done")
+    elseif k == "alienVoiceName" then
+      pref("alienVoiceName", v); speakAlien("This is my voice now.")
+    else
+      pref(k, v)   -- booleans arrive as true/false, strings as strings
+    end
+  end)
+
+  local f = hs.screen.mainScreen():frame()
+  M.settingsView = hs.webview.new(
+      { x = f.x + (f.w - 460) / 2, y = f.y + (f.h - 640) / 2, w = 460, h = 640 },
+      { developerExtrasEnabled = false }, uc)
+    :windowStyle({ "titled", "closable" })
+    :windowTitle("Vox Settings")
+    :allowTextEntry(true)
+    :html(html)
+  M.settingsView:show()
+  M.settingsView:bringToFront(true)
+end
+
 -- SLIM MENUBAR: Adam ('our menu navigation has gotten crazy') — only the
 -- verbs live at the top level; the entire old tree survives untouched
 -- under "⚙️ All Settings". A dedicated Settings WINDOW is the planned v2.
@@ -5818,7 +5935,8 @@ menubar:setMenu(function()
     { title = "📂 Recordings Folder", fn = function()
         hs.execute("open '" .. (C.screenRecDir or (HOME .. "/Movies/VoxRecordings")) .. "'")
       end },
-    { title = "⚙️ All Settings", menu = voxSettingsMenu() },
+    { title = "⚙️ Settings…", fn = function() showVoxSettings() end },
+    { title = "🧰 Advanced (full menu)", menu = voxSettingsMenu() },
   }
 end)
 
