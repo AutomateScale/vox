@@ -2466,6 +2466,12 @@ function voxCamArgs(extra)
 end
 
 function showWebcamOverlay()
+  -- SERIALIZED RESTART: killall + instant spawn let two rapid setting
+  -- changes race — both new instances saw each other, both declared
+  -- 'duplicate', both suicided ('changing it crashed it'). Now: exactly
+  -- one restart in flight, kill first, spawn only after the field is
+  -- provably clear, and rapid changes coalesce into the last one.
+  if M.camRestartTimer then M.camRestartTimer:stop(); M.camRestartTimer = nil end
   local camBin = HOME .. "/vox/cam-bin"
   local camSwift = HOME .. "/vox/cam.swift"
   if not hs.fs.attributes(camBin) and hs.fs.attributes(camSwift) then
@@ -2473,6 +2479,17 @@ function showWebcamOverlay()
   end
   if hs.fs.attributes(camBin) then
     os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+    M.camRestartTimer = hs.timer.doAfter(0.9, function()
+      M.camRestartTimer = nil
+      os.execute("/usr/bin/pkill -9 -f 'cam-bin' 2>/dev/null")
+      spawnPresenter()
+    end)
+  end
+end
+
+function spawnPresenter()
+  local camBin = HOME .. "/vox/cam-bin"
+  if hs.fs.attributes(camBin) then
 
     -- 1. Calculate Alien Hub Origin. C.alienPos is the position PREFERENCE
     -- table ({window=true,...}), NOT coordinates — reading .x off it nil-
@@ -2515,7 +2532,9 @@ function showWebcamOverlay()
       "--targetY", tostring(targetY)
     }))
     screenRec.camTask:start()
-    hs.alert.show("🧞‍♂️ Presenter Camera ON (Camera #" .. tostring((tonumber(camIdx) or 0) + 1) .. ")", 1.5)
+    local cams = listCameraDevices()
+    local ci = (hs.settings.get('vox.pref.camDeviceIndex') or 0) + 1
+    hs.alert.show("🧞‍♂️ Presenter ON — " .. (cams[ci] or ("camera " .. ci)), 1.5)
   end
 end
 
