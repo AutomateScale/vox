@@ -177,6 +177,13 @@ if command -v swiftc >/dev/null 2>&1 && [ ! -x "$REPO/ocr-bin" ]; then
     && echo "    ocr-bin ready ✅" \
     || echo "    (skipped — compiles itself on first triple-tap instead)"
 fi
+if ! command -v swiftc >/dev/null 2>&1; then
+  echo ""
+  echo "⚠️  Apple's Command Line Tools are missing — the Voom presenter"
+  echo "    camera and screen-text features need them. Opening the installer"
+  echo "    now; when it finishes, re-run this install and they'll build."
+  xcode-select --install 2>/dev/null || true
+fi
 if command -v swiftc >/dev/null 2>&1 && [ ! -x "$REPO/cam-bin" ]; then
   swiftc -O "$REPO/cam.swift" -o "$REPO/cam-bin" 2>/dev/null \
     && echo "    cam-bin ready ✅" \
