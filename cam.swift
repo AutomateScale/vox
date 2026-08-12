@@ -90,7 +90,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
     var filterMode: String = "mint"
-    let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0]
+    let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0, 950.0, 1200.0]
     var currentPresetIndex: Int = 1
     
     var alienStartPoint: CGPoint? = nil
@@ -291,7 +291,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     
     func adjustSize(by delta: CGFloat) {
         let minSize: CGFloat = 160.0
-        let maxSize: CGFloat = 900.0
+        // grow to nearly full screen height — talking-head takes want BIG
+        let maxSize: CGFloat = max(900.0, (window?.screen ?? NSScreen.main).map { $0.frame.height * 0.92 } ?? 900.0)
         let newSize = max(minSize, min(maxSize, currentSize + delta))
         if newSize != currentSize {
             setSize(newSize)
@@ -301,6 +302,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     private func setSize(_ newSize: CGFloat) {
         guard let window = self.window, let contentView = window.contentView else { return }
         currentSize = newSize
+        print("CAM_LOG: SIZE_NOW=\(Int(newSize))")
+        fflush(stdout)
         let frame = window.frame
         let newWidth = (self.framing == "tall") ? newSize * 0.75
                      : (self.framing == "wide") ? newSize * 1.3 : newSize
@@ -1131,6 +1134,16 @@ sigSource.setEventHandler {
 }
 sigSource.resume()
 signal(SIGINT, SIG_IGN)
+
+let growSource = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+growSource.setEventHandler { delegate.controller?.adjustSize(by: 90) }
+growSource.resume()
+signal(SIGUSR1, SIG_IGN)
+
+let shrinkSource = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+shrinkSource.setEventHandler { delegate.controller?.adjustSize(by: -90) }
+shrinkSource.resume()
+signal(SIGUSR2, SIG_IGN)
 
 let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 termSource.setEventHandler {

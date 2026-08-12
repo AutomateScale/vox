@@ -2543,6 +2543,14 @@ function spawnPresenter()
 
     screenRec.camTask = hs.task.new(camBin, function(code)
       log("camTask exit code: " .. tostring(code))
+    end, function(_, stdout)
+      -- scroll/double-click/voice resizes persist across restarts
+      local n = tostring(stdout or ""):match("SIZE_NOW=(%d+)")
+      if n then
+        C.screenRecWebcamSize = tonumber(n)
+        hs.settings.set("vox.pref.screenRecWebcamSize", tonumber(n))
+      end
+      return true
     end, voxCamArgs({
       "--position", C.screenRecWebcamPos or "bottom-right",
       "--alienX", tostring(alienX),
@@ -3893,6 +3901,19 @@ local function applyVoiceCommands(text)
   end
   if bare:find("toggle camera") or bare == "camera" then
     return "", { fn = function() toggleWebcamOverlay() end, label = "Toggle Camera" }
+  end
+  if bare:find("camera bigger") or bare:find("bigger camera")
+     or bare:find("camera larger") or bare == "make the camera bigger"
+     or bare == "make camera bigger" then
+    return "", { fn = function()
+      os.execute("/usr/bin/pkill -USR1 -f cam-bin; /usr/bin/pkill -USR1 -f cam-bin")
+    end, label = "Camera bigger" }
+  end
+  if bare:find("camera smaller") or bare:find("smaller camera")
+     or bare == "make the camera smaller" or bare == "make camera smaller" then
+    return "", { fn = function()
+      os.execute("/usr/bin/pkill -USR2 -f cam-bin; /usr/bin/pkill -USR2 -f cam-bin")
+    end, label = "Camera smaller" }
   end
 
   -- Fullscreen & Expand
@@ -6048,7 +6069,7 @@ function showVoxSettings()
   <label><input type="checkbox"%s onchange="send('screenRecFollow', this.checked)"> Follow me (deadzone tracking)</label>
   <div class="row"><span>Window size</span><select onchange="send('screenRecWebcamSize', parseInt(this.value))">
     <option value="380"%s>Compact</option><option value="520"%s>Standard</option>
-    <option value="680"%s>Large</option><option value="840"%s>Huge</option></select></div>
+    <option value="680"%s>Large</option><option value="840"%s>Huge</option><option value="1000"%s>Huge (1000)</option><option value="1200"%s>Max (1200)</option></select></div>
 </div>
 
 <div class="card wide"><h2>Shortcuts</h2>
@@ -6109,6 +6130,7 @@ window.addEventListener('keydown', function(e) {
     chk(C.screenRecFollow),
     sel(C.screenRecWebcamSize, 380), sel(C.screenRecWebcamSize, 520),
     sel(C.screenRecWebcamSize, 680), sel(C.screenRecWebcamSize, 840),
+    sel(C.screenRecWebcamSize, 1000), sel(C.screenRecWebcamSize, 1200),
     shortcutRows)
 
   local uc = hs.webview.usercontent.new("voxprefs")
