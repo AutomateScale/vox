@@ -86,6 +86,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var rawShape: String = "circle"       // circle | squircle | portrait | hex
     var framing: String = "wide"          // wide (16:9) | tall (portrait, follows you)
     var followX: CGFloat = 0              // smoothed person-center for tall framing
+    var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
     var filterMode: String = "mint"
@@ -100,11 +101,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevRowMaxData: [Int]? = nil
     var currentMotionVelocity: Double = 0.0
     
-    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle", framing: String = "wide") {
+    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle", framing: String = "wide", follow: Bool = false) {
         self.currentSize = size
         self.filterMode = filterMode
         self.rawShape = shape
         self.framing = framing
+        self.followEnabled = follow
         self.alienStartPoint = alienPoint
         self.deviceParam = deviceName
         
@@ -935,10 +937,19 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         if self.framing == "tall" || self.framing == "square" {
             let fext = inputCIImage.extent
             var cx = fext.midX
-            if let b = self.trackedBodyRect, b.size.width > 0 {
-                cx = (b.origin.x + b.size.width / 2) * fext.width
+            if self.followEnabled, let b = self.trackedBodyRect, b.size.width > 0 {
+                // DEADZONE FOLLOW: constant bbox-chasing 'pushed me all
+                // around'. Now the crop holds perfectly still until the
+                // person strays >12% off-center, then glides gently.
+                let target = (b.origin.x + b.size.width / 2) * fext.width
+                if self.followX == 0 { self.followX = target }
+                if abs(target - self.followX) > fext.width * 0.12 {
+                    self.followX = self.followX * 0.97 + target * 0.03
+                }
+                cx = self.followX
+            } else {
+                self.followX = 0
             }
-            self.followX = (self.followX == 0) ? cx : (self.followX * 0.88 + cx * 0.12)
             // square = full sensor height at 1:1 (max width that keeps it);
             // tall = tighter 3:4 portrait
             let w = fext.height * (self.framing == "square" ? 1.0 : 0.75)
@@ -1012,6 +1023,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var devName: String? = nil
         var requestedShape = "circle"
         var requestedFraming = "wide"
+        var requestedFollow = false
         
         let args = CommandLine.arguments
         for i in 0..<args.count {
@@ -1033,6 +1045,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if args[i] == "--framing", i + 1 < args.count {
                 requestedFraming = args[i+1]
             }
+            if args[i] == "--follow" { requestedFollow = true }
             if args[i] == "--mode", i + 1 < args.count {
                 mode = args[i+1]
             }
@@ -1048,7 +1061,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let x = aX, let y = aY { alienPt = CGPoint(x: x, y: y) }
         if let x = tX, let y = tY { targetPt = CGPoint(x: x, y: y) }
         
-        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName, shape: requestedShape, framing: requestedFraming)
+        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName, shape: requestedShape, framing: requestedFraming, follow: requestedFollow)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()
