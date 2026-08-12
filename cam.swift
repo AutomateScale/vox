@@ -90,6 +90,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
     var filterMode: String = "mint"
+    var captureQuality: String = "auto"   // auto | hd | 4k
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0, 950.0, 1200.0]
     var currentPresetIndex: Int = 1
     
@@ -101,8 +102,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevRowMaxData: [Int]? = nil
     var currentMotionVelocity: Double = 0.0
     
-    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle", framing: String = "wide", follow: Bool = false) {
+    init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle", framing: String = "wide", follow: Bool = false, quality: String = "auto") {
         self.currentSize = size
+        self.captureQuality = quality
         self.filterMode = filterMode
         self.rawShape = shape
         self.framing = framing
@@ -304,6 +306,24 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         currentSize = newSize
         print("CAM_LOG: SIZE_NOW=\(Int(newSize))")
         fflush(stdout)
+        if captureQuality == "auto", let session = captureSession {
+            let is4K = session.sessionPreset == .hd4K3840x2160
+            var target: AVCaptureSession.Preset? = nil
+            if !is4K && newSize >= 720 && session.canSetSessionPreset(.hd4K3840x2160) {
+                target = .hd4K3840x2160
+            } else if is4K && newSize < 560 && session.canSetSessionPreset(.hd1920x1080) {
+                target = .hd1920x1080
+            }
+            if let t = target {
+                sampleQueue?.async {
+                    session.beginConfiguration()
+                    session.sessionPreset = t
+                    session.commitConfiguration()
+                }
+                print("CAM_LOG: capture quality -> \(t == .hd4K3840x2160 ? "4K UHD" : "1080p") (window \(Int(newSize)))")
+                fflush(stdout)
+            }
+        }
         let frame = window.frame
         let newWidth = (self.framing == "tall") ? newSize * 0.75
                      : (self.framing == "wide") ? newSize * 1.3 : newSize
@@ -358,7 +378,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             return
         }
         
-        if session.canSetSessionPreset(.hd1920x1080) {
+        let want4K = (captureQuality == "4k")
+                  || (captureQuality == "auto" && currentSize >= 720)
+        if want4K && session.canSetSessionPreset(.hd4K3840x2160) {
+            session.sessionPreset = .hd4K3840x2160
+            logMsg("Camera session preset set to 4K UHD (3840x2160) — big-window sharpness")
+        } else if session.canSetSessionPreset(.hd1920x1080) {
             session.sessionPreset = .hd1920x1080
             logMsg("Camera session preset set to 1080p Full HD (1920x1080)")
         } else if session.canSetSessionPreset(.high) {
@@ -1046,6 +1071,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var requestedShape = "circle"
         var requestedFraming = "wide"
         var requestedFollow = false
+        var requestedQuality = "auto"
         
         let args = CommandLine.arguments
         for i in 0..<args.count {
@@ -1068,6 +1094,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 requestedFraming = args[i+1]
             }
             if args[i] == "--follow" { requestedFollow = true }
+            if args[i] == "--quality", i + 1 < args.count {
+                requestedQuality = args[i+1].lowercased()
+            }
             if args[i] == "--mode", i + 1 < args.count {
                 mode = args[i+1]
             }
@@ -1083,7 +1112,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let x = aX, let y = aY { alienPt = CGPoint(x: x, y: y) }
         if let x = tX, let y = tY { targetPt = CGPoint(x: x, y: y) }
         
-        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName, shape: requestedShape, framing: requestedFraming, follow: requestedFollow)
+        let wc = WebcamWindowController(size: size, cornerPosition: position, filterMode: mode, alienPoint: alienPt, targetPoint: targetPt, deviceName: devName, shape: requestedShape, framing: requestedFraming, follow: requestedFollow, quality: requestedQuality)
         wc.showWindow(nil)
         wc.window?.makeKeyAndOrderFront(nil)
         wc.window?.orderFrontRegardless()

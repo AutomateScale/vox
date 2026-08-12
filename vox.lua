@@ -2465,6 +2465,8 @@ function voxCamArgs(extra)
     "--device", tostring(hs.settings.get('vox.pref.camDeviceName')
                  or hs.settings.get('vox.pref.camDeviceIndex') or 0),
   }
+  args[#args + 1] = "--quality"
+  args[#args + 1] = C.screenRecQuality or "auto"
   if C.screenRecFollow then args[#args + 1] = "--follow" end
   for _, v in ipairs(extra or {}) do args[#args + 1] = v end
   return args
