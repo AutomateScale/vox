@@ -765,8 +765,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     antiAliasFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
                     let outlineStrokeMask = antiAliasFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawOutlineStroke
 
+                    // CLEAN LOOK: plain 'cutout' is now glow-free — no outline
+                    // stroke, no aura, feather-light shadow. The colored
+                    // accent looks (mint/hero/goddess/cyber) keep the glow.
+                    let cleanLook = (self.filterMode == "cutout" || self.filterMode == "clean")
                     // Select Color Preset Based on Mode
-                    var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: 0.85) // Mint Default
+                    var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: cleanLook ? 0.0 : 0.85) // Mint Default
                     if self.filterMode == "hero" || self.filterMode == "male" {
                         outlineCIColor = CIColor(red: 0.30, green: 0.75, blue: 1.0, alpha: 0.85) // Electric Blue / Slate Hero
                     } else if self.filterMode == "goddess" || self.filterMode == "fem" {
@@ -793,7 +797,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     shadowBlur?.setValue(10.0, forKey: kCIInputRadiusKey)
                     let softShadowMask = shadowBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? shadowBaseMask
 
-                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.65)).cropped(to: inputCIImage.extent)
+                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: cleanLook ? 0.26 : 0.65)).cropped(to: inputCIImage.extent)
                     let shadowImage = CIFilter(name: "CIBlendWithMask")
                     shadowImage?.setValue(darkShadowColor, forKey: kCIInputImageKey)
                     shadowImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
@@ -824,7 +828,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     }
 
                     // Subtle Executive Opacity (Whisper-thin 0.12 when still -> 0.22 when gesturing)
-                    let highClassAlpha = 0.12 + motionScale * 0.10
+                    let highClassAlpha = cleanLook ? 0.0 : (0.12 + motionScale * 0.10)
                     
                     let auraCIColor = CIColor(red: auraR, green: auraG, blue: auraB, alpha: CGFloat(highClassAlpha))
                     let auraColorImg = CIImage(color: auraCIColor).cropped(to: inputCIImage.extent)
