@@ -2482,9 +2482,9 @@ function showWebcamOverlay()
     local alienY = (mainScreen.h - ay) - 35
 
     -- 2. Calculate Active Focused Window Bottom-Right Docking Frame
-    local size = C.screenRecWebcamSize or 520 -- Clean 380pt default
-    local width = size * 1.4
-    local height = size * 0.95
+    local size = C.screenRecWebcamSize or 520
+    local width = size               -- square box: equal roaming room
+    local height = size
     local targetX, targetY
 
     local win = hs.window.focusedWindow()

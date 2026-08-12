@@ -109,8 +109,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let screen = primaryScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         let margin: CGFloat = 35.0
         
-        let width = size * 1.4
-        let height = size * 0.95
+        let width = size          // square: equal roaming room every direction
+        let height = size
         
         var targetX: CGFloat = screen.minX + margin
         var targetY: CGFloat = screen.minY + margin
@@ -296,8 +296,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         guard let window = self.window, let contentView = window.contentView else { return }
         currentSize = newSize
         let frame = window.frame
-        let newWidth = newSize * 1.4
-        let newHeight = newSize * 0.95
+        let newWidth = newSize
+        let newHeight = newSize
         let newRect = NSRect(x: frame.minX, y: frame.minY, width: newWidth, height: newHeight)
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
@@ -863,48 +863,59 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     // pedestal ellipse (mode color) underneath. Docked at
                     // the bottom edge -> classic hard cut, untouched.
                     // window-bottom RELATIVE TO ITS SCREEN — global AppKit
-                    // coords made this always-false (or always-true) on
-                    // multi-monitor rigs, so the bust effect never showed
+                    // coords never tripped the threshold on multi-monitor rigs
                     var winBottomY: CGFloat = 0
                     if let w = self.window {
                         let scrY = (w.screen ?? NSScreen.main)?.frame.origin.y ?? 0
                         winBottomY = w.frame.origin.y - scrY
                     }
-                    if winBottomY > 80 {
+                    if winBottomY > 80, let bRect = self.trackedBodyRect {
+                        // BUST DISSOLVE, anchored to the PERSON: an elliptical
+                        // soft mask centered on the tracked body box, so the
+                        // fade hugs the torso in a rounded bust curve instead
+                        // of slicing a flat band across the frame. Everything
+                        // above the chest stays fully opaque.
                         let ext = inputCIImage.extent
-                        if let fade = CIFilter(name: "CISmoothLinearGradient") {
-                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.03), forKey: "inputPoint0")
-                            fade.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 0), forKey: "inputColor0")
-                            fade.setValue(CIVector(x: ext.midX, y: ext.height * 0.24), forKey: "inputPoint1")
-                            fade.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor1")
-                            if let grad = fade.outputImage?.cropped(to: ext) {
-                                let bustBlend = CIFilter(name: "CIBlendWithMask")
-                                bustBlend?.setValue(stagedFinal, forKey: kCIInputImageKey)
-                                bustBlend?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                                bustBlend?.setValue(grad, forKey: kCIInputMaskImageKey)
-                                if let faded = bustBlend?.outputImage {
-                                    stagedFinal = faded
-                                }
+                        let px = bRect.origin.x * ext.width
+                        let pw = bRect.size.width * ext.width
+                        let py = (1.0 - bRect.origin.y - bRect.size.height) * ext.height
+                        let ph = bRect.size.height * ext.height
+                        let cx = px + pw / 2
+                        let chestY = py + ph * 0.34         // dissolve line ≈ lower chest
+                        let squash: CGFloat = 0.62
+
+                        var bustMask: CIImage? = nil
+                        if let radial = CIFilter(name: "CIRadialGradient") {
+                            radial.setValue(CIVector(x: cx, y: chestY / squash), forKey: "inputCenter")
+                            radial.setValue(max(40, pw * 0.42), forKey: "inputRadius0")
+                            radial.setValue(max(80, pw * 0.85), forKey: "inputRadius1")
+                            radial.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor0")
+                            radial.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 0), forKey: "inputColor1")
+                            bustMask = radial.outputImage?
+                                .transformed(by: CGAffineTransform(scaleX: 1.0, y: squash))
+                                .cropped(to: ext)
+                        }
+                        // keep everything ABOVE the chest fully opaque: max the
+                        // ellipse with a smooth vertical "opaque-above" gradient
+                        if let upper = CIFilter(name: "CISmoothLinearGradient") {
+                            upper.setValue(CIVector(x: cx, y: chestY - ph * 0.10), forKey: "inputPoint0")
+                            upper.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 0), forKey: "inputColor0")
+                            upper.setValue(CIVector(x: cx, y: chestY + ph * 0.08), forKey: "inputPoint1")
+                            upper.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor1")
+                            if let up = upper.outputImage?.cropped(to: ext), let bm = bustMask {
+                                let mx = CIFilter(name: "CIMaximumCompositing")
+                                mx?.setValue(up, forKey: kCIInputImageKey)
+                                mx?.setValue(bm, forKey: kCIInputBackgroundImageKey)
+                                bustMask = mx?.outputImage?.cropped(to: ext) ?? bm
                             }
                         }
-                        // pedestal glow: squashed radial in the mode's aura color
-                        let pedY = ext.height * 0.10
-                        let squash: CGFloat = 0.20
-                        if let radial = CIFilter(name: "CIRadialGradient") {
-                            radial.setValue(CIVector(x: ext.midX, y: pedY / squash), forKey: "inputCenter")
-                            radial.setValue(10, forKey: "inputRadius0")
-                            radial.setValue(ext.width * 0.44, forKey: "inputRadius1")
-                            radial.setValue(CIColor(red: auraR, green: auraG, blue: auraB, alpha: 0.20), forKey: "inputColor0")
-                            radial.setValue(CIColor(red: auraR, green: auraG, blue: auraB, alpha: 0.0), forKey: "inputColor1")
-                            if let ped = radial.outputImage?
-                                .transformed(by: CGAffineTransform(scaleX: 1.0, y: squash))
-                                .cropped(to: ext) {
-                                let over = CIFilter(name: "CISourceOverCompositing")
-                                over?.setValue(stagedFinal, forKey: kCIInputImageKey)
-                                over?.setValue(ped, forKey: kCIInputBackgroundImageKey)
-                                if let together = over?.outputImage {
-                                    stagedFinal = together
-                                }
+                        if let bm = bustMask {
+                            let bustBlend = CIFilter(name: "CIBlendWithMask")
+                            bustBlend?.setValue(stagedFinal, forKey: kCIInputImageKey)
+                            bustBlend?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                            bustBlend?.setValue(bm, forKey: kCIInputMaskImageKey)
+                            if let faded = bustBlend?.outputImage {
+                                stagedFinal = faded
                             }
                         }
                     }
