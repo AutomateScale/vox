@@ -2478,6 +2478,13 @@ function showWebcamOverlay()
     os.execute("/usr/bin/swiftc -O '" .. camSwift .. "' -o '" .. camBin .. "' 2>/dev/null")
   end
   if hs.fs.attributes(camBin) then
+    -- remember where the user DRAGGED the presenter so a hot-apply restart
+    -- doesn't teleport it back to the corner (that read as a crash)
+    pcall(function()
+      local app = hs.application.find("cam%-bin")
+      local win = app and app:mainWindow()
+      if win then M.lastCamFrame = win:frame() end
+    end)
     os.execute("/usr/bin/killall cam-bin 2>/dev/null")
     M.camRestartTimer = hs.timer.doAfter(0.9, function()
       M.camRestartTimer = nil
@@ -2512,14 +2519,21 @@ function spawnPresenter()
     local height = size
     local targetX, targetY
 
-    local win = hs.window.focusedWindow()
-    if win and win:title() ~= "" and win:role() == "AXWindow" then
-      local f = win:frame()
-      targetX = f.x + f.w - width - 15
-      targetY = (mainScreen.h - (f.y + f.h)) + 15
+    if M.lastCamFrame then
+      local f = M.lastCamFrame
+      M.lastCamFrame = nil
+      targetX = f.x
+      targetY = mainScreen.h - f.y - f.h   -- hs top-left -> AppKit bottom-left
     else
-      targetX = mainScreen.w - width - 35
-      targetY = 35
+      local win = hs.window.focusedWindow()
+      if win and win:title() ~= "" and win:role() == "AXWindow" then
+        local f = win:frame()
+        targetX = f.x + f.w - width - 15
+        targetY = (mainScreen.h - (f.y + f.h)) + 15
+      else
+        targetX = mainScreen.w - width - 35
+        targetY = 35
+      end
     end
 
     screenRec.camTask = hs.task.new(camBin, function(code)
@@ -6027,11 +6041,21 @@ window.addEventListener('keydown', function(e) {
     elseif k == "screenRecShape" or k == "screenRecBgMode"
         or k == "screenRecWebcamSize" then
       pref(k, v)
+      if k == "screenRecShape" and C.screenRecBgMode ~= "raw" then
+        -- shape only shows in Raw style — don't blink the presenter for
+        -- an invisible change, just say where it applies
+        hs.alert.show("🎛 saved — shapes show in the 'Raw shape' style", 1.8)
+        return
+      end
       local p = io.popen("pgrep -f cam-bin")
       local running = (p and p:read("*a") or "") ~= ""
       if p then p:close() end
-      if running then showWebcamOverlay() end   -- hot-apply
-      hs.alert.show("🎛 applied", 0.8)
+      if running then
+        hs.alert.show("🎛 applying — presenter restarting…", 1.2)
+        showWebcamOverlay()
+      else
+        hs.alert.show("🎛 saved", 0.8)
+      end
     elseif k == "setkey" then
       local saved = hs.settings.get("vox.pref.actionKeys") or {}
       if v.clear then
