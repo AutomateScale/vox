@@ -2547,8 +2547,6 @@ function cycleCameraDevice()
   end
 end
 
-hs.hotkey.bind({"option", "shift"}, "V", cycleCameraDevice)
-hs.hotkey.bind({"option", "shift"}, "W", function() startScreenRecording(true) end)
 
 function hideWebcamOverlay()
   if screenRec.camTask then
@@ -2584,11 +2582,6 @@ _G.showWebcamOverlay     = showWebcamOverlay
 _G.hideWebcamOverlay     = hideWebcamOverlay
 _G.toggleWebcamOverlay   = toggleWebcamOverlay
 
-pcall(function()
-  hs.hotkey.bind({"alt", "shift"}, "C", function()
-    toggleWebcamOverlay()
-  end)
-end)
 
 -- branded menubar icon: tiny alien silhouette with punched-out eyes.
 -- idle = monochrome template (adapts to menubar theme), rec = coral,
@@ -5761,6 +5754,84 @@ function voxSettingsMenu()
   }
 end
 
+function toggleConvMode()
+  convMode = not convMode
+  convLedger, convTypedBuf = "", ""
+  convLastActivity = hs.timer.secondsSinceEpoch()
+  if convMode then
+    play("start")
+    hs.alert.show("👽 Conversation Mode ON — say 'send' to submit", 2)
+    duckDown(true)
+    ensureServer()
+    if state == "recording" then convMode = false; cancelRecording(); convMode = true end
+    if state == "idle" then
+      convCalibrate(function()
+        if convMode and state == "idle" then locked = true; startRecording() end
+      end)
+    end
+  else
+    play("done")
+    hs.alert.show("Conversation Mode OFF", 1.5)
+    if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
+    if timers.convRearm then timers.convRearm:stop(); timers.convRearm = nil end
+    if state == "recording" then stopRecording() end
+    duckUp()
+  end
+end
+
+-- ---------------- programmable action keys ---------------------
+-- Every action has a default; the Settings window records overrides into
+-- hs.settings (vox.pref.actionKeys) and rebinds live.
+VOX_ACTIONS = {
+  { id = "record_screen", label = "Record screen",
+    def = { mods = { "alt", "shift" }, key = "r" },
+    fn = function() startScreenRecording() end },
+  { id = "record_window", label = "Record focused window",
+    def = { mods = { "alt", "shift" }, key = "w" },
+    fn = function() startScreenRecording(true) end },
+  { id = "presenter_cam", label = "Presenter camera on/off",
+    def = { mods = { "alt", "shift" }, key = "c" },
+    fn = function() toggleWebcamOverlay() end },
+  { id = "cycle_camera", label = "Cycle camera",
+    def = { mods = { "alt", "shift" }, key = "v" },
+    fn = function() cycleCameraDevice() end },
+  { id = "conv_toggle", label = "Conversation mode (also Fn+⌥)",
+    def = nil,
+    fn = function() toggleConvMode() end },
+  { id = "open_settings", label = "Open settings",
+    def = nil,
+    fn = function() showVoxSettings() end },
+}
+M.actionKeys = {}
+function bindActionKeys()
+  for _, hk in pairs(M.actionKeys) do pcall(function() hk:delete() end) end
+  M.actionKeys = {}
+  local saved = hs.settings.get("vox.pref.actionKeys") or {}
+  for _, a in ipairs(VOX_ACTIONS) do
+    local spec = saved[a.id] or a.def
+    if spec and spec.key and #spec.key > 0 then
+      local ok, hk = pcall(hs.hotkey.bind, spec.mods or {}, spec.key, a.fn)
+      if ok and hk then M.actionKeys[a.id] = hk
+      else log("action key bind failed for " .. a.id) end
+    end
+  end
+end
+function actionKeyLabel(id)
+  local saved = hs.settings.get("vox.pref.actionKeys") or {}
+  local spec = saved[id]
+  if not spec then
+    for _, a in ipairs(VOX_ACTIONS) do
+      if a.id == id then spec = a.def end
+    end
+  end
+  if not spec or not spec.key then return "—" end
+  local sym = { alt = "⌥", cmd = "⌘", shift = "⇧", ctrl = "⌃" }
+  local s = ""
+  for _, m in ipairs(spec.mods or {}) do s = s .. (sym[m] or m) end
+  return s .. spec.key:upper()
+end
+bindActionKeys()
+
 -- ---------------- Settings window (webview + prefs bridge) ----
 function showVoxSettings()
   if M.settingsView then pcall(function() M.settingsView:delete() end); M.settingsView = nil end
@@ -5774,63 +5845,119 @@ function showVoxSettings()
   end
   if camOpts == "" then camOpts = '<option value="0">No cameras found</option>' end
 
+  local shortcutRows = ""
+  for _, a in ipairs(VOX_ACTIONS) do
+    shortcutRows = shortcutRows .. string.format(
+      '<div class="row"><span>%s</span><button class="keybtn" id="kb-%s" onclick="recordKey(this, \'%s\')">%s</button></div>',
+      a.label, a.id, a.id, actionKeyLabel(a.id))
+  end
+
   local function chk(v) return v and " checked" or "" end
   local function sel(a, b) return (a == b) and " selected" or "" end
 
   local html = string.format([[
 <!doctype html><html><head><meta charset="utf-8"><style>
-  body { background:#0f1420; color:#e8ecf4; font: 13px -apple-system, sans-serif; margin:0; padding:18px 22px; }
-  h1 { font-size:17px; margin:0 0 4px } .sub { color:#8b94a7; font-size:12px; margin-bottom:14px }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:#5ee0b0; margin:18px 0 8px; border-top:1px solid #232b3d; padding-top:14px }
-  label { display:flex; align-items:center; gap:8px; padding:5px 0; cursor:pointer }
-  select { background:#1a2233; color:#e8ecf4; border:1px solid #2b3550; border-radius:6px; padding:4px 8px; font-size:13px }
-  .row { display:flex; align-items:center; justify-content:space-between; padding:5px 0 }
-  input[type=checkbox], input[type=radio] { accent-color:#5ee0b0 }
+  * { box-sizing: border-box }
+  body { background:linear-gradient(160deg,#0d1220,#111a2e); color:#e8ecf4;
+         font:13px -apple-system,sans-serif; margin:0; padding:20px 24px; }
+  h1 { font-size:18px; margin:0 } .sub { color:#8b94a7; font-size:12px; margin:2px 0 16px }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px }
+  .card { background:rgba(255,255,255,0.035); border:1px solid #232b3f;
+          border-radius:14px; padding:14px 16px 10px; }
+  .card.wide { grid-column:span 2 }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:#5ee0b0; margin:0 0 8px }
+  label { display:flex; align-items:center; gap:8px; padding:4px 0; cursor:pointer; font-size:12.5px }
+  select { background:#161e30; color:#e8ecf4; border:1px solid #2b3550; border-radius:7px;
+           padding:4px 8px; font-size:12.5px; max-width:180px }
+  .row { display:flex; align-items:center; justify-content:space-between; padding:4px 0; font-size:12.5px }
+  input[type=checkbox] { accent-color:#5ee0b0; width:15px; height:15px }
+  .keybtn { background:#161e30; color:#ffd479; border:1px solid #2b3550; border-radius:7px;
+            padding:4px 12px; font:12px ui-monospace,monospace; cursor:pointer; min-width:82px }
+  .keybtn.rec { background:#3d2b12; color:#ffb020; border-color:#ffb020 }
+  .hint { color:#68718a; font-size:11px; margin-top:6px }
 </style></head><body>
-<h1>Vox Settings</h1><div class="sub">Changes apply instantly and persist.</div>
+<h1>Vox Settings</h1><div class="sub">Changes apply instantly and persist across updates.</div>
+<div class="grid">
 
-<h2>Dictation</h2>
-<div class="row"><span>Hold key</span><select onchange="send('holdKey', this.value)">
-  <option value="61"%s>Right Option ⌥</option><option value="54"%s>Right Command ⌘</option>
-  <option value="58"%s>Left Option ⌥</option><option value="55"%s>Left Command ⌘</option></select></div>
-<div class="row"><span>Language</span><select onchange="send('language', this.value)">
-  <option value="en"%s>English</option><option value="fr"%s>French</option><option value="auto"%s>Auto-detect</option></select></div>
-<label><input type="checkbox"%s onchange="send('keepInClipboard', this.checked)"> Keep dictation in clipboard</label>
+<div class="card"><h2>Dictation</h2>
+  <div class="row"><span>Hold key</span><select onchange="send('holdKey', this.value)">
+    <option value="61"%s>Right Option ⌥</option><option value="54"%s>Right Command ⌘</option>
+    <option value="58"%s>Left Option ⌥</option><option value="55"%s>Left Command ⌘</option></select></div>
+  <div class="row"><span>Language</span><select onchange="send('language', this.value)">
+    <option value="en"%s>English</option><option value="fr"%s>French</option><option value="auto"%s>Auto</option></select></div>
+  <label><input type="checkbox"%s onchange="send('keepInClipboard', this.checked)"> Keep in clipboard</label>
+  <label><input type="checkbox"%s onchange="send('memory', this.checked)"> Remember dictations (brain)</label>
+</div>
 
-<h2>Conversation Mode</h2>
-<label><input type="checkbox"%s onchange="send('convLive', this.checked)"> Live word-by-word typing</label>
-<label><input type="checkbox"%s onchange="send('alienPlayByPlay', this.checked)"> Alien play-by-play commentary</label>
+<div class="card"><h2>Conversation</h2>
+  <label><input type="checkbox"%s onchange="send('convLive', this.checked)"> Live word-by-word typing</label>
+  <label><input type="checkbox"%s onchange="send('alienPlayByPlay', this.checked)"> Alien play-by-play</label>
+  <div class="hint">Toggle with Fn+⌥ · say "send" to submit</div>
+  <h2 style="margin-top:12px">Audio</h2>
+  <label><input type="checkbox"%s onchange="send('duckAudio', this.checked)"> Duck music while dictating</label>
+  <div class="row"><span>Duck style</span><select onchange="send('duckMode', this.value)">
+    <option value="duck"%s>Lower</option><option value="mute"%s>Mute</option><option value="pause"%s>Pause</option></select></div>
+  <div class="row"><span>Sounds</span><select onchange="send('soundTheme', this.value)">
+    <option value="sleek"%s>Sleek</option><option value="classic"%s>Classic</option></select></div>
+</div>
 
-<h2>Audio</h2>
-<label><input type="checkbox"%s onchange="send('duckAudio', this.checked)"> Duck music while dictating</label>
-<div class="row"><span>Duck style</span><select onchange="send('duckMode', this.value)">
-  <option value="duck"%s>Lower to 15%%</option><option value="mute"%s>Mute</option><option value="pause"%s>Pause media</option></select></div>
-<div class="row"><span>Sound theme</span><select onchange="send('soundTheme', this.value)">
-  <option value="sleek"%s>Sleek</option><option value="classic"%s>Classic</option></select></div>
+<div class="card"><h2>AI</h2>
+  <div class="row"><span>Alien voice</span><select onchange="send('alienVoiceName', this.value)">
+    <option value="vox"%s>Vox</option><option value="af_heart"%s>Heart</option><option value="af_bella"%s>Bella</option>
+    <option value="af_river"%s>River</option><option value="af_nova"%s>Nova</option><option value="am_adam"%s>Adam</option>
+    <option value="am_fenrir"%s>Fenrir</option></select></div>
+  <div class="row"><span>Translate to</span><select onchange="send('translateTo', this.value)">
+    <option value="off"%s>Off</option><option value="English"%s>English</option><option value="French"%s>French</option>
+    <option value="Spanish"%s>Spanish</option><option value="Dutch"%s>Dutch</option></select></div>
+  <label><input type="checkbox"%s onchange="send('llmCleanup', this.checked)"> AI cleanup pass</label>
+</div>
 
-<h2>AI</h2>
-<div class="row"><span>Alien voice</span><select onchange="send('alienVoiceName', this.value)">
-  <option value="vox"%s>Vox</option><option value="af_heart"%s>Heart</option><option value="af_bella"%s>Bella</option>
-  <option value="af_river"%s>River</option><option value="af_nova"%s>Nova</option><option value="am_adam"%s>Adam</option>
-  <option value="am_fenrir"%s>Fenrir</option></select></div>
-<div class="row"><span>Translate to</span><select onchange="send('translateTo', this.value)">
-  <option value="off"%s>Off</option><option value="English"%s>English</option><option value="French"%s>French</option>
-  <option value="Spanish"%s>Spanish</option><option value="Dutch"%s>Dutch</option></select></div>
-<label><input type="checkbox"%s onchange="send('llmCleanup', this.checked)"> AI cleanup pass (slower, may reword)</label>
-<label><input type="checkbox"%s onchange="send('memory', this.checked)"> Remember dictations (the brain)</label>
+<div class="card"><h2>Voom — Screen &amp; Presenter</h2>
+  <div class="row"><span>Camera</span><select onchange="send('camera', this.value)">%s</select></div>
+  <label><input type="checkbox"%s onchange="send('screenRecWebcam', this.checked)"> Webcam bubble in recordings</label>
+  <div class="row"><span>Presenter style</span><select onchange="send('screenRecBgMode', this.value)">
+    <option value="cutout"%s>✨ AI cutout</option><option value="chroma"%s>🟢 Chroma key</option>
+    <option value="raw"%s>📷 Raw circle</option></select></div>
+</div>
 
-<h2>Voom — Screen &amp; Presenter</h2>
-<div class="row"><span>Camera</span><select onchange="send('camera', this.value)">%s</select></div>
-<label><input type="checkbox"%s onchange="send('screenRecWebcam', this.checked)"> Include webcam bubble in recordings</label>
-<div class="row"><span>Presenter style</span><select onchange="send('screenRecBgMode', this.value)">
-  <option value="cutout"%s>✨ AI person cutout</option><option value="chroma"%s>🟢 Green-screen chroma key</option>
-  <option value="raw"%s>📷 Raw circle</option></select></div>
+<div class="card wide"><h2>Shortcuts</h2>
+  %s
+  <div class="hint">Click a key, then press your combo. Esc clears the binding.</div>
+</div>
 
-<script>function send(k, v) { window.webkit.messageHandlers.voxprefs.postMessage({key:k, value:v}); }</script>
+</div>
+<script>
+function send(k, v) { window.webkit.messageHandlers.voxprefs.postMessage({key:k, value:v}); }
+let recording = null;
+function recordKey(btn, action) {
+  if (recording) { recording.btn.classList.remove('rec'); }
+  recording = { btn: btn, action: action };
+  btn.classList.add('rec'); btn.textContent = 'press keys…';
+}
+window.addEventListener('keydown', function(e) {
+  if (!recording) return;
+  e.preventDefault(); e.stopPropagation();
+  if (e.key === 'Escape') {
+    send('setkey', { action: recording.action, clear: true });
+    recording.btn.textContent = '—'; recording.btn.classList.remove('rec'); recording = null; return;
+  }
+  if (['Shift','Alt','Meta','Control'].includes(e.key)) return;  // wait for the real key
+  const mods = [];
+  if (e.altKey) mods.push('alt');
+  if (e.metaKey) mods.push('cmd');
+  if (e.ctrlKey) mods.push('ctrl');
+  if (e.shiftKey) mods.push('shift');
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
+  send('setkey', { action: recording.action, mods: mods, key: key });
+  const sym = { alt:'⌥', cmd:'⌘', shift:'⇧', ctrl:'⌃' };
+  recording.btn.textContent = mods.map(m => sym[m]).join('') + key.toUpperCase();
+  recording.btn.classList.remove('rec'); recording = null;
+}, true);
+</script>
 </body></html>]],
     sel(C.holdKeycode, 61), sel(C.holdKeycode, 54), sel(C.holdKeycode, 58), sel(C.holdKeycode, 55),
     sel(C.language, "en"), sel(C.language, "fr"), sel(C.language, "auto"),
-    chk(C.keepInClipboard),
+    chk(C.keepInClipboard), chk(C.memory),
     chk(C.convLive), chk(C.alienPlayByPlay),
     chk(C.duckAudio),
     sel(C.duckMode, "duck"), sel(C.duckMode, "mute"), sel(C.duckMode, "pause"),
@@ -5840,10 +5967,11 @@ function showVoxSettings()
     sel(C.alienVoiceName, "am_fenrir"),
     sel(C.translateTo, "off"), sel(C.translateTo, "English"), sel(C.translateTo, "French"),
     sel(C.translateTo, "Spanish"), sel(C.translateTo, "Dutch"),
-    chk(C.llmCleanup), chk(C.memory),
+    chk(C.llmCleanup),
     camOpts,
     chk(C.screenRecWebcam),
-    sel(C.screenRecBgMode, "cutout"), sel(C.screenRecBgMode, "chroma"), sel(C.screenRecBgMode, "raw"))
+    sel(C.screenRecBgMode, "cutout"), sel(C.screenRecBgMode, "chroma"), sel(C.screenRecBgMode, "raw"),
+    shortcutRows)
 
   local uc = hs.webview.usercontent.new("voxprefs")
   uc:setCallback(function(msg)
@@ -5861,14 +5989,24 @@ function showVoxSettings()
       pref("soundTheme", v); loadSounds(); play("done")
     elseif k == "alienVoiceName" then
       pref("alienVoiceName", v); speakAlien("This is my voice now.")
+    elseif k == "setkey" then
+      local saved = hs.settings.get("vox.pref.actionKeys") or {}
+      if v.clear then
+        saved[v.action] = { key = "" }        -- explicit unbind
+      else
+        saved[v.action] = { mods = v.mods, key = v.key }
+      end
+      hs.settings.set("vox.pref.actionKeys", saved)
+      bindActionKeys()
+      hs.alert.show("⌨️ shortcut saved", 1)
     else
-      pref(k, v)   -- booleans arrive as true/false, strings as strings
+      pref(k, v)
     end
   end)
 
   local f = hs.screen.mainScreen():frame()
   M.settingsView = hs.webview.new(
-      { x = f.x + (f.w - 460) / 2, y = f.y + (f.h - 640) / 2, w = 460, h = 640 },
+      { x = f.x + (f.w - 900) / 2, y = f.y + (f.h - 620) / 2, w = 900, h = 620 },
       { developerExtrasEnabled = false }, uc)
     :windowStyle({ "titled", "closable" })
     :windowTitle("Vox Settings")
@@ -5902,30 +6040,7 @@ menubar:setMenu(function()
   return {
     { title = "Hold " .. C.holdKeyName .. " to talk  ·  Fn+⌥ = conversation", disabled = true },
     { title = "-" },
-    { title = convMode and "🟢 Conversation Mode — ON" or "⚪️ Conversation Mode", fn = function()
-        convMode = not convMode
-        convLedger, convTypedBuf = "", ""
-        convLastActivity = hs.timer.secondsSinceEpoch()
-        if convMode then
-          play("start")
-          hs.alert.show("👽 Conversation Mode ON — say 'send' to submit (Fn+⌥ to stop)", 2)
-          duckDown(true)
-          ensureServer()
-          if state == "recording" then convMode = false; cancelRecording(); convMode = true end
-          if state == "idle" then
-            convCalibrate(function()
-              if convMode and state == "idle" then locked = true; startRecording() end
-            end)
-          end
-        else
-          play("done")
-          hs.alert.show("Conversation Mode OFF", 1.5)
-          if timers.convWatch then timers.convWatch:stop(); timers.convWatch = nil end
-          if timers.convRearm then timers.convRearm:stop(); timers.convRearm = nil end
-          if state == "recording" then stopRecording() end
-          duckUp()
-        end
-      end },
+    { title = convMode and "🟢 Conversation Mode — ON" or "⚪️ Conversation Mode", fn = function() toggleConvMode() end },
     { title = (screenRec and screenRec.active) and "🛑 Stop Voom Recording (⌥⇧R)" or "🎬 Record Screen (⌥⇧R)",
       fn = function() startScreenRecording() end },
     { title = "🎯 Record Focused Window (⌥⇧W)", fn = function() startScreenRecording(true) end },
@@ -6163,9 +6278,6 @@ timers.stateWatchdog = hs.timer.doEvery(5, function()
   end
 end)
 
-M.screenRecHotkey = hs.hotkey.bind({ "alt", "shift" }, "R", function()
-  toggleScreenRecording()
-end)
 
 M.startScreenRecording  = startScreenRecording
 M.stopScreenRecording   = stopScreenRecording
