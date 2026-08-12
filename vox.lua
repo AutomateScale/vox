@@ -6037,6 +6037,8 @@ window.addEventListener('keydown', function(e) {
   uc:setCallback(function(msg)
     local b = msg.body or {}
     local k, v = b.key, b.value
+    log("settings click: " .. tostring(k) .. " = " ..
+        (type(v) == "table" and hs.json.encode(v) or tostring(v)))
     if k == "holdKey" then
       local names = { ["61"] = "Right Option", ["54"] = "Right Command",
                       ["58"] = "Left Option", ["55"] = "Left Command" }
@@ -6092,7 +6094,7 @@ window.addEventListener('keydown', function(e) {
       { x = f.x + (f.w - 900) / 2, y = f.y + (f.h - 620) / 2, w = 900, h = 620 },
       { developerExtrasEnabled = false }, uc)
     :windowStyle({ "titled", "closable" })
-    :windowTitle("Vox Settings")
+    :windowTitle("Vox Settings · " .. os.date("%H:%M"))
     :allowTextEntry(true)
     :html(html)
   M.settingsView:show()
