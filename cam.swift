@@ -626,7 +626,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
                                 totalDeltaSum += delta
-                                let blendWeight: Float = max(0.06, min(0.60, 0.06 + (delta / 0.18) * 0.54))
+                                let blendWeight: Float = (self.currentMotionVelocity > 0.008) ? 0.95 : max(0.12, min(0.80, 0.12 + (delta / 0.12) * 0.68))
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
 
@@ -641,12 +641,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         }
                         
                         let frameMotion = totalBodyCount > 0 ? Double(totalDeltaSum / Float(totalBodyCount)) : 0.0
-                        self.currentMotionVelocity = self.currentMotionVelocity * 0.70 + frameMotion * 0.30
+                        self.currentMotionVelocity = self.currentMotionVelocity * 0.50 + frameMotion * 0.50
+                        let isFastMotion = self.currentMotionVelocity > 0.008
 
-                        // Smooth row extremities vertically (3-row rolling envelope margin)
+                        // Smooth row extremities vertically (Generous 24px safety margin around head, face & body)
                         var cleanRowMin = rowMin
                         var cleanRowMax = rowMax
-                        let marginPx = 8 // 8px tight safety margin around arms & body
+                        let marginPx = 24 // 24px wide head & body safety cushion prevents clipping during fast movement
                         
                         if totalBodyCount > 40 {
                             for y in max(0, globalMinY - 4)...min(mh - 1, globalMaxY + 4) {
@@ -661,19 +662,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                             }
                         }
 
-                        // 60 FPS Temporal EMA Row-Boundary Smoothing (Eliminates 1-pixel boundary chatter completely!)
+                        // 60 FPS Dynamic Velocity-Adaptive Motion Row Tracking (Zero lag on head & face when moving!)
                         if self.prevRowMinData == nil || self.prevRowMinData?.count != mh {
                             self.prevRowMinData = cleanRowMin
                             self.prevRowMaxData = cleanRowMax
                         } else {
+                            let alphaPrev = isFastMotion ? 0.05 : 0.55
+                            let alphaNew = 1.0 - alphaPrev
                             for y in 0..<mh {
                                 let pMin = Double(self.prevRowMinData![y])
                                 let pMax = Double(self.prevRowMaxData![y])
                                 let cMin = Double(cleanRowMin[y])
                                 let cMax = Double(cleanRowMax[y])
                                 
-                                let smMin = Int(round(pMin * 0.70 + cMin * 0.30))
-                                let smMax = Int(round(pMax * 0.70 + cMax * 0.30))
+                                let smMin = Int(round(pMin * alphaPrev + cMin * alphaNew))
+                                let smMax = Int(round(pMax * alphaPrev + cMax * alphaNew))
                                 
                                 self.prevRowMinData![y] = smMin
                                 self.prevRowMaxData![y] = smMax
@@ -709,18 +712,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                             }
                         }
                         if totalBodyCount > 40 {
-                            let padX = Int(Double(mw) * 0.12)
-                            let padY = Int(Double(mh) * 0.12)
+                            let padX = Int(Double(mw) * 0.16)
+                            let padY = Int(Double(mh) * 0.16)
                             let nMinX = CGFloat(max(0, cleanRowMin.min() ?? 0 - padX)) / CGFloat(mw)
                             let nMaxX = CGFloat(min(mw, cleanRowMax.max() ?? mw + padX)) / CGFloat(mw)
                             let nMinY = CGFloat(max(0, globalMinY - padY)) / CGFloat(mh)
                             let nMaxY = CGFloat(min(mh, globalMaxY + padY)) / CGFloat(mh)
                             let targetRect = CGRect(x: nMinX, y: nMinY, width: nMaxX - nMinX, height: nMaxY - nMinY)
                             if let prev = self.trackedBodyRect {
-                                let smX = prev.origin.x * 0.50 + targetRect.origin.x * 0.50
-                                let smY = prev.origin.y * 0.50 + targetRect.origin.y * 0.50
-                                let smW = prev.size.width * 0.50 + targetRect.size.width * 0.50
-                                let smH = prev.size.height * 0.50 + targetRect.size.height * 0.50
+                                let boxAlphaPrev = isFastMotion ? 0.05 : 0.40
+                                let boxAlphaNew = 1.0 - boxAlphaPrev
+                                let smX = prev.origin.x * boxAlphaPrev + targetRect.origin.x * boxAlphaNew
+                                let smY = prev.origin.y * boxAlphaPrev + targetRect.origin.y * boxAlphaNew
+                                let smW = prev.size.width * boxAlphaPrev + targetRect.size.width * boxAlphaNew
+                                let smH = prev.size.height * boxAlphaPrev + targetRect.size.height * boxAlphaNew
                                 self.trackedBodyRect = CGRect(x: smX, y: smY, width: smW, height: smH)
                             } else {
                                 self.trackedBodyRect = targetRect
