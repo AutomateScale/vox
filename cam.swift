@@ -618,6 +618,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         var totalBodyCount = 0
 
                         var totalDeltaSum: Float = 0.0
+                        let isFastMotion = self.currentMotionVelocity > 0.008
                         for y in 0..<mh {
                             let rowOffset = y * bytesPerRow
                             let flatOffset = y * mw
@@ -626,11 +627,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
                                 totalDeltaSum += delta
-                                let blendWeight: Float = (self.currentMotionVelocity > 0.008) ? 0.95 : max(0.12, min(0.80, 0.12 + (delta / 0.12) * 0.68))
+                                let blendWeight: Float = isFastMotion ? 0.65 : max(0.18, min(0.60, 0.18 + (delta / 0.12) * 0.42))
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
 
-                                if smoothedVal >= 0.28 {
+                                if smoothedVal >= 0.20 {
                                     if x < rowMin[y] { rowMin[y] = x }
                                     if x > rowMax[y] { rowMax[y] = x }
                                     if y < globalMinY { globalMinY = y }
@@ -641,33 +642,41 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         }
                         
                         let frameMotion = totalBodyCount > 0 ? Double(totalDeltaSum / Float(totalBodyCount)) : 0.0
-                        self.currentMotionVelocity = self.currentMotionVelocity * 0.50 + frameMotion * 0.50
-                        let isFastMotion = self.currentMotionVelocity > 0.008
+                        self.currentMotionVelocity = self.currentMotionVelocity * 0.60 + frameMotion * 0.40
 
-                        // Smooth row extremities vertically (Generous 24px safety margin around head, face & body)
+                        // 5-Tap Gaussian Kernel Vertical Row-Boundary Smoothing (Eliminates all stair-step pixelation!)
                         var cleanRowMin = rowMin
                         var cleanRowMax = rowMax
                         let marginPx = 24 // 24px wide head & body safety cushion prevents clipping during fast movement
                         
                         if totalBodyCount > 40 {
+                            let gaussWeights: [Double] = [0.0625, 0.25, 0.375, 0.25, 0.0625]
                             for y in max(0, globalMinY - 4)...min(mh - 1, globalMaxY + 4) {
-                                var rMin = mw, rMax = -1
-                                for dy in -3...3 {
+                                var sumMin: Double = 0.0
+                                var sumMax: Double = 0.0
+                                var wSum: Double = 0.0
+                                for (idx, dy) in [-2, -1, 0, 1, 2].enumerated() {
                                     let ny = max(0, min(mh - 1, y + dy))
-                                    if rowMin[ny] < rMin { rMin = rowMin[ny] }
-                                    if rowMax[ny] > rMax { rMax = rowMax[ny] }
+                                    if rowMin[ny] < mw && rowMax[ny] >= 0 {
+                                        let w = gaussWeights[idx]
+                                        sumMin += Double(rowMin[ny]) * w
+                                        sumMax += Double(rowMax[ny]) * w
+                                        wSum += w
+                                    }
                                 }
-                                cleanRowMin[y] = max(0, rMin - marginPx)
-                                cleanRowMax[y] = min(mw - 1, rMax + marginPx)
+                                if wSum > 0 {
+                                    cleanRowMin[y] = max(0, Int(round(sumMin / wSum)) - marginPx)
+                                    cleanRowMax[y] = min(mw - 1, Int(round(sumMax / wSum)) + marginPx)
+                                }
                             }
                         }
 
-                        // 60 FPS Dynamic Velocity-Adaptive Motion Row Tracking (Zero lag on head & face when moving!)
+                        // 60 FPS Smooth Dynamic Row Boundary Tracking (Silky smooth vector tracking, zero jitter!)
                         if self.prevRowMinData == nil || self.prevRowMinData?.count != mh {
                             self.prevRowMinData = cleanRowMin
                             self.prevRowMaxData = cleanRowMax
                         } else {
-                            let alphaPrev = isFastMotion ? 0.05 : 0.55
+                            let alphaPrev = isFastMotion ? 0.15 : 0.40
                             let alphaNew = 1.0 - alphaPrev
                             for y in 0..<mh {
                                 let pMin = Double(self.prevRowMinData![y])
@@ -685,7 +694,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                             }
                         }
 
-                        // 2. Pass 2: HARD ERASE ALL PIXELS OUTSIDE THE ANATOMIC ARM & BODY PERIMETER
+                        // 2. Pass 2: SUB-PIXEL SMOOTHSTEP ANTI-ALIASED PERIMETER MAPPING
                         for y in 0..<mh {
                             let rowOffset = y * bytesPerRow
                             let flatOffset = y * mw
@@ -697,12 +706,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 var finalByte: UInt8 = 0
                                 if isBodyRow && x >= minAllowedX && x <= maxAllowedX {
                                     let smoothedVal = self.prevMaskData![flatOffset + x]
-                                    // Low-Light Dark Room Noise Gate (Erases dark background specks & locks smooth borders)
-                                    if smoothedVal >= 0.32 {
-                                        if smoothedVal >= 0.78 {
+                                    // Sub-Pixel Cubic Hermite Sigmoid Anti-Aliasing (Silky anti-aliased gradient edges)
+                                    if smoothedVal >= 0.20 {
+                                        if smoothedVal >= 0.80 {
                                             finalByte = 255
                                         } else {
-                                            let t = (smoothedVal - 0.32) / (0.78 - 0.32)
+                                            let t = (smoothedVal - 0.20) / (0.80 - 0.20)
                                             let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite Sigmoid
                                             finalByte = UInt8(clamping: Int(smoothstep * 255.0))
                                         }
@@ -720,7 +729,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                             let nMaxY = CGFloat(min(mh, globalMaxY + padY)) / CGFloat(mh)
                             let targetRect = CGRect(x: nMinX, y: nMinY, width: nMaxX - nMinX, height: nMaxY - nMinY)
                             if let prev = self.trackedBodyRect {
-                                let boxAlphaPrev = isFastMotion ? 0.05 : 0.40
+                                let boxAlphaPrev = isFastMotion ? 0.15 : 0.35
                                 let boxAlphaNew = 1.0 - boxAlphaPrev
                                 let smX = prev.origin.x * boxAlphaPrev + targetRect.origin.x * boxAlphaNew
                                 let smY = prev.origin.y * boxAlphaPrev + targetRect.origin.y * boxAlphaNew
@@ -739,15 +748,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let smoothedMaskNorm = smoothedMaskRaw.transformed(by: CGAffineTransform(translationX: -smoothedMaskRaw.extent.origin.x, y: -smoothedMaskRaw.extent.origin.y))
                     let cleanScaledMask = smoothedMaskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
 
-                    // Pure Baseline Noise Gate (-0.02 bias wipes far room noise while leaving 100% natural sRGB colors untouched)
-                    let noiseGate = CIFilter(name: "CIColorMatrix")
-                    noiseGate?.setValue(cleanScaledMask, forKey: kCIInputImageKey)
-                    noiseGate?.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
-                    noiseGate?.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
-                    noiseGate?.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
-                    noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: 1.02), forKey: "inputAVector")
-                    noiseGate?.setValue(CIVector(x: 0, y: 0, z: 0, w: -0.02), forKey: "inputBiasVector")
-                    let rawCleanMask = noiseGate?.outputImage?.cropped(to: inputCIImage.extent) ?? cleanScaledMask
+                    // GPU Sub-Pixel Vector Anti-Aliasing (Wipes all pixelation from scaled mask edges)
+                    var rawCleanMask = cleanScaledMask
+                    if let antiAliasFilter = CIFilter(name: "CIGaussianBlur") {
+                        antiAliasFilter.setValue(cleanScaledMask, forKey: kCIInputImageKey)
+                        antiAliasFilter.setValue(1.0, forKey: kCIInputRadiusKey)
+                        if let output = antiAliasFilter.outputImage {
+                            rawCleanMask = output.cropped(to: inputCIImage.extent)
+                        }
+                    }
 
                     // 2. HARD SPATIAL ERASURE: Erase ALL pixels outside the Dynamic Humanoid Movement Envelope
                     var cleanMask = rawCleanMask
