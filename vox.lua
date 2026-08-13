@@ -1295,6 +1295,8 @@ function bubbleHide()
   bubble.dir, bubble.open = "out", false
   bubble.animStart = hs.timer.secondsSinceEpoch()
   if not bubble.timer then
+    bubble.timer = hs.timer.doEvery(0.03, safeTick("bubbleTick", BUB.tick))
+  end
 end
 
 -- element indices: 1 pill · 2 head · 3/4 eyes · 5 smile · 6 antenna ·
@@ -4854,8 +4856,6 @@ local function transcribe()
         transcribeCLI(t0)
       end
     end, { "-c", buildCmdPort(C.serverPort, maxTime * attempt) })
-    M.sttTask:start()
-  end
     M.sttTask:start()
   end
   run(1)
