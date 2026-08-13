@@ -19,8 +19,8 @@ pcall(function()
   hs.ipc.cliInstall(prefix)
 end)
 
--- ---------------- CONFIG (edit freely) ----------------------
 local HOME = os.getenv("HOME")
+local icons = nil
 
 -- Private scratch dir (0700) instead of world-readable /tmp. Recordings,
 -- screenshots and OCR text are the most sensitive things Vox touches — they
@@ -1295,9 +1295,6 @@ function bubbleHide()
   bubble.dir, bubble.open = "out", false
   bubble.animStart = hs.timer.secondsSinceEpoch()
   if not bubble.timer then
-    bubble.timer = hs.timer.doEvery(0.03, safeTick("bubbleTick", BUB.tick))
-  end
-end
 end
 
 -- element indices: 1 pill · 2 head · 3/4 eyes · 5 smile · 6 antenna ·
@@ -2645,7 +2642,7 @@ local function alienImage(fill)
   return img
 end
 
-local icons = {
+icons = {
   idle = alienImage("template"),
   rec  = alienImage({ red = 1.0,  green = 0.36, blue = 0.36, alpha = 1 }),
   work = alienImage({ red = 0.72, green = 0.52, blue = 1.0,  alpha = 1 }),
@@ -5540,7 +5537,7 @@ end
 if M and M.menubar then pcall(function() M.menubar:delete() end); M.menubar = nil end
 if menubar then pcall(function() menubar:delete() end); menubar = nil end
 menubar = hs.menubar.new()
-menubar:setIcon(icons.idle, true)
+if icons and icons.idle then menubar:setIcon(icons.idle, true) end
 function voxSettingsMenu()
   return {
     { title = "Vox — local dictation, by AutomateScale", fn = function()
