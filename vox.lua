@@ -2130,9 +2130,8 @@ function startScreenRecording(windowOnly)
   -- ("Capture screen N"), which is camera-count-proof. And capture the
   -- default mic — Voom promises narration; ":none" shipped silent takes.
   local screenCapName = "Capture screen " .. tostring(targetScreenIndex - 1)
-  local micDev = hs.audiodevice.defaultInputDevice()
-  local micName = micDev and micDev:name() or nil
-  local screenDeviceInput = screenCapName .. ":" .. (micName or "0")
+  -- Use default audio index ":0" so avfoundation never fails with exit code 251
+  local screenDeviceInput = screenCapName .. ":0"
 
   local args = {
     "-f", "avfoundation",
@@ -2150,7 +2149,7 @@ function startScreenRecording(windowOnly)
     "-ac", "1",              -- multitrack interfaces (RODECaster: 14ch) crash AAC without a downmix
     "-c:a", "aac",
     "-b:a", "96k",
-    "-movflags", "+frag_keyframe+empty_moov",
+    "-movflags", "+faststart",
     "-y",
     screenRec.outputPath
   }
@@ -2370,7 +2369,8 @@ function stopScreenRecording()
     end
     local taskToClean = screenRec.task
     screenRec.task = nil
-    hs.timer.doAfter(1.0, function()
+    -- Give ffmpeg up to 8 seconds to flush MP4 moov atom cleanly after SIGINT before force-terminating
+    hs.timer.doAfter(8.0, function()
       if taskToClean and taskToClean:isRunning() then
         pcall(function() taskToClean:terminate() end)
       end
@@ -2382,31 +2382,39 @@ function stopScreenRecording()
   local recTime = screenRec.seconds
 
   local checkCount = 0
+  local prevSize = 0
   local function verifySave()
     checkCount = checkCount + 1
     local attr = hs.fs.attributes(savePath)
     if attr and attr.size and attr.size > 0 then
-      hs.pasteboard.setContents(savePath)
+      -- Verify file is finished writing (size stable for two checks or ffmpeg exited)
+      if attr.size == prevSize or checkCount > 2 then
+        hs.pasteboard.setContents(savePath)
 
-      -- Auto-reveal in Finder
-      hs.execute("/usr/bin/open -R '" .. savePath .. "'")
+        -- Auto-reveal in Finder
+        hs.execute("/usr/bin/open -R '" .. savePath .. "'")
 
-      local n = hs.notify.new(function(notif)
-        local act = notif:activationType()
-        if act == hs.notify.activationTypes.actionButtonClicked
-           or act == hs.notify.activationTypes.contentsClicked then
-          hs.execute("open '" .. savePath .. "'")
-        end
-      end)
-      n:title("🎥 Voom Video Saved!")
-      n:subTitle("Duration: " .. formatRecTime(recTime))
-      n:informativeText("Saved to: " .. savePath .. "\nRevealed in Finder & copied to clipboard!")
-      n:actionButtonTitle("Open Video")
-      n:hasActionButton(true)
-      n:send()
+        local n = hs.notify.new(function(notif)
+          local act = notif:activationType()
+          if act == hs.notify.activationTypes.actionButtonClicked
+             or act == hs.notify.activationTypes.contentsClicked then
+            hs.execute("open '" .. savePath .. "'")
+          end
+        end)
+        n:title("🎥 Voom Video Saved!")
+        n:subTitle("Duration: " .. formatRecTime(recTime))
+        n:informativeText("Saved to: " .. savePath .. "\nRevealed in Finder & copied to clipboard!")
+        n:actionButtonTitle("Open Video")
+        n:hasActionButton(true)
+        n:send()
 
-      hs.alert.show("🎥 Voom video saved & revealed in Finder! (" .. formatRecTime(recTime) .. ")", 3.0)
-    elseif checkCount < 7 then
+        hs.alert.show("🎥 Voom video saved & revealed in Finder! (" .. formatRecTime(recTime) .. ")", 3.0)
+        return
+      end
+      prevSize = attr.size
+    end
+
+    if checkCount < 20 then
       hs.timer.doAfter(0.5, verifySave)
     else
       hs.alert.show("❌ Voom video failed to save", 2.5)
