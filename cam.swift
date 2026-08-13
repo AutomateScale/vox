@@ -89,7 +89,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
-    var filterMode: String = "mint"
+    var filterMode: String = "clean"
     var captureQuality: String = "auto"   // auto | hd | 4k
     let sizePresets: [CGFloat] = [260.0, 380.0, 520.0, 720.0, 950.0, 1200.0]
     var currentPresetIndex: Int = 1
@@ -793,18 +793,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     antiAliasFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
                     let outlineStrokeMask = antiAliasFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawOutlineStroke
 
-                    // CLEAN LOOK: plain 'cutout' is now glow-free — no outline
-                    // stroke, no aura, feather-light shadow. The colored
-                    // accent looks (mint/hero/goddess/cyber) keep the glow.
+                    // CLEAN LOOK: plain 'cutout' / 'clean' is 100% glow-free & distraction-free.
                     let cleanLook = (self.filterMode == "cutout" || self.filterMode == "clean")
                     // Select Color Preset Based on Mode
-                    var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: cleanLook ? 0.0 : 0.85) // Mint Default
+                    var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: cleanLook ? 0.0 : 0.35) // Chilled Mint Accent
                     if self.filterMode == "hero" || self.filterMode == "male" {
-                        outlineCIColor = CIColor(red: 0.30, green: 0.75, blue: 1.0, alpha: 0.85) // Electric Blue / Slate Hero
+                        outlineCIColor = CIColor(red: 0.30, green: 0.75, blue: 1.0, alpha: 0.35) // Chilled Slate Hero
                     } else if self.filterMode == "goddess" || self.filterMode == "fem" {
-                        outlineCIColor = CIColor(red: 1.0, green: 0.82, blue: 0.88, alpha: 0.85) // Champagne Rose Gold
+                        outlineCIColor = CIColor(red: 1.0, green: 0.82, blue: 0.88, alpha: 0.35) // Chilled Champagne Rose
                     } else if self.filterMode == "cyber" || self.filterMode == "neon" {
-                        outlineCIColor = CIColor(red: 0.0, green: 1.0, blue: 0.95, alpha: 0.90) // Electric Cyan
+                        outlineCIColor = CIColor(red: 0.0, green: 1.0, blue: 0.95, alpha: 0.40) // Chilled Cyan
                     }
                     
                     let outlineColor = CIImage(color: outlineCIColor).cropped(to: inputCIImage.extent)
@@ -825,13 +823,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     shadowBlur?.setValue(10.0, forKey: kCIInputRadiusKey)
                     let softShadowMask = shadowBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? shadowBaseMask
 
-                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: cleanLook ? 0.26 : 0.65)).cropped(to: inputCIImage.extent)
+                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: cleanLook ? 0.26 : 0.45)).cropped(to: inputCIImage.extent)
                     let shadowImage = CIFilter(name: "CIBlendWithMask")
                     shadowImage?.setValue(darkShadowColor, forKey: kCIInputImageKey)
                     shadowImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     shadowImage?.setValue(softShadowMask, forKey: kCIInputMaskImageKey)
 
-                    // Executive-Grade Subtle High-Class Studio Aura Engine (Ultra-Soft, Elegant, Whisper-Thin Luxury Glow)
+                    // Subtle Chilled Studio Aura Engine (Ultra-Soft, Whisper-Thin)
                     let motionScale = min(1.0, max(0.0, (self.currentMotionVelocity - 0.005) / 0.025))
                     
                     // 1. Silky 20px Feathered Ambient Radiance
@@ -845,18 +843,18 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     auraBlur?.setValue(18.0 + motionScale * 6.0, forKey: kCIInputRadiusKey)
                     let softHighClassMask = auraBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? auraExpanded
 
-                    // Luxurious High-Class Palette (Pearl Mint, Slate Blue, Warm Champagne, Velvet Cyan)
-                    var auraR: CGFloat = 0.45, auraG: CGFloat = 0.95, auraB: CGFloat = 0.80 // Pearl Mint
+                    // Chilled High-Class Palette
+                    var auraR: CGFloat = 0.45, auraG: CGFloat = 0.95, auraB: CGFloat = 0.80
                     if self.filterMode == "hero" || self.filterMode == "male" {
-                        auraR = 0.35; auraG = 0.70; auraB = 0.95 // Slate Platinum Blue
+                        auraR = 0.35; auraG = 0.70; auraB = 0.95
                     } else if self.filterMode == "goddess" || self.filterMode == "fem" {
-                        auraR = 0.98; auraG = 0.88; auraB = 0.76 // Warm Champagne Gold
+                        auraR = 0.98; auraG = 0.88; auraB = 0.76
                     } else if self.filterMode == "cyber" || self.filterMode == "neon" {
-                        auraR = 0.20; auraG = 0.90; auraB = 0.90 // Velvet Electric Cyan
+                        auraR = 0.20; auraG = 0.90; auraB = 0.90
                     }
 
-                    // Subtle Executive Opacity (Whisper-thin 0.12 when still -> 0.22 when gesturing)
-                    let highClassAlpha = cleanLook ? 0.0 : (0.12 + motionScale * 0.10)
+                    // Chilled Opacity (0.04 when still -> 0.08 when gesturing)
+                    let highClassAlpha = cleanLook ? 0.0 : (0.04 + motionScale * 0.04)
                     
                     let auraCIColor = CIColor(red: auraR, green: auraG, blue: auraB, alpha: CGFloat(highClassAlpha))
                     let auraColorImg = CIImage(color: auraCIColor).cropped(to: inputCIImage.extent)
