@@ -751,11 +751,24 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let smoothedMaskNorm = smoothedMaskRaw.transformed(by: CGAffineTransform(translationX: -smoothedMaskRaw.extent.origin.x, y: -smoothedMaskRaw.extent.origin.y))
                     let cleanScaledMask = smoothedMaskNorm.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY)).cropped(to: inputCIImage.extent)
 
-                    // GPU Sub-Pixel Vector Anti-Aliasing (Wipes all pixelation from scaled mask edges)
-                    var rawCleanMask = cleanScaledMask
+                    // HIGH-DEFINITION LUMA-GUIDED HAIR MATTING ENGINE (CIGuidedFilter)
+                    // Uses the 1080p/4K camera luma guide to snap the neural mask directly to fine hair strands, stopping light drift!
+                    var hairRefinedMask = cleanScaledMask
+                    if let guidedFilter = CIFilter(name: "CIGuidedFilter") {
+                        guidedFilter.setValue(smoothedMaskNorm, forKey: "inputImage")
+                        guidedFilter.setValue(inputCIImage, forKey: "inputGuideImage")
+                        guidedFilter.setValue(2, forKey: "inputRadius")
+                        guidedFilter.setValue(0.0001, forKey: "inputEpsilon")
+                        if let output = guidedFilter.outputImage {
+                            hairRefinedMask = output.cropped(to: inputCIImage.extent)
+                        }
+                    }
+
+                    // GPU Sub-Pixel Vector Anti-Aliasing (Wipes any pixelation from hair edges)
+                    var rawCleanMask = hairRefinedMask
                     if let antiAliasFilter = CIFilter(name: "CIGaussianBlur") {
-                        antiAliasFilter.setValue(cleanScaledMask, forKey: kCIInputImageKey)
-                        antiAliasFilter.setValue(1.0, forKey: kCIInputRadiusKey)
+                        antiAliasFilter.setValue(hairRefinedMask, forKey: kCIInputImageKey)
+                        antiAliasFilter.setValue(0.8, forKey: kCIInputRadiusKey)
                         if let output = antiAliasFilter.outputImage {
                             rawCleanMask = output.cropped(to: inputCIImage.extent)
                         }
