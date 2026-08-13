@@ -6514,6 +6514,13 @@ M.lkgTask = hs.task.new("/bin/sh", nil, { "-c",
   "/usr/bin/git rev-parse HEAD > .vox-lkg" })
 M.lkgTask:start()
 
+-- (0) versioned git hooks: every clone runs ci/validate.sh before push,
+-- so a bad merge can't reach main and auto-update can't distribute it.
+-- Self-installed here because fleet Macs never re-run install.sh.
+M.hooksTask = hs.task.new("/usr/bin/git", nil,
+  { "-C", HOME .. "/vox", "config", "core.hooksPath", ".githooks" })
+M.hooksTask:start()
+
 -- Fleet Macs update by git pull and never re-run install.sh, so vox.lua
 -- keeps the two machine-local bootstrap pieces current itself:
 -- (1) ~/.hammerspoon/init.lua -> guarded loader. Only the stock
