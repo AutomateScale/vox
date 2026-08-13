@@ -5534,9 +5534,11 @@ if C.autoUpdate then
 end
 
 -- ---------------- menubar ------------------------------------
+if _G.voxMenubar then pcall(function() _G.voxMenubar:delete() end); _G.voxMenubar = nil end
 if M and M.menubar then pcall(function() M.menubar:delete() end); M.menubar = nil end
 if menubar then pcall(function() menubar:delete() end); menubar = nil end
 menubar = hs.menubar.new()
+_G.voxMenubar = menubar
 if icons and icons.idle then menubar:setIcon(icons.idle, true) end
 function voxSettingsMenu()
   return {
