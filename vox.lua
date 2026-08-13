@@ -1159,6 +1159,9 @@ local function miniShow()
   end
 end
 
+-- declared before miniHide so it closes over this local, not a nil global
+local bubble = { canvas = nil, timer = nil }
+
 local function miniHide()
   if mini.timer then mini.timer:stop(); mini.timer = nil end
   if mini.canvas then mini.canvas:hide() end
@@ -1171,12 +1174,6 @@ end
 -- sentence. Now it measures the words, grows out of the alien's head, holds at
 -- exactly the width it needs, and shrinks back into him — so it reads as HIS
 -- thought rather than a notification that happens to be nearby.
--- One table rather than eight locals: the main chunk is close to Lua's
--- 200-local ceiling and separate constants tipped it over.
---
--- The blob is drawn into a canvas sized to the widest it will ever get, and
--- only the ELEMENT frames move. Resizing an hs.canvas window every frame is
--- visibly steppy; resizing a shape inside a stable window is smooth.
 local BUB = { H = 30, PADX = 22, MINW = 96, MAXW = 460, TXT = 12.5 }
 BUB.CVW, BUB.CVH = BUB.MAXW + 40, BUB.H + 34
 
@@ -1194,7 +1191,6 @@ local function bubbleEnsure()
   c:behavior({ "canJoinAllSpaces", "stationary" })
   c:clickActivating(false)
 
-  -- 1 body · 2 rim · 3/4 the two thought-dots that trail down to his head
   c[1] = { type = "rectangle", action = "fill",
            fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.92 },
            roundedRectRadii = { xRadius = BUB.H / 2, yRadius = BUB.H / 2 },
@@ -1204,9 +1200,6 @@ local function bubbleEnsure()
            strokeWidth = 1.2,
            roundedRectRadii = { xRadius = BUB.H / 2, yRadius = BUB.H / 2 },
            frame = { x = 0, y = 0, w = BUB.MINW, h = BUB.H } }
-  -- Dots instead of a hard tail: a tail welds the bubble to a fixed point,
-  -- whereas dots read as the thought still rising off him and let the body
-  -- drift without the join looking broken.
   c[3] = { type = "circle", action = "fill",
            fillColor = { red = 0.05, green = 0.08, blue = 0.14, alpha = 0.9 },
            center = { x = BUB.CVW / 2, y = BUB.H + 9 }, radius = 4 }
@@ -1220,8 +1213,6 @@ local function bubbleEnsure()
   bubble.canvas = c
 end
 
--- easeOutBack: overshoots then settles. The overshoot is what makes it feel
--- like a blob inflating rather than a box being resized.
 function BUB.ease(t)
   local c1, c3 = 1.70158, 2.70158
   local u = t - 1
@@ -1234,14 +1225,10 @@ function BUB.layout(prog, wobblePhase)
   local eased = bubble.dir == "out" and (1 - prog) or BUB.ease(prog)
   eased = math.max(0.001, eased)
 
-  -- Width leads, height follows a touch behind, so it unfurls sideways out of
-  -- him instead of scaling up like a photograph.
   local w = BUB.MINW + (bubble.targetW - BUB.MINW) * math.min(1, eased)
   w = math.max(18, w * (0.42 + 0.58 * eased))
   local h = BUB.H * (0.5 + 0.5 * math.min(1, eased))
 
-  -- A slow squash/stretch keeps it alive while it sits there — a thought
-  -- breathing, not a tooltip parked on screen.
   local wob = math.sin(wobblePhase * 0.09) * 0.9
   local x = (BUB.CVW - w) / 2
   local y = 6 - wob
@@ -1253,7 +1240,6 @@ function BUB.layout(prog, wobblePhase)
   c[5].frame = { x = x, y = y + (h - BUB.TXT * 1.35) / 2 + 1, w = w, h = BUB.TXT * 1.5 }
   c[5].textColor = { red = 0.92, green = 0.98, blue = 0.95, alpha = math.max(0, eased * 1.4 - 0.4) }
 
-  -- Dots pop in after the body, so the thought looks like it rose off him.
   local d1 = math.max(0, math.min(1, (eased - 0.25) / 0.5))
   local d2 = math.max(0, math.min(1, (eased - 0.55) / 0.45))
   c[3].radius = 4 * d1
@@ -1285,8 +1271,6 @@ local function bubbleShow(text, duration)
   bubble.canvas[5].text = text
   bubble.targetW = BUB.measure(text)
 
-  -- Re-showing while already open re-flows to the new width instead of
-  -- replaying the entrance, so consecutive messages morph into each other.
   if bubble.dir ~= "in" or not bubble.open then
     bubble.animStart = hs.timer.secondsSinceEpoch()
   end
@@ -1308,12 +1292,12 @@ function bubbleHide()
     if bubble.canvas then bubble.canvas:hide() end
     return
   end
-  -- Shrink back into him rather than blinking out.
   bubble.dir, bubble.open = "out", false
   bubble.animStart = hs.timer.secondsSinceEpoch()
   if not bubble.timer then
     bubble.timer = hs.timer.doEvery(0.03, safeTick("bubbleTick", BUB.tick))
   end
+end
 end
 
 -- element indices: 1 pill · 2 head · 3/4 eyes · 5 smile · 6 antenna ·
@@ -4760,13 +4744,16 @@ local function transcribe()
       and (" -F language=" .. C.language) or ""
   local function buildCmdPort(port, timeLimit)
     return string.format(
-      "%s %s %s highpass 80 norm -3 reverse silence 1 0.25 0.4%% reverse pad 0.10 0.25 2>/dev/null || cp %s %s; " ..
-      "SIZE=$(/usr/bin/stat -f%%z %s 2>/dev/null || echo 0); " ..
-      "[ \"$SIZE\" -lt 1200 ] && exit 42; " ..
+      "%s %s %s highpass 80 norm -3 reverse silence 1 0.30 0.6%% reverse pad 0 0.15 2>/dev/null || cp %s %s; " ..
+      "A=$(%s %s -n stat 2>&1 | /usr/bin/awk '/Maximum amplitude/{print $3}'); " ..
+      "D=$(%s --i -D %s 2>/dev/null); " ..
+      "/usr/bin/awk -v a=\"$A\" -v d=\"$D\" " ..
+      "'BEGIN{ if(a==\"\")a=1; if(d==\"\")d=9; exit (a+0<0.02 || d+0<0.45) ? 0 : 1 }'" ..
+      " && exit 42; " ..
       "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 -F best_of=1 -F no_fallback=true " ..
       "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
       C.sox, C.wav, C.wavNorm, C.wav, C.wavNorm,
-      C.wavNorm,
+      C.sox, C.wav, C.sox, C.wavNorm,
       timeLimit, C.wavNorm,
       promptStr, langArg, C.whisperHost, port)
   end
@@ -4853,7 +4840,6 @@ local function transcribe()
         end
       elseif C.whisperHost ~= "127.0.0.1" then
         noteRemoteFail()
-        -- remote brain unreachable: fall back to the local model if we have one
         if hs.fs.attributes(C.model) then
           log("remote server unreachable — falling back to local whisper-cli")
           transcribeCLI(t0)
@@ -4863,9 +4849,6 @@ local function transcribe()
           reset()
         end
       elseif attempt == 1 and serverRunning() then
-        -- server alive but slow (model paging back into RAM after idle):
-        -- ONE retry with a longer window beats cold-loading the whole model
-        -- a second time via whisper-cli
         log("server slow (model paging in?) — one retry with longer window")
         run(2)
       else
@@ -4874,6 +4857,8 @@ local function transcribe()
         transcribeCLI(t0)
       end
     end, { "-c", buildCmdPort(C.serverPort, maxTime * attempt) })
+    M.sttTask:start()
+  end
     M.sttTask:start()
   end
   run(1)
