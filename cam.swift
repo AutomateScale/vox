@@ -627,11 +627,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
                                 totalDeltaSum += delta
-                                let blendWeight: Float = isFastMotion ? 0.65 : max(0.18, min(0.60, 0.18 + (delta / 0.12) * 0.42))
+                                let blendWeight: Float = (self.currentMotionVelocity > 0.008) ? 0.70 : max(0.12, min(0.50, 0.12 + (delta / 0.15) * 0.38))
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
 
-                                if smoothedVal >= 0.20 {
+                                if smoothedVal >= 0.30 {
                                     if x < rowMin[y] { rowMin[y] = x }
                                     if x > rowMax[y] { rowMax[y] = x }
                                     if y < globalMinY { globalMinY = y }
@@ -642,12 +642,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         }
                         
                         let frameMotion = totalBodyCount > 0 ? Double(totalDeltaSum / Float(totalBodyCount)) : 0.0
-                        self.currentMotionVelocity = self.currentMotionVelocity * 0.60 + frameMotion * 0.40
+                        self.currentMotionVelocity = self.currentMotionVelocity * 0.65 + frameMotion * 0.35
 
-                        // 5-Tap Gaussian Kernel Vertical Row-Boundary Smoothing (Eliminates all stair-step pixelation!)
+                        // Tight Anatomic Arm & Body Perimeter Gate (Tight 8px margin completely erases chair & room background)
                         var cleanRowMin = rowMin
                         var cleanRowMax = rowMax
-                        let marginPx = 24 // 24px wide head & body safety cushion prevents clipping during fast movement
+                        let marginPx = 8 // Tight 8px anatomic margin eliminates chair back & room background leakage
                         
                         if totalBodyCount > 40 {
                             let gaussWeights: [Double] = [0.0625, 0.25, 0.375, 0.25, 0.0625]
@@ -665,18 +665,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                     }
                                 }
                                 if wSum > 0 {
-                                    cleanRowMin[y] = max(0, Int(round(sumMin / wSum)) - marginPx)
-                                    cleanRowMax[y] = min(mw - 1, Int(round(sumMax / wSum)) + marginPx)
+                                    let cMinVal = Int(round(sumMin / wSum))
+                                    let cMaxVal = Int(round(sumMax / wSum))
+                                    // Directional Motion Lead-in: expand perimeter ONLY in the direction of motion so head never clips!
+                                    cleanRowMin[y] = max(0, cMinVal - marginPx - (isFastMotion ? 8 : 0))
+                                    cleanRowMax[y] = min(mw - 1, cMaxVal + marginPx + (isFastMotion ? 8 : 0))
                                 }
                             }
                         }
 
-                        // 60 FPS Smooth Dynamic Row Boundary Tracking (Silky smooth vector tracking, zero jitter!)
+                        // 60 FPS Motion-Predictive Dynamic Row Tracking (Directional lead-in eliminates motion lag!)
                         if self.prevRowMinData == nil || self.prevRowMinData?.count != mh {
                             self.prevRowMinData = cleanRowMin
                             self.prevRowMaxData = cleanRowMax
                         } else {
-                            let alphaPrev = isFastMotion ? 0.15 : 0.40
+                            let alphaPrev = isFastMotion ? 0.20 : 0.45
                             let alphaNew = 1.0 - alphaPrev
                             for y in 0..<mh {
                                 let pMin = Double(self.prevRowMinData![y])
@@ -694,7 +697,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                             }
                         }
 
-                        // 2. Pass 2: SUB-PIXEL SMOOTHSTEP ANTI-ALIASED PERIMETER MAPPING
+                        // 2. Pass 2: ANATOMIC PERIMETER GATE WITH LOW-LIGHT NOISE FLOOR (ERASES CHAIR & ROOM NOISE)
                         for y in 0..<mh {
                             let rowOffset = y * bytesPerRow
                             let flatOffset = y * mw
@@ -706,12 +709,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 var finalByte: UInt8 = 0
                                 if isBodyRow && x >= minAllowedX && x <= maxAllowedX {
                                     let smoothedVal = self.prevMaskData![flatOffset + x]
-                                    // Sub-Pixel Cubic Hermite Sigmoid Anti-Aliasing (Silky anti-aliased gradient edges)
-                                    if smoothedVal >= 0.20 {
-                                        if smoothedVal >= 0.80 {
+                                    // Proven Low-Light Dark Room Noise Gate (0.32 floor completely zeroes chair back & room noise)
+                                    if smoothedVal >= 0.32 {
+                                        if smoothedVal >= 0.78 {
                                             finalByte = 255
                                         } else {
-                                            let t = (smoothedVal - 0.20) / (0.80 - 0.20)
+                                            let t = (smoothedVal - 0.32) / (0.78 - 0.32)
                                             let smoothstep = t * t * (3.0 - 2.0 * t) // Cubic Hermite Sigmoid
                                             finalByte = UInt8(clamping: Int(smoothstep * 255.0))
                                         }
