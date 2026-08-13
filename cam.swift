@@ -457,23 +457,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 denoisedCIImage = output.cropped(to: baseInputCIImage.extent)
             }
         }
-        // Adaptive Low-Light & Backlight Studio Midtone Lifter (Boosts presenter brightness & skin tones even with light behind!)
-        let colorControl = CIFilter(name: "CIColorControls")
-        colorControl?.setValue(denoisedCIImage, forKey: kCIInputImageKey)
-        colorControl?.setValue(0.10, forKey: kCIInputBrightnessKey)
-        colorControl?.setValue(1.08, forKey: kCIInputContrastKey)
-        colorControl?.setValue(1.06, forKey: kCIInputSaturationKey)
-        let boostedColor = colorControl?.outputImage?.cropped(to: baseInputCIImage.extent) ?? denoisedCIImage
-
-        let gammaControl = CIFilter(name: "CIGammaAdjust")
-        gammaControl?.setValue(boostedColor, forKey: kCIInputImageKey)
-        gammaControl?.setValue(0.85, forKey: "inputPower")
-        let gammaBoosted = gammaControl?.outputImage?.cropped(to: baseInputCIImage.extent) ?? boostedColor
-
+        // Pure Natural sRGB Luminance Sharpness (Preserves camera's native dynamic auto-exposure & natural skin tones)
         let sharpener = CIFilter(name: "CISharpenLuminance")
-        sharpener?.setValue(gammaBoosted, forKey: kCIInputImageKey)
-        sharpener?.setValue(0.35, forKey: kCIInputSharpnessKey)
-        var inputCIImage = sharpener?.outputImage?.cropped(to: baseInputCIImage.extent) ?? gammaBoosted
+        sharpener?.setValue(denoisedCIImage, forKey: kCIInputImageKey)
+        sharpener?.setValue(0.25, forKey: kCIInputSharpnessKey)
+        var inputCIImage = sharpener?.outputImage?.cropped(to: baseInputCIImage.extent) ?? denoisedCIImage
         // RAW/CHROMA: apply the framing crop FIRST, dead-center — the shape
         // masks then build on final geometry and are centered by
         // construction in every framing (no tracking exists in these modes,
@@ -1013,7 +1001,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             // square = full sensor height at 1:1 (max width that keeps it);
             // tall = tighter 3:4 portrait
             let w = fext.height * (self.framing == "square" ? 1.0 : 0.75)
-            let x = max(fext.minX, min(fext.maxX - w, self.followX - w / 2))
+            let x = max(fext.minX, min(fext.maxX - w, cx - w / 2))
             let rect = CGRect(x: x, y: fext.minY, width: w, height: fext.height)
             finalImage = finalImage.cropped(to: rect)
                 .transformed(by: CGAffineTransform(translationX: -rect.origin.x, y: -rect.origin.y))
