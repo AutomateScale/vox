@@ -4820,6 +4820,24 @@ local function transcribe()
       stopSpecWatcher()
       if code == 42 then
         log("accidental tap — no speech in recording, discarded quietly")
+        -- DEAF-MIC DETECTOR: a sub-second tap discarding is normal; a LONG,
+        -- deliberate hold coming back silent means no audio is reaching the
+        -- Mac (dead fader, muted channel, wedged interface). Silent discard
+        -- here cost Adam four ghost dictations on a flat-lined RODECaster —
+        -- say it out loud instead.
+        local heldSecs = hs.timer.secondsSinceEpoch() - t0
+        if heldSecs > 2.5 then
+          M.silentHolds = (M.silentHolds or 0) + 1
+          if M.silentHolds >= 2 then
+            hs.alert.show("🎤 Vox hears NOTHING from '"
+              .. ((hs.audiodevice.defaultInputDevice()
+                   and hs.audiodevice.defaultInputDevice():name()) or "input")
+              .. "' — check fader/mute, or power-cycle the interface", 5)
+            M.silentHolds = 0
+          end
+        else
+          M.silentHolds = 0
+        end
         reset()
         return
       end
