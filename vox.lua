@@ -2402,6 +2402,17 @@ function stopScreenRecording()
           end
         end)
         n:title("🎥 Voom Video Saved!")
+        if not hs.settings.get("vox.starNudged") then
+          hs.settings.set("vox.starNudged", true)
+          timers.starNudge = hs.timer.doAfter(4, function()
+            local sn = hs.notify.new(function()
+              hs.urlevent.openURL("https://github.com/AutomateScale/vox")
+            end)
+            sn:title("Enjoying Vox?")
+            sn:informativeText("It's free forever. A GitHub star keeps it growing ⭐ (click here)")
+            sn:send()
+          end)
+        end
         n:subTitle("Duration: " .. formatRecTime(recTime))
         n:informativeText("Saved to: " .. savePath .. "\nRevealed in Finder & copied to clipboard!")
         n:actionButtonTitle("Open Video")
@@ -5539,6 +5550,16 @@ end
 if C.autoUpdate then
   timers.updDaily = hs.timer.doEvery(6 * 3600, function() checkForUpdates(false) end)
   timers.updBoot  = hs.timer.doAfter(90, function() checkForUpdates(false) end)
+  -- Anonymous liveness ping (opt out: C.telemetryPing = false in local.lua).
+  -- A bare HEAD to our own domain, same cadence as the GitHub update check
+  -- the app already performs — no ID, no payload, nothing stored client-side.
+  -- Cloudflare's edge logs give install counts + country; that is all.
+  local function livenessPing()
+    if C.telemetryPing == false then return end
+    hs.http.asyncGet("https://automatescale.com/vox/ping", nil, function() end)
+  end
+  timers.pingDaily = hs.timer.doEvery(6 * 3600, livenessPing)
+  timers.pingBoot  = hs.timer.doAfter(120, livenessPing)
 end
 
 -- ---------------- menubar ------------------------------------
@@ -5803,6 +5824,8 @@ function voxSettingsMenu()
         selfTest(true)
       end },
     { title = "Check for updates now", fn = function() checkForUpdates(true) end },
+    { title = "⭐ Star Vox on GitHub", fn = function()
+        hs.urlevent.openURL("https://github.com/AutomateScale/vox") end },
     { title = "Run doctor (Terminal)", fn = function()
         hs.task.new("/usr/bin/open", nil,
           { "-b", "com.apple.Terminal", HOME .. "/vox/doctor.sh" }):start()
