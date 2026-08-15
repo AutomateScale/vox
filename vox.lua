@@ -4766,7 +4766,7 @@ local function transcribe()
       "A=$(%s %s -n stat 2>&1 | /usr/bin/awk '/Maximum amplitude/{print $3}'); " ..
       "D=$(%s --i -D %s 2>/dev/null); " ..
       "/usr/bin/awk -v a=\"$A\" -v d=\"$D\" " ..
-      "'BEGIN{ if(a==\"\")a=1; if(d==\"\")d=9; exit (a+0<0.02 || d+0<0.45) ? 0 : 1 }'" ..
+      "'BEGIN{ if(a==\"\")a=1; if(d==\"\")d=9; exit (a+0<0.006 || d+0<0.45) ? 0 : 1 }'" ..
       " && exit 42; " ..
       "/usr/bin/curl -s --max-time %d -F file=@%s -F temperature=0.0 -F best_of=1 -F no_fallback=true " ..
       "-F prompt=\"%s\" -F response_format=text%s http://%s:%d/inference",
