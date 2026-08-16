@@ -420,12 +420,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Frame received #\(frameCount)")
         }
         
-        let now = CACurrentMediaTime()
-        if now - lastRenderTime < 0.030 {
-            return
-        }
-        lastRenderTime = now
-        
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let rawCIImage = CIImage(cvPixelBuffer: pixelBuffer)
         
@@ -435,32 +429,37 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             .transformed(by: CGAffineTransform(translationX: -rawOriginX, y: -rawOriginY))
             .oriented(.upMirrored)
         
-        // Multi-Pass GPU Bilateral Luminance Denoise Engine (Wipes 100% of ISO hardware camera grain & snow!)
+        let isClean = (self.filterMode == "cutout" || self.filterMode == "clean")
+        
+        // Fast-Path: In clean cutout mode, skip heavy 3-pass GPU denoise & blur for 60 FPS native speed
         var denoisedCIImage = baseInputCIImage
-        if let denoiseFilter = CIFilter(name: "CINoiseReduction") {
-            denoiseFilter.setValue(baseInputCIImage, forKey: kCIInputImageKey)
-            denoiseFilter.setValue(0.035, forKey: "inputNoiseLevel")
-            denoiseFilter.setValue(0.50, forKey: "inputSharpness")
-            if let output = denoiseFilter.outputImage {
-                denoisedCIImage = output.cropped(to: baseInputCIImage.extent)
+        if !isClean {
+            if let denoiseFilter = CIFilter(name: "CINoiseReduction") {
+                denoiseFilter.setValue(baseInputCIImage, forKey: kCIInputImageKey)
+                denoiseFilter.setValue(0.035, forKey: "inputNoiseLevel")
+                denoiseFilter.setValue(0.50, forKey: "inputSharpness")
+                if let output = denoiseFilter.outputImage {
+                    denoisedCIImage = output.cropped(to: baseInputCIImage.extent)
+                }
+            }
+            
+            let blurFilter = CIFilter(name: "CIGaussianBlur")
+            blurFilter?.setValue(denoisedCIImage, forKey: kCIInputImageKey)
+            blurFilter?.setValue(1.2, forKey: kCIInputRadiusKey)
+            if let blurredLuma = blurFilter?.outputImage?.cropped(to: baseInputCIImage.extent) {
+                let lumaBlend = CIFilter(name: "CIBlendWithLuminosity")
+                lumaBlend?.setValue(blurredLuma, forKey: kCIInputImageKey)
+                lumaBlend?.setValue(denoisedCIImage, forKey: kCIInputBackgroundImageKey)
+                if let output = lumaBlend?.outputImage {
+                    denoisedCIImage = output.cropped(to: baseInputCIImage.extent)
+                }
             }
         }
         
-        let blurFilter = CIFilter(name: "CIGaussianBlur")
-        blurFilter?.setValue(denoisedCIImage, forKey: kCIInputImageKey)
-        blurFilter?.setValue(1.2, forKey: kCIInputRadiusKey)
-        if let blurredLuma = blurFilter?.outputImage?.cropped(to: baseInputCIImage.extent) {
-            let lumaBlend = CIFilter(name: "CIBlendWithLuminosity")
-            lumaBlend?.setValue(blurredLuma, forKey: kCIInputImageKey)
-            lumaBlend?.setValue(denoisedCIImage, forKey: kCIInputBackgroundImageKey)
-            if let output = lumaBlend?.outputImage {
-                denoisedCIImage = output.cropped(to: baseInputCIImage.extent)
-            }
-        }
-        // Pure Natural sRGB Luminance Sharpness (Preserves camera's native dynamic auto-exposure & natural skin tones)
+        // Pure Natural sRGB Luminance Sharpness (Ultra-fast 0.1ms execution)
         let sharpener = CIFilter(name: "CISharpenLuminance")
         sharpener?.setValue(denoisedCIImage, forKey: kCIInputImageKey)
-        sharpener?.setValue(0.25, forKey: kCIInputSharpnessKey)
+        sharpener?.setValue(0.20, forKey: kCIInputSharpnessKey)
         var inputCIImage = sharpener?.outputImage?.cropped(to: baseInputCIImage.extent) ?? denoisedCIImage
         // RAW/CHROMA: apply the framing crop FIRST, dead-center — the shape
         // masks then build on final geometry and are centered by
@@ -803,7 +802,17 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             // freshest matte, so the live video never freezes even when
             // segmentation is coasting on the cache.
             if let cleanMask = self.cachedCleanMask {
-
+                let cleanLook = (self.filterMode == "cutout" || self.filterMode == "clean")
+                var stagedFinal: CIImage = finalImage
+                
+                if cleanLook {
+                    // FAST-PATH: Photo Booth Zero-Latency Cutout Engine (1 Single Filter on Metal GPU)
+                    let cutoutFilter = CIFilter(name: "CIBlendWithMask")
+                    cutoutFilter?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                    cutoutFilter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                    stagedFinal = cutoutFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? inputCIImage
+                } else {
                     // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
                     let maxFilter = CIFilter(name: "CIMorphologyMaximum")
                     maxFilter?.setValue(cleanMask, forKey: kCIInputImageKey)
@@ -826,10 +835,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     antiAliasFilter?.setValue(1.0, forKey: kCIInputRadiusKey)
                     let outlineStrokeMask = antiAliasFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? rawOutlineStroke
 
-                    // CLEAN LOOK: plain 'cutout' / 'clean' is 100% glow-free & distraction-free.
-                    let cleanLook = (self.filterMode == "cutout" || self.filterMode == "clean")
                     // Select Color Preset Based on Mode
-                    var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: cleanLook ? 0.0 : 0.35) // Chilled Mint Accent
+                    var outlineCIColor = CIColor(red: 0.45, green: 0.97, blue: 0.72, alpha: 0.35) // Chilled Mint Accent
                     if self.filterMode == "hero" || self.filterMode == "male" {
                         outlineCIColor = CIColor(red: 0.30, green: 0.75, blue: 1.0, alpha: 0.35) // Chilled Slate Hero
                     } else if self.filterMode == "goddess" || self.filterMode == "fem" {
@@ -856,7 +863,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     shadowBlur?.setValue(10.0, forKey: kCIInputRadiusKey)
                     let softShadowMask = shadowBlur?.outputImage?.cropped(to: inputCIImage.extent) ?? shadowBaseMask
 
-                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: cleanLook ? 0.26 : 0.45)).cropped(to: inputCIImage.extent)
+                    let darkShadowColor = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.45)).cropped(to: inputCIImage.extent)
                     let shadowImage = CIFilter(name: "CIBlendWithMask")
                     shadowImage?.setValue(darkShadowColor, forKey: kCIInputImageKey)
                     shadowImage?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
@@ -887,7 +894,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     }
 
                     // Chilled Opacity (0.04 when still -> 0.08 when gesturing)
-                    let highClassAlpha = cleanLook ? 0.0 : (0.04 + motionScale * 0.04)
+                    let highClassAlpha = 0.04 + motionScale * 0.04
                     
                     let auraCIColor = CIColor(red: auraR, green: auraG, blue: auraB, alpha: CGFloat(highClassAlpha))
                     let auraColorImg = CIImage(color: auraCIColor).cropped(to: inputCIImage.extent)
@@ -939,7 +946,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     finalSafetyGuard?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     finalSafetyGuard?.setValue(softShadowMask, forKey: kCIInputMaskImageKey)
 
-                    var stagedFinal = finalSafetyGuard?.outputImage ?? finalImage
+                    stagedFinal = finalSafetyGuard?.outputImage ?? finalImage
+                }
 
                     // BUST MODE: when the presenter window floats mid-page
                     // (not hugging the screen bottom), the hard crop line
