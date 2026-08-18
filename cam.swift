@@ -1070,7 +1070,19 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let normalizedImage = sharpenedFinal.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
         
         let scale = min(renderWidth / normalizedImage.extent.width, renderHeight / normalizedImage.extent.height)
-        let scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        // Upscales use Lanczos: a linear affine stretch followed by the
+        // sharpen pass reads as blocky pixels on retina at big window sizes
+        // ("too many pixels", 2026-08-18). Downscales keep the cheap path.
+        let scaledImage: CIImage
+        if scale > 1.02, let lanczos = CIFilter(name: "CILanczosScaleTransform") {
+            lanczos.setValue(normalizedImage, forKey: kCIInputImageKey)
+            lanczos.setValue(scale, forKey: kCIInputScaleKey)
+            lanczos.setValue(1.0, forKey: kCIInputAspectRatioKey)
+            scaledImage = lanczos.outputImage
+                ?? normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        } else {
+            scaledImage = normalizedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
         
         let offsetX = (renderWidth - (normalizedImage.extent.width * scale)) / 2.0
         let offsetY = (renderHeight - (normalizedImage.extent.height * scale)) / 2.0
