@@ -86,6 +86,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var rawShape: String = "circle"       // circle | squircle | portrait | hex
     var framing: String = "wide"          // wide (16:9) | tall (portrait, follows you)
     var followX: CGFloat = 0              // smoothed person-center for tall framing
+    var portalCX: CGFloat = -1            // smoothed portal center (head tracking)
+    var portalCY: CGFloat = -1
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
@@ -827,6 +829,87 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     cutoutFilter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
                     stagedFinal = cutoutFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? inputCIImage
+                } else if self.filterMode == "portal" {
+                    // 🌀 INTERDIMENSIONAL PORTAL: a circle that tracks the
+                    // head, deep-space glow behind the subject, and an
+                    // animated alien-energy ring (lenticular halo striations
+                    // swirl with time). You look like you're stepping
+                    // through from somewhere else — which is the point.
+                    let ext = inputCIImage.extent
+                    let t = Double(self.frameCount) / 24.0
+
+                    // head estimate from the tracked body box, EMA-smoothed
+                    var hx = ext.midX, hy = ext.midY
+                    if let b = self.trackedBodyRect {
+                        hx = b.midX
+                        hy = b.minY + b.height * 0.80
+                    }
+                    if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy }
+                    self.portalCX += (hx - self.portalCX) * 0.10
+                    self.portalCY += (hy - self.portalCY) * 0.10
+                    let r = min(ext.width, ext.height) * 0.46 * (1.0 + 0.012 * CGFloat(sin(t * 1.4)))
+                    let cx = max(ext.minX + r * 0.8, min(ext.maxX - r * 0.8, self.portalCX))
+                    let cy = max(ext.minY + r * 0.7, min(ext.maxY - r * 0.7, self.portalCY))
+                    let center = CIVector(x: cx, y: cy)
+
+                    // circle alpha mask, soft 6px rim
+                    let circleMask = CIFilter(name: "CIRadialGradient")
+                    circleMask?.setValue(center, forKey: "inputCenter")
+                    circleMask?.setValue(r - 6, forKey: "inputRadius0")
+                    circleMask?.setValue(r, forKey: "inputRadius1")
+                    circleMask?.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor0")
+                    circleMask?.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 0), forKey: "inputColor1")
+                    let portalClip = circleMask?.outputImage?.cropped(to: ext)
+
+                    // the other dimension: deep violet space glow inside the ring
+                    let spaceGrad = CIFilter(name: "CIRadialGradient")
+                    spaceGrad?.setValue(center, forKey: "inputCenter")
+                    spaceGrad?.setValue(r * 0.15, forKey: "inputRadius0")
+                    spaceGrad?.setValue(r, forKey: "inputRadius1")
+                    spaceGrad?.setValue(CIColor(red: 0.30, green: 0.10, blue: 0.55, alpha: 0.85), forKey: "inputColor0")
+                    spaceGrad?.setValue(CIColor(red: 0.02, green: 0.00, blue: 0.10, alpha: 0.95), forKey: "inputColor1")
+                    let spaceClipF = CIFilter(name: "CIBlendWithMask")
+                    spaceClipF?.setValue(spaceGrad?.outputImage?.cropped(to: ext), forKey: kCIInputImageKey)
+                    spaceClipF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    spaceClipF?.setValue(portalClip, forKey: kCIInputMaskImageKey)
+
+                    // subject cutout, clipped to the portal circle
+                    let cutF = CIFilter(name: "CIBlendWithMask")
+                    cutF?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                    cutF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    cutF?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                    let clipF = CIFilter(name: "CIBlendWithMask")
+                    clipF?.setValue(cutF?.outputImage, forKey: kCIInputImageKey)
+                    clipF?.setValue(spaceClipF?.outputImage, forKey: kCIInputBackgroundImageKey)
+                    clipF?.setValue(portalClip, forKey: kCIInputMaskImageKey)
+
+                    // the energy ring: animated lenticular halo, alien palette
+                    let halo = CIFilter(name: "CILenticularHaloGenerator")
+                    halo?.setValue(center, forKey: "inputCenter")
+                    halo?.setValue(CIColor(red: 0.25, green: 0.95, blue: 0.72, alpha: 0.9), forKey: "inputColor")
+                    halo?.setValue(r * 0.92, forKey: "inputHaloRadius")
+                    halo?.setValue(r * 0.11, forKey: "inputHaloWidth")
+                    halo?.setValue(0.42, forKey: "inputHaloOverlap")
+                    halo?.setValue(0.85, forKey: "inputStriationStrength")
+                    halo?.setValue(1.30, forKey: "inputStriationContrast")
+                    halo?.setValue(t.truncatingRemainder(dividingBy: 1000), forKey: "inputTime")
+                    let ringOver = CIFilter(name: "CIScreenBlendMode")
+                    ringOver?.setValue(halo?.outputImage?.cropped(to: ext), forKey: kCIInputImageKey)
+                    ringOver?.setValue(clipF?.outputImage, forKey: kCIInputBackgroundImageKey)
+
+                    // keep the additive ring inside a slightly larger circle
+                    let outerMask = CIFilter(name: "CIRadialGradient")
+                    outerMask?.setValue(center, forKey: "inputCenter")
+                    outerMask?.setValue(r * 1.06, forKey: "inputRadius0")
+                    outerMask?.setValue(r * 1.22, forKey: "inputRadius1")
+                    outerMask?.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor0")
+                    outerMask?.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 0), forKey: "inputColor1")
+                    let guardF = CIFilter(name: "CIBlendWithMask")
+                    guardF?.setValue(ringOver?.outputImage, forKey: kCIInputImageKey)
+                    guardF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    guardF?.setValue(outerMask?.outputImage?.cropped(to: ext), forKey: kCIInputMaskImageKey)
+
+                    stagedFinal = guardF?.outputImage?.cropped(to: ext) ?? finalImage
                 } else {
                     // Dynamic Humanoid Contour Outline (Dilate - Erode Difference)
                     let maxFilter = CIFilter(name: "CIMorphologyMaximum")

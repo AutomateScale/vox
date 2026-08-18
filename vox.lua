@@ -6098,7 +6098,7 @@ function showVoxSettings()
   <div class="row"><span>Camera</span><select onchange="send('camera', this.value)">%s</select></div>
   <label><input type="checkbox"%s onchange="send('screenRecWebcam', this.checked)"> Webcam bubble in recordings</label>
   <div class="row"><span>Presenter style</span><select onchange="send('screenRecBgMode', this.value)">
-    <option value="cutout"%s>✨ AI cutout — clean</option><option value="mint"%s>🌈 Cutout + glow</option>
+    <option value="cutout"%s>✨ AI cutout — clean</option><option value="mint"%s>🌈 Cutout + glow</option><option value="portal"%s>🌀 Portal — dimension door</option>
     <option value="chroma"%s>🟢 Chroma key</option>
     <option value="raw"%s>📷 Raw shape</option></select></div>
   <div class="row"><span>Raw shape</span><select onchange="send('screenRecShape', this.value)">
@@ -6164,6 +6164,7 @@ window.addEventListener('keydown', function(e) {
     camOpts,
     chk(C.screenRecWebcam),
     sel(C.screenRecBgMode, "cutout"), sel(C.screenRecBgMode, "mint"),
+    sel(C.screenRecBgMode, "portal"),
     sel(C.screenRecBgMode, "chroma"), sel(C.screenRecBgMode, "raw"),
     sel(C.screenRecShape, "circle"), sel(C.screenRecShape, "squircle"),
     sel(C.screenRecShape, "portrait"), sel(C.screenRecShape, "hex"),
