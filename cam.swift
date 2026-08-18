@@ -88,6 +88,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var followX: CGFloat = 0              // smoothed person-center for tall framing
     var portalCX: CGFloat = -1            // smoothed portal center (head tracking)
     var portalCY: CGFloat = -1
+    var portalR: CGFloat = -1             // smoothed portal radius
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
@@ -838,18 +839,30 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let ext = inputCIImage.extent
                     let t = Double(self.frameCount) / 24.0
 
-                    // head estimate from the tracked body box, EMA-smoothed
+                    // head estimate from the tracked body box. The box is
+                    // NORMALIZED (0-1, y flipped) — same mapping the bust
+                    // dissolve uses. Feeding it raw put the portal in the
+                    // bottom-left corner of nowhere.
                     var hx = ext.midX, hy = ext.midY
+                    var rTarget = min(ext.width, ext.height) * 0.34
                     if let b = self.trackedBodyRect {
-                        hx = b.midX
-                        hy = b.minY + b.height * 0.80
+                        let px = b.origin.x * ext.width
+                        let pw = b.size.width * ext.width
+                        let pyBottom = (1.0 - b.origin.y - b.size.height) * ext.height
+                        let ph = b.size.height * ext.height
+                        hx = px + pw / 2
+                        hy = pyBottom + ph * 0.84          // head sits at the top of the box
+                        // face-tight: sized from shoulder width, clamped sane
+                        rTarget = max(min(ext.width, ext.height) * 0.20,
+                                  min(min(ext.width, ext.height) * 0.44, pw * 0.55))
                     }
-                    if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy }
-                    self.portalCX += (hx - self.portalCX) * 0.10
-                    self.portalCY += (hy - self.portalCY) * 0.10
-                    let r = min(ext.width, ext.height) * 0.46 * (1.0 + 0.012 * CGFloat(sin(t * 1.4)))
-                    let cx = max(ext.minX + r * 0.8, min(ext.maxX - r * 0.8, self.portalCX))
-                    let cy = max(ext.minY + r * 0.7, min(ext.maxY - r * 0.7, self.portalCY))
+                    if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy; self.portalR = rTarget }
+                    self.portalCX += (hx - self.portalCX) * 0.12
+                    self.portalCY += (hy - self.portalCY) * 0.12
+                    self.portalR  += (rTarget - self.portalR) * 0.06
+                    let r = self.portalR * (1.0 + 0.012 * CGFloat(sin(t * 1.4)))
+                    let cx = max(ext.minX + r * 0.55, min(ext.maxX - r * 0.55, self.portalCX))
+                    let cy = max(ext.minY + r * 0.55, min(ext.maxY - r * 0.55, self.portalCY))
                     let center = CIVector(x: cx, y: cy)
 
                     // circle alpha mask, soft 6px rim
