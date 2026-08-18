@@ -839,33 +839,31 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     let ext = inputCIImage.extent
                     let t = Double(self.frameCount) / 24.0
 
-                    // head estimate from the tracked body box. The box is
-                    // NORMALIZED (0-1, y flipped) — same mapping the bust
-                    // dissolve uses. Feeding it raw put the portal in the
-                    // bottom-left corner of nowhere.
+                    // FIXED PORTAL, MOVING WORLD: the circle never moves —
+                    // it fills the window. The VIDEO pans behind it (with 15%
+                    // zoom headroom) so your face stays centered in the ring,
+                    // like a tiny camera operator lives inside the portal.
                     var hx = ext.midX, hy = ext.midY
-                    var rTarget = min(ext.width, ext.height) * 0.34
                     if let b = self.trackedBodyRect {
-                        let px = b.origin.x * ext.width
-                        let pw = b.size.width * ext.width
-                        let pyBottom = (1.0 - b.origin.y - b.size.height) * ext.height
-                        let ph = b.size.height * ext.height
-                        hx = px + pw / 2
-                        hy = pyBottom + ph * 0.72          // face center, not head top
-                        // face-tight: sized from shoulder width, clamped sane
-                        rTarget = max(min(ext.width, ext.height) * 0.20,
-                                  min(min(ext.width, ext.height) * 0.44, pw * 0.55))
+                        hx = (b.origin.x + b.size.width / 2) * ext.width + ext.minX
+                        hy = ((1.0 - b.origin.y - b.size.height) + b.size.height * 0.72) * ext.height + ext.minY
                     }
-                    if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy; self.portalR = rTarget }
+                    if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy }
                     self.portalCX += (hx - self.portalCX) * 0.12
                     self.portalCY += (hy - self.portalCY) * 0.12
-                    self.portalR  += (rTarget - self.portalR) * 0.06
-                    let r = self.portalR * (1.0 + 0.012 * CGFloat(sin(t * 1.4)))
-                    let cx = max(ext.minX + r * 0.55, min(ext.maxX - r * 0.55, self.portalCX))
-                    // bottom clamp is loose on purpose: sitting low in frame,
-                    // the portal may sink to (and clip at) the bottom edge
-                    let cy = max(ext.minY + r * 0.15, min(ext.maxY - r * 0.55, self.portalCY))
+                    let r = min(ext.width, ext.height) * 0.45 * (1.0 + 0.010 * CGFloat(sin(t * 1.4)))
+                    let cx = ext.midX, cy = ext.midY
                     let center = CIVector(x: cx, y: cy)
+                    // pan+zoom the world so the tracked face lands on center;
+                    // clamped so the frame edge can never enter the circle
+                    let zf: CGFloat = 1.15
+                    var ptx = cx - zf * self.portalCX
+                    var pty = cy - zf * self.portalCY
+                    ptx = min(cx - r - zf * ext.minX, max(cx + r - zf * ext.maxX, ptx))
+                    pty = min(cy - r - zf * ext.minY, max(cy + r - zf * ext.maxY, pty))
+                    let panT = CGAffineTransform(a: zf, b: 0, c: 0, d: zf, tx: ptx, ty: pty)
+                    let pannedInput = inputCIImage.transformed(by: panT)
+                    let pannedMask = cleanMask.transformed(by: panT)
 
                     // circle alpha mask, soft 6px rim
                     let circleMask = CIFilter(name: "CIRadialGradient")
@@ -893,13 +891,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     // no matte, just the tracked circle doing the work
                     let clipF = CIFilter(name: "CIBlendWithMask")
                     if self.filterMode == "portalcam" {
-                        clipF?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                        clipF?.setValue(pannedInput, forKey: kCIInputImageKey)
                         clipF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     } else {
                         let cutF = CIFilter(name: "CIBlendWithMask")
-                        cutF?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                        cutF?.setValue(pannedInput, forKey: kCIInputImageKey)
                         cutF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                        cutF?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                        cutF?.setValue(pannedMask, forKey: kCIInputMaskImageKey)
                         clipF?.setValue(cutF?.outputImage, forKey: kCIInputImageKey)
                         clipF?.setValue(spaceClipF?.outputImage, forKey: kCIInputBackgroundImageKey)
                     }
