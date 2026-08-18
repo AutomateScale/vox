@@ -846,7 +846,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     var hx = ext.midX, hy = ext.midY
                     if let b = self.trackedBodyRect {
                         hx = (b.origin.x + b.size.width / 2) * ext.width + ext.minX
-                        hy = ((1.0 - b.origin.y - b.size.height) + b.size.height * 0.72) * ext.height + ext.minY
+                        let anchorFrac = CGFloat(Double(ProcessInfo.processInfo.environment["PORTAL_ANCHOR"] ?? "") ?? 0.60)
+                        hy = ((1.0 - b.origin.y - b.size.height) + b.size.height * anchorFrac) * ext.height + ext.minY
                     }
                     if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy }
                     self.portalCX += (hx - self.portalCX) * 0.12

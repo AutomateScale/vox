@@ -2549,10 +2549,17 @@ function spawnPresenter()
       log("camTask exit code: " .. tostring(code))
     end, function(_, stdout)
       -- scroll/double-click/voice resizes persist across restarts
-      local n = tostring(stdout or ""):match("SIZE_NOW=(%d+)")
+      local s = tostring(stdout or "")
+      local n = s:match("SIZE_NOW=(%d+)")
       if n then
         C.screenRecWebcamSize = tonumber(n)
         hs.settings.set("vox.pref.screenRecWebcamSize", tonumber(n))
+      end
+      -- capture-quality evidence lands in the console, not a black hole
+      for line in s:gmatch("[^\n]+") do
+        if line:match("preset set to") or line:match("quality %->") or line:match("Using video device") then
+          log("cam: " .. line:gsub("^CAM_LOG:%s*", ""))
+        end
       end
       return true
     end, voxCamArgs({
