@@ -307,9 +307,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         print("CAM_LOG: SIZE_NOW=\(Int(newSize))")
         fflush(stdout)
         if captureQuality == "auto", let session = captureSession {
+            let lightMode = (filterMode == "raw" || filterMode == "chroma")
             let is4K = session.sessionPreset == .hd4K3840x2160
             var target: AVCaptureSession.Preset? = nil
-            if !is4K && newSize >= 720 && session.canSetSessionPreset(.hd4K3840x2160) {
+            if !is4K && newSize >= 720 && lightMode && session.canSetSessionPreset(.hd4K3840x2160) {
                 target = .hd4K3840x2160
             } else if is4K && newSize < 560 && session.canSetSessionPreset(.hd1920x1080) {
                 target = .hd1920x1080
@@ -378,8 +379,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             return
         }
         
+        let lightMode = (filterMode == "raw" || filterMode == "chroma")
         let want4K = (captureQuality == "4k")
-                  || (captureQuality == "auto" && currentSize >= 720)
+                  || (captureQuality == "auto" && currentSize >= 720 && lightMode)
         if want4K && session.canSetSessionPreset(.hd4K3840x2160) {
             session.sessionPreset = .hd4K3840x2160
             logMsg("Camera session preset set to 4K UHD (3840x2160) — big-window sharpness")

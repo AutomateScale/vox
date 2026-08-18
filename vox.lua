@@ -2563,6 +2563,12 @@ function spawnPresenter()
       "--targetY", tostring(targetY)
     }))
     screenRec.camTask:start()
+    -- keystrokes outrank pixels: under CPU contention the presenter yields
+    -- (flicker+frozen-typing incident, 2026-08-18)
+    timers.camNice = hs.timer.doAfter(1.0, function()
+      local p = screenRec.camTask and screenRec.camTask:pid()
+      if p then os.execute("/usr/bin/renice 5 -p " .. p .. " 2>/dev/null") end
+    end)
     local camName = hs.settings.get('vox.pref.camDeviceName') or "default camera"
     hs.alert.show("🧞‍♂️ Presenter ON — " .. camName, 1.5)
   end
