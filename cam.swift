@@ -830,7 +830,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     cutoutFilter?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     cutoutFilter?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
                     stagedFinal = cutoutFilter?.outputImage?.cropped(to: inputCIImage.extent) ?? inputCIImage
-                } else if self.filterMode == "portal" {
+                } else if self.filterMode == "portal" || self.filterMode == "portalcam" {
                     // 🌀 INTERDIMENSIONAL PORTAL: a circle that tracks the
                     // head, deep-space glow behind the subject, and an
                     // animated alien-energy ring (lenticular halo striations
@@ -851,7 +851,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         let pyBottom = (1.0 - b.origin.y - b.size.height) * ext.height
                         let ph = b.size.height * ext.height
                         hx = px + pw / 2
-                        hy = pyBottom + ph * 0.84          // head sits at the top of the box
+                        hy = pyBottom + ph * 0.72          // face center, not head top
                         // face-tight: sized from shoulder width, clamped sane
                         rTarget = max(min(ext.width, ext.height) * 0.20,
                                   min(min(ext.width, ext.height) * 0.44, pw * 0.55))
@@ -862,7 +862,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     self.portalR  += (rTarget - self.portalR) * 0.06
                     let r = self.portalR * (1.0 + 0.012 * CGFloat(sin(t * 1.4)))
                     let cx = max(ext.minX + r * 0.55, min(ext.maxX - r * 0.55, self.portalCX))
-                    let cy = max(ext.minY + r * 0.55, min(ext.maxY - r * 0.55, self.portalCY))
+                    // bottom clamp is loose on purpose: sitting low in frame,
+                    // the portal may sink to (and clip at) the bottom edge
+                    let cy = max(ext.minY + r * 0.15, min(ext.maxY - r * 0.55, self.portalCY))
                     let center = CIVector(x: cx, y: cy)
 
                     // circle alpha mask, soft 6px rim
@@ -886,25 +888,32 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     spaceClipF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
                     spaceClipF?.setValue(portalClip, forKey: kCIInputMaskImageKey)
 
-                    // subject cutout, clipped to the portal circle
-                    let cutF = CIFilter(name: "CIBlendWithMask")
-                    cutF?.setValue(inputCIImage, forKey: kCIInputImageKey)
-                    cutF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
-                    cutF?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                    // portal contents: cutout person over the dimension glow,
+                    // or ("portalcam") the raw camera feed — background kept,
+                    // no matte, just the tracked circle doing the work
                     let clipF = CIFilter(name: "CIBlendWithMask")
-                    clipF?.setValue(cutF?.outputImage, forKey: kCIInputImageKey)
-                    clipF?.setValue(spaceClipF?.outputImage, forKey: kCIInputBackgroundImageKey)
+                    if self.filterMode == "portalcam" {
+                        clipF?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                        clipF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                    } else {
+                        let cutF = CIFilter(name: "CIBlendWithMask")
+                        cutF?.setValue(inputCIImage, forKey: kCIInputImageKey)
+                        cutF?.setValue(transparentBg, forKey: kCIInputBackgroundImageKey)
+                        cutF?.setValue(cleanMask, forKey: kCIInputMaskImageKey)
+                        clipF?.setValue(cutF?.outputImage, forKey: kCIInputImageKey)
+                        clipF?.setValue(spaceClipF?.outputImage, forKey: kCIInputBackgroundImageKey)
+                    }
                     clipF?.setValue(portalClip, forKey: kCIInputMaskImageKey)
 
                     // the energy ring: animated lenticular halo, alien palette
                     let halo = CIFilter(name: "CILenticularHaloGenerator")
                     halo?.setValue(center, forKey: "inputCenter")
-                    halo?.setValue(CIColor(red: 0.25, green: 0.95, blue: 0.72, alpha: 0.9), forKey: "inputColor")
-                    halo?.setValue(r * 0.92, forKey: "inputHaloRadius")
-                    halo?.setValue(r * 0.11, forKey: "inputHaloWidth")
-                    halo?.setValue(0.42, forKey: "inputHaloOverlap")
-                    halo?.setValue(0.85, forKey: "inputStriationStrength")
-                    halo?.setValue(1.30, forKey: "inputStriationContrast")
+                    halo?.setValue(CIColor(red: 0.30, green: 0.90, blue: 0.75, alpha: 0.50), forKey: "inputColor")
+                    halo?.setValue(r * 0.94, forKey: "inputHaloRadius")
+                    halo?.setValue(r * 0.075, forKey: "inputHaloWidth")
+                    halo?.setValue(0.30, forKey: "inputHaloOverlap")
+                    halo?.setValue(0.32, forKey: "inputStriationStrength")
+                    halo?.setValue(0.95, forKey: "inputStriationContrast")
                     halo?.setValue(t.truncatingRemainder(dividingBy: 1000), forKey: "inputTime")
                     let ringOver = CIFilter(name: "CIScreenBlendMode")
                     ringOver?.setValue(halo?.outputImage?.cropped(to: ext), forKey: kCIInputImageKey)
