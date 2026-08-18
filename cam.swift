@@ -628,7 +628,20 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let prevVal = self.prevMaskData![flatOffset + x]
                                 let delta = abs(rawVal - prevVal)
                                 totalDeltaSum += delta
-                                let blendWeight: Float = (self.currentMotionVelocity > 0.008) ? 0.70 : max(0.12, min(0.50, 0.12 + (delta / 0.15) * 0.38))
+                                // STICKY RELEASE: held objects (a broadcast mic in
+                                // front of the face) oscillate in Vision confidence
+                                // and blinked in/out of the matte. Pixels join the
+                                // subject fast but leave it slowly when the scene is
+                                // calm; fast motion keeps the quick symmetric blend
+                                // so real movement never ghosts.
+                                let blendWeight: Float
+                                if isFastMotion {
+                                    blendWeight = 0.70
+                                } else if rawVal < prevVal && prevVal >= 0.30 {
+                                    blendWeight = 0.06
+                                } else {
+                                    blendWeight = max(0.12, min(0.50, 0.12 + (delta / 0.15) * 0.38))
+                                }
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
 
