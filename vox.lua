@@ -2547,9 +2547,9 @@ function spawnPresenter()
 
     screenRec.camTask = hs.task.new(camBin, function(code)
       log("camTask exit code: " .. tostring(code))
-    end, function(_, stdout)
+    end, function(_, stdout, stderr)
       -- scroll/double-click/voice resizes persist across restarts
-      local s = tostring(stdout or "")
+      local s = tostring(stdout or "") .. "\n" .. tostring(stderr or "")
       local n = s:match("SIZE_NOW=(%d+)")
       if n then
         C.screenRecWebcamSize = tonumber(n)
