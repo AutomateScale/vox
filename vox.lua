@@ -5971,6 +5971,28 @@ end
 -- ---------------- programmable action keys ---------------------
 -- Every action has a default; the Settings window records overrides into
 -- hs.settings (vox.pref.actionKeys) and rebinds live.
+-- THE BIG RED BUTTON: when the HUD says "transcribing" and nobody knows
+-- what's actually running, this kills every recorder, transcriber, and
+-- in-flight timer, orphans stale callbacks via the generation counter,
+-- and returns to a clean idle. Safe to mash.
+function panicReset()  -- global: main-chunk 200-local limit
+  log("PANIC RESET — operator pressed the big red button")
+  recGen = (recGen or 0) + 1              -- orphan every in-flight callback
+  convMode = false                        -- clear BEFORE reset so it can't re-arm
+  for _, t in ipairs({ "convSubmit", "convRearm", "selfRetry", "selfHealed", "convPartial" }) do
+    if timers[t] then timers[t]:stop(); timers[t] = nil end
+  end
+  for _, k in ipairs({ "sttTask", "fastSttTask", "convSttTask", "convTask" }) do
+    local task = M[k]
+    if task and task.isRunning and task:isRunning() then task:terminate() end
+    M[k] = nil
+  end
+  os.execute("/usr/bin/pkill -9 -x sox 2>/dev/null; /usr/bin/pkill -9 -f whisper-cli 2>/dev/null")
+  reset()
+  vignHide()
+  hs.alert.show("🛑 Vox reset — everything killed, back to idle", 2.5)
+end
+
 VOX_ACTIONS = {
   { id = "record_screen", label = "Record screen",
     def = { mods = { "alt", "shift" }, key = "r" },
@@ -5990,6 +6012,9 @@ VOX_ACTIONS = {
   { id = "open_settings", label = "Open settings",
     def = nil,
     fn = function() showVoxSettings() end },
+  { id = "panic_reset", label = "🛑 Panic: kill & reset everything",
+    def = { mods = { "alt", "shift" }, key = "escape" },
+    fn = function() panicReset() end },
 }
 M.actionKeys = {}
 function bindActionKeys()
@@ -6279,6 +6304,7 @@ menubar:setMenu(function()
       fn = function() startScreenRecording() end },
     { title = "🎯 Record Focused Window (⌥⇧W)", fn = function() startScreenRecording(true) end },
     { title = "🧍 Presenter Camera on/off (⌥⇧C)", fn = function() toggleWebcamOverlay() end },
+    { title = "🛑 Panic reset — kill whatever is running (⌥⇧⎋)", fn = function() panicReset() end },
     { title = "🎥 Camera", menu = camItems },
     { title = "-" },
     { title = "📂 Recordings Folder", fn = function()
