@@ -638,40 +638,42 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 // calm; fast motion keeps the quick symmetric blend
                                 // so real movement never ghosts.
                                 //
-                                // SPARKLE GATE: the fast join is only earned by
-                                // pixels the subject is actually growing into — at
-                                // least 2 of the 4 cross neighbors already inside
-                                // (>= 0.30) in the running mask. An isolated
-                                // confidence pop with no neighbor support takes the
-                                // slow path instead, so Vision noise at the
-                                // face/hair boundary can't flash in as point
-                                // sparkles and then linger on the sticky release.
+                                // SPARKLE GATE v2: fast motion is exempt and keeps
+                                // the original symmetric 0.70 blend — v1 gated the
+                                // moving frontier too, which starved the leading
+                                // edge of a fast head turn and left half the head
+                                // behind until the crawl caught up.
+                                //
+                                // In a calm scene, a pixel crossing INTO the matte
+                                // joins at a speed scaled by DETECTION STRENGTH,
+                                // not by frame delta. Vision noise at the hair
+                                // boundary hovers just above the 0.30 threshold —
+                                // under delta-scaling a 0.05→0.35 pop scored the
+                                // maximum join weight and flashed in as a sparkle.
+                                // Strength-scaling sends marginal pops in at a
+                                // crawl (they never reach visibility unless the
+                                // detection persists) while a confident subject
+                                // pixel (0.7+) still joins fast. Isolated pops with
+                                // fewer than 2 of 4 cross neighbors inside crawl
+                                // regardless.
                                 let blendWeight: Float
-                                if rawVal < prevVal && prevVal >= 0.30 && !isFastMotion {
+                                if isFastMotion {
+                                    blendWeight = 0.70
+                                } else if rawVal < prevVal && prevVal >= 0.30 {
                                     blendWeight = 0.06
                                 } else if rawVal >= 0.30 && prevVal < 0.30 {
-                                    // Pixel is about to cross INTO the matte —
-                                    // demand neighbor support before it may do so
-                                    // quickly. prevMaskData mixes this frame
-                                    // (above/left) with last frame (below/right),
-                                    // which is fine: a real edge has support on at
-                                    // least one side in either frame.
                                     var support = 0
                                     if x > 0,      self.prevMaskData![flatOffset + x - 1] >= 0.30 { support += 1 }
                                     if x < mw - 1, self.prevMaskData![flatOffset + x + 1] >= 0.30 { support += 1 }
                                     if y > 0,      self.prevMaskData![flatOffset - mw + x] >= 0.30 { support += 1 }
                                     if y < mh - 1, self.prevMaskData![flatOffset + mw + x] >= 0.30 { support += 1 }
                                     if support >= 2 {
-                                        blendWeight = isFastMotion ? 0.70
-                                            : max(0.12, min(0.50, 0.12 + (delta / 0.15) * 0.38))
+                                        // 0 strength at the threshold, full by 0.70
+                                        let strength = max(0.0 as Float, min(1.0, (rawVal - 0.30) / 0.40))
+                                        blendWeight = 0.10 + strength * 0.40
                                     } else {
-                                        // Unsupported pop: crawl, don't flash. If it
-                                        // is real, neighbors catch up within a frame
-                                        // or two and it graduates to the fast path.
-                                        blendWeight = 0.10
+                                        blendWeight = 0.08
                                     }
-                                } else if isFastMotion {
-                                    blendWeight = 0.70
                                 } else {
                                     blendWeight = max(0.12, min(0.50, 0.12 + (delta / 0.15) * 0.38))
                                 }
