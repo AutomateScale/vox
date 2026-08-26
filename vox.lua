@@ -976,25 +976,62 @@ local function miniEnsure()
   local btnBg = { red = 0.10, green = 0.12, blue = 0.20, alpha = 0.85 }
   c[9]  = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 2, y = 12, w = 17, h = 17 } }
-  c[10] = { type = "text", text = "📹", textSize = 9,
-            textAlignment = "center", frame = { x = 2, y = 13.5, w = 17, h = 13 } }
+  c[10] = { type = "text", text = "🎥", textSize = 10,
+            textAlignment = "center", frame = { x = 2, y = 13, w = 17, h = 14 } }
   c[11] = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 22, y = 12, w = 17, h = 17 } }
-  c[12] = { type = "text", text = "C", textSize = 10,
-            textColor = { red = 0.45, green = 0.97, blue = 0.72, alpha = 1 },
-            textAlignment = "center", frame = { x = 22, y = 14.5, w = 17, h = 13 } }
+  c[12] = { type = "text", text = "📝", textSize = 9,
+            textAlignment = "center", frame = { x = 22, y = 13.5, w = 17, h = 13 } }
   c[13] = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 79, y = 12, w = 17, h = 17 } }
-  c[14] = { type = "text", text = "P", textSize = 10,
-            textColor = { red = 0.72, green = 0.52, blue = 1.0, alpha = 1 },
-            textAlignment = "center", frame = { x = 79, y = 14.5, w = 17, h = 13 } }
+  c[14] = { type = "text", text = "👁️", textSize = 9,
+            textAlignment = "center", frame = { x = 79, y = 13.5, w = 17, h = 13 } }
   c[15] = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 99, y = 12, w = 17, h = 17 } }
-  c[16] = { type = "text", text = "🔴", textSize = 9,
-            textAlignment = "center", frame = { x = 99, y = 13.5, w = 17, h = 13 } }
+  c[16] = { type = "oval", action = "stroke", strokeWidth = 1.6,
+            strokeColor = { red = 1, green = 0.32, blue = 0.32, alpha = 0.95 },
+            frame = { x = 103, y = 15.5, w = 10, h = 10 } }
+  c[17] = { type = "oval", action = "fill",
+            fillColor = { red = 1, green = 0.28, blue = 0.28, alpha = 0.95 },
+            frame = { x = 105.5, y = 18, w = 5, h = 5 } }
 
   c:alpha(0.95)
-  c:canvasMouseEvents(true, false, false, true)
+  c:canvasMouseEvents(true, false, true, true)
+  -- HOVER TOOLTIPS: a floating label above the hub names each button
+  local function miniTip(text)
+    if not text then
+      if mini.tip then mini.tip:hide() end
+      mini.tipZone = nil
+      return
+    end
+    local TW, TH = 232, 24
+    if not mini.tip then
+      local t = hs.canvas.new({ x = 0, y = 0, w = TW, h = TH })
+      t:level(hs.canvas.windowLevels.overlay)
+      t:behavior({ "canJoinAllSpaces", "stationary" })
+      t[1] = { type = "rectangle", action = "fill",
+               roundedRectRadii = { xRadius = 7, yRadius = 7 },
+               fillColor = { red = 0.06, green = 0.08, blue = 0.15, alpha = 0.94 },
+               strokeColor = { red = 0.45, green = 0.97, blue = 0.72, alpha = 0.5 },
+               strokeWidth = 1, action = "strokeAndFill" }
+      t[2] = { type = "text", textAlignment = "center", textSize = 11.5,
+               textColor = { red = 0.92, green = 0.95, blue = 1, alpha = 1 },
+               frame = { x = 0, y = 4, w = TW, h = 16 }, text = "" }
+      mini.tip = t
+    end
+    local f = mini.canvas:frame()
+    mini.tip[2].text = text
+    mini.tip:frame({ x = f.x + (f.w - TW) / 2, y = f.y - TH - 6, w = TW, h = TH })
+    mini.tip:show()
+  end
+  mini.tipFor = function(x)
+    if x <= 20 then return "🎥 Presenter camera on/off"
+    elseif x <= 40 then return "📝 Content mode"
+    elseif x < 79 then return "👽 Talk to Vox — tap & speak · drag me to move"
+    elseif x <= 97 then return "👁️ Absorb this screen into memory"
+    else return "⏺ Record screen — Voom" end
+  end
+  mini.miniTip = miniTip
   -- DRAG TO RELOCATE: hold and drag the alien anywhere (it pins there,
   -- surviving reboots); a small movement still counts as a click. Pin
   -- cleared from the right-click menu. Adam: "it's blocking a button."
@@ -1021,7 +1058,17 @@ local function miniEnsure()
       showAlienToolsMenu()
       return
     end
+    if event == "mouseMove" then
+      local z = mini.tipFor(x)
+      if z ~= mini.tipZone then mini.tipZone = z; mini.miniTip(z) end
+      return
+    end
+    if event == "mouseExit" then
+      mini.miniTip(nil)
+      return
+    end
     if event ~= "mouseDown" then return end
+    mini.miniTip(nil)
     local startMouse = hs.mouse.absolutePosition()
     local startFrame = mini.canvas:frame()
     local dragged = false
