@@ -908,10 +908,12 @@ local MW, MH, MOFF = 118, 30, 45        -- canvas w/h, alien x-offset
 
 local function showAlienToolsMenu()
   local menu = hs.menubar.new(false)
-  local unpinItem = hs.settings.get("vox.pref.miniAlienPin") and
-    { title = "📍 Unpin alien (back to auto-position)", fn = function()
+  local unpinItem = (hs.settings.get("vox.pref.miniAlienPin")
+      or hs.settings.get("vox.pref.miniAlienRelPin")) and
+    { title = "📍 Unpin alien (back to default position)", fn = function()
         hs.settings.set("vox.pref.miniAlienPin", nil)
-        hs.alert.show("👽 unpinned — following your windows again", 1.6)
+        hs.settings.set("vox.pref.miniAlienRelPin", nil)
+        hs.alert.show("👽 unpinned — default positioning again", 1.6)
       end } or nil
   local function setCamMode(m, name)
     pref("screenRecBgMode", m)
@@ -1029,6 +1031,37 @@ local function miniEnsure()
 
   c:alpha(0.95)
   c:canvasMouseEvents(true, false, true, true)
+  -- PIN MODEL (Adam's spec): the alien LANDS ON the focused window even
+  -- when dragged — a drag chooses WHERE ON THE WINDOW he sits. The pin
+  -- stores fractional offsets within the window so it survives resizes;
+  -- absolute pinning only happens when no usable window is focused.
+  function saveAlienPin(ax, ay)   -- global: 200-local limit
+    local ok, wf = pcall(function()
+      local w = hs.window.focusedWindow()
+      if w and w:frame().w > 120 and w:frame().h > 120 then return w:frame() end
+    end)
+    if ok and wf then
+      local fx = math.max(0, math.min(1, (ax - wf.x) / math.max(1, wf.w - MW)))
+      local fy = math.max(0, math.min(1, (ay - wf.y) / math.max(1, wf.h - MH)))
+      hs.settings.set("vox.pref.miniAlienRelPin", { fx = fx, fy = fy })
+      hs.settings.set("vox.pref.miniAlienPin", nil)
+      return "window"
+    end
+    hs.settings.set("vox.pref.miniAlienPin", { x = ax, y = ay })
+    hs.settings.set("vox.pref.miniAlienRelPin", nil)
+    return "screen"
+  end
+  function alienPinTarget(winFrame)   -- global: 200-local limit
+    local rel = hs.settings.get("vox.pref.miniAlienRelPin")
+    if rel and rel.fx and winFrame then
+      return { x = winFrame.x + rel.fx * math.max(1, winFrame.w - MW),
+               y = winFrame.y + rel.fy * math.max(1, winFrame.h - MH) }
+    end
+    local pin = hs.settings.get("vox.pref.miniAlienPin")
+    if pin and pin.x then return { x = pin.x, y = pin.y } end
+    return nil
+  end
+
   -- HOVER TOOLTIPS: a floating label above the hub names each button
   local function miniTip(text)
     if not text then
@@ -1140,7 +1173,7 @@ local function miniEnsure()
           local now = hs.timer.secondsSinceEpoch()
           if now - (mini.lastPinSave or 0) > 0.2 then
             mini.lastPinSave = now
-            hs.settings.set("vox.pref.miniAlienPin", { x = nf.x, y = nf.y })
+            saveAlienPin(nf.x, nf.y)
           end
         end
         return false
@@ -1149,9 +1182,11 @@ local function miniEnsure()
       if mini.dragTap then mini.dragTap:stop(); mini.dragTap = nil end
       if dragged then
         local f = mini.canvas:frame()
-        hs.settings.set("vox.pref.miniAlienPin", { x = f.x, y = f.y })
-        log(string.format("alien pinned at %d,%d", f.x, f.y))
-        hs.alert.show("👽 pinned here — right-click → Unpin to auto-position", 1.6)
+        local kind = saveAlienPin(f.x, f.y)
+        log(string.format("alien pinned (%s) at %d,%d", kind, f.x, f.y))
+        hs.alert.show(kind == "window"
+          and "👽 pinned to this spot ON the window — follows the window, sits here"
+          or "👽 pinned here — right-click → Unpin to auto-position", 1.8)
       else
         alienClick(x, y)
       end
@@ -1257,10 +1292,20 @@ local function miniTick()
   c:alpha(glow)
 
   -- Track bottom edge of currently focused highlighted window across all screens
-  -- (unless the user pinned the alien: a pin outranks the follow behavior —
-  -- THIS silent repositioner was the "he doesn't stay where I move him" bug)
-  if hs.settings.get("vox.pref.miniAlienPin") then
-    -- pinned: stay put
+  -- Pins outrank raw follow. A WINDOW pin still follows the focused
+  -- window — at the user's chosen offset. A SCREEN pin stays put.
+  local relPin = hs.settings.get("vox.pref.miniAlienRelPin")
+  if relPin and C.alienPos and C.alienPos.window then
+    local ok2, wf2 = pcall(function()
+      local w = hs.window.focusedWindow()
+      if w and w:frame().w > 120 and w:frame().h > 120 then return w:frame() end
+    end)
+    if ok2 and wf2 then
+      local t = alienPinTarget(wf2)
+      if t then c:frame({ x = t.x, y = t.y, w = MW, h = MH }) end
+    end
+  elseif hs.settings.get("vox.pref.miniAlienPin") then
+    -- screen-pinned: stay put
   elseif C.alienPos and C.alienPos.window then
     local ok, winInfo = pcall(function()
       local w = hs.window.focusedWindow()
@@ -1301,7 +1346,11 @@ local function miniShow()
     end
     mini.canvas:frame(f)
   end
-  if pin and pin.x then
+  local relTarget = (ok and winInfo and winInfo.frame and winInfo.frame.w > 120)
+    and alienPinTarget(winInfo.frame) or nil
+  if hs.settings.get("vox.pref.miniAlienRelPin") and relTarget then
+    setF("relpin", { x = relTarget.x, y = relTarget.y, w = MW, h = MH })
+  elseif pin and pin.x then
     setF("pin", { x = pin.x, y = pin.y, w = MW, h = MH })
   elseif C.alienPos and C.alienPos.window and ok and winInfo and winInfo.frame and winInfo.frame.w > 120 and winInfo.frame.h > 120 then
     local wf = winInfo.frame
@@ -1738,6 +1787,21 @@ local function hudPositions()
   -- working/emote alien appears centered over that same spot instead of
   -- jumping to its own default stage ("he doesn't stay where I move him"
   -- was the HUD body-double, not the pinned mini)
+  local relPin = hs.settings.get("vox.pref.miniAlienRelPin")
+  if relPin then
+    local ok, wf = pcall(function()
+      local w = hs.window.focusedWindow()
+      if w and w:frame().w > 120 and w:frame().h > 120 then return w:frame() end
+    end)
+    if ok and wf then
+      local t = alienPinTarget(wf)
+      if t then
+        local sf = (hs.screen.mainScreen()):fullFrame()
+        return { { x = math.max(sf.x + 4, math.min(t.x + (MW - CV_W) / 2, sf.x + sf.w - CV_W - 4)),
+                   y = math.max(sf.y + 4, math.min(t.y + MH - CV_H, sf.y + sf.h - CV_H - 4)) } }
+      end
+    end
+  end
   local pin = hs.settings.get("vox.pref.miniAlienPin")
   if pin and pin.x then
     local scr = hs.screen.mainScreen()
