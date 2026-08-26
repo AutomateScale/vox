@@ -2701,6 +2701,69 @@ icons = {
   work = alienImage({ red = 0.72, green = 0.52, blue = 1.0,  alpha = 1 }),
 }
 
+-- DREAM CLOUD: while Vox is transcribing/writing, a soft cloud floats
+-- top-center with a tiny alien craft orbiting it — Adam: "a cloud
+-- appears and alien craft is flying around it." Pure canvas, 30fps.
+dreamCloud = { canvas = nil, timer = nil, phase = 0 }  -- global: 200-local limit
+function dreamCloudShow()
+  local W, H = 220, 120
+  if not dreamCloud.canvas then
+    local f = hs.screen.primaryScreen():fullFrame()
+    local c = hs.canvas.new({ x = f.x + (f.w - W) / 2, y = f.y + 46, w = W, h = H })
+    c:level(hs.canvas.windowLevels.overlay)
+    c:behavior({ "canJoinAllSpaces", "stationary" })
+    -- cloud: overlapping puffs
+    local puffs = {
+      { x = 60, y = 58, r = 26 }, { x = 92, y = 46, r = 34 },
+      { x = 128, y = 52, r = 30 }, { x = 156, y = 62, r = 22 },
+      { x = 108, y = 66, r = 30 },
+    }
+    for i, p in ipairs(puffs) do
+      c[i] = { type = "circle", action = "fill",
+        center = { x = p.x, y = p.y }, radius = p.r,
+        fillColor = { red = 0.92, green = 0.95, blue = 1.0, alpha = 0.92 } }
+    end
+    c[6] = { type = "text", frame = { x = 0, y = 46, w = W, h = 34 },
+      text = "writing…", textAlignment = "center", textSize = 15,
+      textColor = { red = 0.35, green = 0.42, blue = 0.60, alpha = 0.95 } }
+    -- UFO: saucer body + dome + glow
+    c[7] = { type = "ellipticalArc", action = "fill",
+      frame = { x = 20, y = 20, w = 30, h = 11 },
+      fillColor = { red = 0.55, green = 0.62, blue = 0.75, alpha = 1 } }
+    c[8] = { type = "ellipticalArc", action = "fill",
+      frame = { x = 28, y = 13, w = 14, h = 11 },
+      startAngle = 270, endAngle = 90,
+      fillColor = { red = 0.45, green = 0.95, blue = 0.75, alpha = 0.95 } }
+    c[9] = { type = "circle", action = "fill",
+      center = { x = 35, y = 33 }, radius = 3,
+      fillColor = { red = 0.45, green = 0.95, blue = 0.75, alpha = 0.7 } }
+    dreamCloud.canvas = c
+  end
+  dreamCloud.canvas:show()
+  if not dreamCloud.timer then
+    dreamCloud.timer = hs.timer.doEvery(0.033, function()
+      local c = dreamCloud.canvas
+      if not c then return end
+      dreamCloud.phase = dreamCloud.phase + 0.055
+      local a = dreamCloud.phase
+      -- elliptical orbit around the cloud, dips behind via draw order illusion
+      local ux = 110 + 88 * math.cos(a) - 15
+      local uy = 55 + 26 * math.sin(a) - 5
+      c[7].frame = { x = ux, y = uy + 7, w = 30, h = 11 }
+      c[8].frame = { x = ux + 8, y = uy, w = 14, h = 11 }
+      c[9].center = { x = ux + 15, y = uy + 20 }
+      -- cloud gently breathes
+      local b = 1 + 0.02 * math.sin(a * 0.7)
+      c[2].radius = 34 * b
+      c[5].radius = 30 * (2 - b)
+    end)
+  end
+end
+function dreamCloudHide()
+  if dreamCloud.timer then dreamCloud.timer:stop(); dreamCloud.timer = nil end
+  if dreamCloud.canvas then dreamCloud.canvas:hide() end
+end
+
 local function setUI(mode)
   if menubar then
     local key = (mode == "lock") and "rec" or mode
@@ -2708,12 +2771,15 @@ local function setUI(mode)
   end
   if mode == "rec" or mode == "lock" then
     hudShow("rec"); vign.demo = false; vignShow()
+    dreamCloudHide()
     bubbleShow(recMode == "ask" and "👽 Ask mode — listening..." or "🎤 Listening...", 0)
   elseif mode == "work" then
     hudShow("work"); vignWork()
+    dreamCloudShow()
     bubbleShow("⚡ Transcribing...", 0)
   else
     hudHide(); vignHide(); bubbleHide()
+    dreamCloudHide()
   end
 end
 
