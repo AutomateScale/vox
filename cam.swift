@@ -424,6 +424,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         frameCount += 1
+        if frameCount == 1, let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            logMsg("capture frames are \(CVPixelBufferGetWidth(pb))x\(CVPixelBufferGetHeight(pb))")
+        }
         if frameCount % 30 == 0 {
             logMsg("Frame received #\(frameCount)")
         }
@@ -683,7 +686,12 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                                 let smoothedVal = prevVal * (1.0 - blendWeight) + rawVal * blendWeight
                                 self.prevMaskData![flatOffset + x] = smoothedVal
 
-                                if smoothedVal >= 0.30 {
+                                // TRACKING DECOUPLED FROM STICKINESS: the sticky
+                                // release (mic fix) accumulates residue by design;
+                                // feeding the body box from smoothed values made the
+                                // tracker wander progressively worse over a session.
+                                // Position reads the RAW mask; visuals keep the glue.
+                                if rawVal >= 0.35 {
                                     if x < rowMin[y] { rowMin[y] = x }
                                     if x > rowMax[y] { rowMax[y] = x }
                                     if y < globalMinY { globalMinY = y }
