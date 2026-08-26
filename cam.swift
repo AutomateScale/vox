@@ -88,6 +88,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var followX: CGFloat = 0              // smoothed person-center for tall framing
     var portalCX: CGFloat = -1            // smoothed portal center (head tracking)
     var portalCY: CGFloat = -1
+    var portalVX: CGFloat = 0             // spring velocity (critically damped pan)
+    var portalVY: CGFloat = 0
+    var headSmX: CGFloat = -1             // pre-smoothed head target
+    var headSmY: CGFloat = -1
     var portalR: CGFloat = -1             // smoothed portal radius
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
@@ -892,22 +896,26 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         let anchorFrac = CGFloat(Double(ProcessInfo.processInfo.environment["PORTAL_ANCHOR"] ?? "") ?? 0.60)
                         hy = ((1.0 - b.origin.y - b.size.height) + b.size.height * anchorFrac) * ext.height + ext.minY
                     }
-                    if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy }
-                    // ANTI-TWITCH: the body box jitters a few pixels between
-                    // segmentation updates and a plain EMA reproduces every
-                    // twitch. Soft deadband (moves smaller than 1.5% of frame
-                    // count for nothing), then an eased glide capped at 0.6%
-                    // of frame per frame — camera-operator, not servo.
-                    let deadZ = min(ext.width, ext.height) * 0.015
-                    let maxStep = min(ext.width, ext.height) * 0.006
-                    func glide(_ d: CGFloat) -> CGFloat {
-                        let a = abs(d)
-                        if a < deadZ { return 0 }
-                        let soft = d * min(1.0, (a - deadZ) / deadZ)
-                        return max(-maxStep, min(maxStep, soft * 0.08))
+                    if self.portalCX < 0 {
+                        self.portalCX = hx; self.portalCY = hy
+                        self.headSmX = hx; self.headSmY = hy
+                        self.portalVX = 0; self.portalVY = 0
                     }
-                    self.portalCX += glide(hx - self.portalCX)
-                    self.portalCY += glide(hy - self.portalCY)
+                    // CRITICALLY-DAMPED SPRING PAN: the deadband version was
+                    // stick-slip — rigid inside the zone, popping loose past
+                    // it (stiff AND twitchy). Physics instead: pre-smooth the
+                    // noisy head target to kill single-frame spikes, then a
+                    // critically-damped spring pursues it. Fluid at all
+                    // amplitudes, no thresholds to pop across, jitter
+                    // absorbed by damping rather than ignored by rule.
+                    self.headSmX += (hx - self.headSmX) * 0.30
+                    self.headSmY += (hy - self.headSmY) * 0.30
+                    let k: CGFloat = 0.014
+                    let cD: CGFloat = 2.0 * sqrt(k)
+                    self.portalVX += (self.headSmX - self.portalCX) * k - self.portalVX * cD
+                    self.portalVY += (self.headSmY - self.portalCY) * k - self.portalVY * cD
+                    self.portalCX += self.portalVX
+                    self.portalCY += self.portalVY
                     let r = min(ext.width, ext.height) * 0.45 * (1.0 + 0.010 * CGFloat(sin(t * 1.4)))
                     let cx = ext.midX, cy = ext.midY
                     let center = CIVector(x: cx, y: cy)
