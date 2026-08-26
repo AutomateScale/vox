@@ -2547,6 +2547,25 @@ function spawnPresenter()
 
     screenRec.camTask = hs.task.new(camBin, function(code)
       log("camTask exit code: " .. tostring(code))
+      if code == 3 then
+        -- cam-bin's frozen-feed watchdog fired: recycle Canon's wedge-prone
+        -- helpers and respawn, max twice per 10 minutes
+        if hs.timer.secondsSinceEpoch() - (M.camFreezeWindow or 0) > 600 then
+          M.camFreezeRecoveries = 0
+          M.camFreezeWindow = hs.timer.secondsSinceEpoch()
+        end
+        if (M.camFreezeRecoveries or 0) < 2 then
+          M.camFreezeRecoveries = (M.camFreezeRecoveries or 0) + 1
+          os.execute("/usr/bin/pkill -9 -f 'EOS Webcam Utility Pro Helper' 2>/dev/null")
+          hs.alert.show("📷 Camera feed froze — auto-recovering…", 2.5)
+          timers.camRecover = hs.timer.doAfter(2.5, function()
+            timers.camRecover = nil
+            spawnPresenter()
+          end)
+        else
+          hs.alert.show("📷 Camera keeps freezing — Canon's driver is wedged. Try ⌥⇧V to switch camera (Cam Link is solid).", 5)
+        end
+      end
     end, function(_, stdout, stderr)
       -- scroll/double-click/voice resizes persist across restarts
       local s = tostring(stdout or "") .. "\n" .. tostring(stderr or "")

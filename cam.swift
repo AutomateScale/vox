@@ -93,6 +93,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var headSmX: CGFloat = -1             // pre-smoothed head target
     var headSmY: CGFloat = -1
     var portalR: CGFloat = -1             // smoothed portal radius
+    var feedWatchdog: Timer? = nil        // frozen-feed detector (Canon wedges)
+    var lastWatchFrame: Int = 0
+    var frozenTicks: Int = 0
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
@@ -187,6 +190,23 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         setupMetal()
         setupContentView(width: width, height: height)
         setupCamera(requestedDevice: deviceName)
+        // FROZEN-FEED WATCHDOG: Canon's virtual camera wedges (twice for
+        // Adam already). If no frames arrive for ~6s, exit(3) — vox.lua
+        // recycles the Canon helpers and respawns us. Self-healing beats
+        // a frozen face on a live recording.
+        feedWatchdog = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let s = self else { return }
+            if s.frameCount == s.lastWatchFrame {
+                s.frozenTicks += 1
+                if s.frozenTicks >= 3 {
+                    logMsg("FEED FROZEN — no frames for 6s, exiting for auto-recovery")
+                    exit(3)
+                }
+            } else {
+                s.frozenTicks = 0
+                s.lastWatchFrame = s.frameCount
+            }
+        }
         
         // Trigger Genie Fly-Out Spring Animation!
         if alienPoint != nil {
