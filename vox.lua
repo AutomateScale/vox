@@ -1257,7 +1257,11 @@ local function miniTick()
   c:alpha(glow)
 
   -- Track bottom edge of currently focused highlighted window across all screens
-  if C.alienPos and C.alienPos.window then
+  -- (unless the user pinned the alien: a pin outranks the follow behavior —
+  -- THIS silent repositioner was the "he doesn't stay where I move him" bug)
+  if hs.settings.get("vox.pref.miniAlienPin") then
+    -- pinned: stay put
+  elseif C.alienPos and C.alienPos.window then
     local ok, winInfo = pcall(function()
       local w = hs.window.focusedWindow()
       if not w then return nil end
