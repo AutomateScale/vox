@@ -192,6 +192,22 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         setupMetal()
         setupContentView(width: width, height: height)
         setupCamera(requestedDevice: deviceName)
+        // WINDOW EMERGENCE: the window itself springs out of its center
+        // point on launch — unmissable, independent of camera warm-up.
+        if let w = self.window {
+            let target = w.frame
+            let tiny = NSRect(x: target.midX - target.width * 0.06,
+                              y: target.midY - target.height * 0.06,
+                              width: target.width * 0.12, height: target.height * 0.12)
+            w.setFrame(tiny, display: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.65
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 1.35, 0.35, 1.0)
+                    w.animator().setFrame(target, display: true)
+                }
+            }
+        }
         // FROZEN-FEED WATCHDOG: Canon's virtual camera wedges (twice for
         // Adam already). If no frames arrive for ~6s, exit(3) — vox.lua
         // recycles the Canon helpers and respawns us. Self-healing beats

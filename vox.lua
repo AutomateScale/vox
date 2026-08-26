@@ -908,6 +908,11 @@ local MW, MH, MOFF = 118, 30, 45        -- canvas w/h, alien x-offset
 
 local function showAlienToolsMenu()
   local menu = hs.menubar.new(false)
+  local unpinItem = hs.settings.get("vox.pref.miniAlienPin") and
+    { title = "📍 Unpin alien (back to auto-position)", fn = function()
+        hs.settings.set("vox.pref.miniAlienPin", nil)
+        hs.alert.show("👽 unpinned — following your windows again", 1.6)
+      end } or nil
   local function setCamMode(m, name)
     pref("screenRecBgMode", m)
     if screenRec and screenRec.camTask then
@@ -916,6 +921,7 @@ local function showAlienToolsMenu()
     hs.alert.show("Webcam Mode: " .. name, 1.5)
   end
   menu:setMenu({
+    unpinItem or { title = "👽 Drag me anywhere — I'll pin there", disabled = true },
     { title = "📹 Toggle Presenter Camera Overlay (⌥⇧C)", fn = function() toggleWebcamOverlay() end },
     { title = (screenRec and screenRec.active) and "🛑 Stop Voom Screen Recording (⌥⇧R)" or "▶ Start Voom Screen Recording (⌥⇧R)", fn = function() toggleScreenRecording() end },
     { title = "-" },
@@ -989,12 +995,10 @@ local function miniEnsure()
 
   c:alpha(0.95)
   c:canvasMouseEvents(true, false, false, true)
-  c:mouseCallback(function(_, event, _, x, y)
-    if event == "rightMouseDown" then
-      showAlienToolsMenu()
-      return
-    end
-    if event ~= "mouseDown" then return end
+  -- DRAG TO RELOCATE: hold and drag the alien anywhere (it pins there,
+  -- surviving reboots); a small movement still counts as a click. Pin
+  -- cleared from the right-click menu. Adam: "it's blocking a button."
+  local function alienClick(x, y)
     if x <= 20 then
       toggleWebcamOverlay()
     elseif x > 20 and x <= 40 and mini.act.content then
@@ -1011,6 +1015,43 @@ local function miniEnsure()
         mini.act.talk()
       end
     end
+  end
+  c:mouseCallback(function(_, event, _, x, y)
+    if event == "rightMouseDown" then
+      showAlienToolsMenu()
+      return
+    end
+    if event ~= "mouseDown" then return end
+    local startMouse = hs.mouse.absolutePosition()
+    local startFrame = mini.canvas:frame()
+    local dragged = false
+    if mini.dragTap then mini.dragTap:stop() end
+    mini.dragTap = hs.eventtap.new(
+      { hs.eventtap.event.types.leftMouseDragged,
+        hs.eventtap.event.types.leftMouseUp }, function(e)
+      local t = e:getType()
+      local m = hs.mouse.absolutePosition()
+      local dx, dy = m.x - startMouse.x, m.y - startMouse.y
+      if t == hs.eventtap.event.types.leftMouseDragged then
+        if math.abs(dx) > 6 or math.abs(dy) > 6 then dragged = true end
+        if dragged then
+          mini.canvas:frame({ x = startFrame.x + dx, y = startFrame.y + dy,
+                              w = startFrame.w, h = startFrame.h })
+        end
+        return false
+      end
+      -- leftMouseUp
+      if mini.dragTap then mini.dragTap:stop(); mini.dragTap = nil end
+      if dragged then
+        local f = mini.canvas:frame()
+        hs.settings.set("vox.pref.miniAlienPin", { x = f.x, y = f.y })
+        hs.alert.show("👽 pinned here — right-click → Unpin to auto-position", 1.6)
+      else
+        alienClick(x, y)
+      end
+      return false
+    end)
+    mini.dragTap:start()
   end)
   mini.canvas = c
 end
@@ -1141,7 +1182,10 @@ local function miniShow()
     local ws = w:screen() or hs.screen.mainScreen()
     return { frame = wf, screenFrame = ws:fullFrame() }
   end)
-  if C.alienPos and C.alienPos.window and ok and winInfo and winInfo.frame and winInfo.frame.w > 120 and winInfo.frame.h > 120 then
+  local pin = hs.settings.get("vox.pref.miniAlienPin")
+  if pin and pin.x then
+    mini.canvas:frame({ x = pin.x, y = pin.y, w = MW, h = MH })
+  elseif C.alienPos and C.alienPos.window and ok and winInfo and winInfo.frame and winInfo.frame.w > 120 and winInfo.frame.h > 120 then
     local wf = winInfo.frame
     local sf = winInfo.screenFrame
     local targetX = math.max(sf.x + 4, math.min(wf.x + (wf.w - MW) / 2, sf.x + sf.w - MW - 4))
