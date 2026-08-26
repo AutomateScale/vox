@@ -93,9 +93,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var headSmX: CGFloat = -1             // pre-smoothed head target
     var headSmY: CGFloat = -1
     var portalR: CGFloat = -1             // smoothed portal radius
+    var entranceFrame: Int = 0            // emergence animation on launch
     var feedWatchdog: Timer? = nil        // frozen-feed detector (Canon wedges)
     var lastWatchFrame: Int = 0
     var frozenTicks: Int = 0
+    var zeroMotionStreak: Int = 0         // identical-frame freeze (Canon streams a stuck image)
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
@@ -653,6 +655,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
 
                         var totalDeltaSum: Float = 0.0
                         let isFastMotion = self.currentMotionVelocity > 0.008
+                        if totalBodyCount == 0 && self.currentMotionVelocity == 0.0 {
+                            // handled below via delta sum — placeholder keeps scope
+                        }
                         for y in 0..<mh {
                             let rowOffset = y * bytesPerRow
                             let flatOffset = y * mw
@@ -727,6 +732,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         
                         let frameMotion = totalBodyCount > 0 ? Double(totalDeltaSum / Float(totalBodyCount)) : 0.0
                         self.currentMotionVelocity = self.currentMotionVelocity * 0.65 + frameMotion * 0.35
+                        if totalDeltaSum == 0.0 {
+                            self.zeroMotionStreak += 1
+                            if self.zeroMotionStreak >= 24 {
+                                logMsg("FEED FROZEN (identical frames) — exiting for auto-recovery")
+                                exit(3)
+                            }
+                        } else {
+                            self.zeroMotionStreak = 0
+                        }
 
                         // Tight Anatomic Arm & Body Perimeter Gate (Tight 8px margin completely erases chair & room background)
                         var cleanRowMin = rowMin
@@ -1266,6 +1280,29 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             }
         }
 
+        // EMERGENCE: for the first ~1.4s the whole feed zooms out of the
+        // window center with an ease-out-back pop — "coming out of the
+        // camera." Applies to every mode; costs one transform.
+        if self.entranceFrame < 34 {
+            self.entranceFrame += 1
+            let p = CGFloat(self.entranceFrame) / 34.0
+            let c1: CGFloat = 1.70158
+            let eased = 1.0 + (c1 + 1.0) * pow(p - 1.0, 3) + c1 * pow(p - 1.0, 2)
+            let s = max(0.08, eased)
+            let fext = sharpenedFinal.extent
+            let cx0 = fext.midX, cy0 = fext.midY
+            let zoomT = CGAffineTransform(translationX: cx0, y: cy0)
+                .scaledBy(x: s, y: s)
+                .translatedBy(x: -cx0, y: -cy0)
+            var entering = sharpenedFinal.transformed(by: zoomT)
+            let fade = min(1.0, p * 1.6)
+            if fade < 1.0, let alphaF = CIFilter(name: "CIColorMatrix") {
+                alphaF.setValue(entering, forKey: kCIInputImageKey)
+                alphaF.setValue(CIVector(x: 0, y: 0, z: 0, w: fade), forKey: "inputAVector")
+                entering = alphaF.outputImage ?? entering
+            }
+            sharpenedFinal = entering
+        }
         let originX = sharpenedFinal.extent.origin.x
         let originY = sharpenedFinal.extent.origin.y
         let normalizedImage = sharpenedFinal.transformed(by: CGAffineTransform(translationX: -originX, y: -originY))
