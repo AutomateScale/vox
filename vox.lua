@@ -6143,6 +6143,9 @@ function showVoxSettings()
   <div class="row"><span>Window size</span><select onchange="send('screenRecWebcamSize', parseInt(this.value))">
     <option value="380"%s>Compact</option><option value="520"%s>Standard</option>
     <option value="680"%s>Large</option><option value="840"%s>Huge</option><option value="1000"%s>Huge (1000)</option><option value="1200"%s>Max (1200)</option></select></div>
+  <div class="row"><span>Capture quality</span><select onchange="send('screenRecQuality', this.value)">
+    <option value="auto"%s>✨ Auto (smart)</option><option value="4k"%s>💎 4K max</option>
+    <option value="hd"%s>🎬 1080p HD</option><option value="720"%s>🍃 720p light</option></select></div>
 </div>
 
 <div class="card wide"><h2>Shortcuts</h2>
@@ -6205,6 +6208,8 @@ window.addEventListener('keydown', function(e) {
     sel(C.screenRecWebcamSize, 380), sel(C.screenRecWebcamSize, 520),
     sel(C.screenRecWebcamSize, 680), sel(C.screenRecWebcamSize, 840),
     sel(C.screenRecWebcamSize, 1000), sel(C.screenRecWebcamSize, 1200),
+    sel(C.screenRecQuality or "auto", "auto"), sel(C.screenRecQuality or "auto", "4k"),
+    sel(C.screenRecQuality or "auto", "hd"), sel(C.screenRecQuality or "auto", "720"),
     shortcutRows)
 
   local uc = hs.webview.usercontent.new("voxprefs")
@@ -6231,6 +6236,7 @@ window.addEventListener('keydown', function(e) {
       pref("alienVoiceName", v); speakAlien("This is my voice now.")
     elseif k == "screenRecShape" or k == "screenRecBgMode"
         or k == "screenRecWebcamSize" or k == "screenRecFraming"
+        or k == "screenRecQuality"
         or k == "screenRecFollow" then
       pref(k, v)
       if k == "screenRecShape" and C.screenRecBgMode ~= "raw" then

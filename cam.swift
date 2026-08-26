@@ -385,7 +385,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let lightMode = (filterMode == "raw" || filterMode == "chroma")
         let want4K = (captureQuality == "4k")
                   || (captureQuality == "auto" && currentSize >= 720 && lightMode)
-        if want4K && session.canSetSessionPreset(.hd4K3840x2160) {
+        if captureQuality == "720" && session.canSetSessionPreset(.hd1280x720) {
+            session.sessionPreset = .hd1280x720
+            logMsg("Camera session preset set to 720p (light mode)")
+        } else if want4K && session.canSetSessionPreset(.hd4K3840x2160) {
             session.sessionPreset = .hd4K3840x2160
             logMsg("Camera session preset set to 4K UHD (3840x2160) — big-window sharpness")
         } else if session.canSetSessionPreset(.hd1920x1080) {
@@ -882,8 +885,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         hy = ((1.0 - b.origin.y - b.size.height) + b.size.height * anchorFrac) * ext.height + ext.minY
                     }
                     if self.portalCX < 0 { self.portalCX = hx; self.portalCY = hy }
-                    self.portalCX += (hx - self.portalCX) * 0.12
-                    self.portalCY += (hy - self.portalCY) * 0.12
+                    // ANTI-TWITCH: the body box jitters a few pixels between
+                    // segmentation updates and a plain EMA reproduces every
+                    // twitch. Soft deadband (moves smaller than 1.5% of frame
+                    // count for nothing), then an eased glide capped at 0.6%
+                    // of frame per frame — camera-operator, not servo.
+                    let deadZ = min(ext.width, ext.height) * 0.015
+                    let maxStep = min(ext.width, ext.height) * 0.006
+                    func glide(_ d: CGFloat) -> CGFloat {
+                        let a = abs(d)
+                        if a < deadZ { return 0 }
+                        let soft = d * min(1.0, (a - deadZ) / deadZ)
+                        return max(-maxStep, min(maxStep, soft * 0.08))
+                    }
+                    self.portalCX += glide(hx - self.portalCX)
+                    self.portalCY += glide(hy - self.portalCY)
                     let r = min(ext.width, ext.height) * 0.45 * (1.0 + 0.010 * CGFloat(sin(t * 1.4)))
                     let cx = ext.midX, cy = ext.midY
                     let center = CIVector(x: cx, y: cy)
