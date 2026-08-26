@@ -1082,8 +1082,18 @@ local function miniEnsure()
       if t == hs.eventtap.event.types.leftMouseDragged then
         if math.abs(dx) > 6 or math.abs(dy) > 6 then dragged = true end
         if dragged then
-          mini.canvas:frame({ x = startFrame.x + dx, y = startFrame.y + dy,
-                              w = startFrame.w, h = startFrame.h })
+          local nf = { x = startFrame.x + dx, y = startFrame.y + dy,
+                       w = startFrame.w, h = startFrame.h }
+          mini.canvas:frame(nf)
+          -- pin saves DURING the drag (throttled): if macOS silently kills
+          -- the tap before mouse-up, the last dragged spot still wins —
+          -- "he doesn't stay where I move him" was a stale pin from a
+          -- missed drop event
+          local now = hs.timer.secondsSinceEpoch()
+          if now - (mini.lastPinSave or 0) > 0.2 then
+            mini.lastPinSave = now
+            hs.settings.set("vox.pref.miniAlienPin", { x = nf.x, y = nf.y })
+          end
         end
         return false
       end
@@ -1092,6 +1102,7 @@ local function miniEnsure()
       if dragged then
         local f = mini.canvas:frame()
         hs.settings.set("vox.pref.miniAlienPin", { x = f.x, y = f.y })
+        log(string.format("alien pinned at %d,%d", f.x, f.y))
         hs.alert.show("👽 pinned here — right-click → Unpin to auto-position", 1.6)
       else
         alienClick(x, y)
