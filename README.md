@@ -66,6 +66,13 @@ and sinks away.
 - **"Hey Vox, …"** — ask a question; the alien answers from its local memory.
 - **Press Option + Shift + R (⌥⇧R)** — **Voom (Screen & Presenter Recording)**:
   instantly records your screen and voice with zero-background transparent person cutout overlay, live circular webcam bubble, on-screen recording HUD (timer, alien cheer 👽, stop, cancel), hardware-accelerated MP4 output saved to `~/Movies/VoxRecordings/`, auto-copying file path to clipboard, and one-click notification play. Also triggerable by voice: *"Voom"* / *"stop Voom"*.
+- **🌀 Portal mode** — the presenter as a *dimension door*: a fixed circle with an
+  animated alien-energy ring, where the **video pans inside the ring to keep your
+  face centered** — head-tracked with critically-damped spring physics, like a tiny
+  camera operator lives in the portal. Two flavors: `Portal` (AI cutout over a
+  deep-space glow) and `Portal — no cutout` (your raw camera in the tracked circle).
+  Plus capture-quality control (Auto / 4K / 1080p / 720p-light), scroll-to-resize
+  with size memory, sticky mic-friendly matting, and "camera bigger" by voice.
 - **Voice actions** — "Hey Vox, open Safari" / "close Slack" / "switch to
   Chrome" / "minimize" / "press command W" / "volume up" / "take a
   screenshot" / "Voom" / "lock the screen". Works in ask mode too (⌘+⇧). Deterministic
