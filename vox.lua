@@ -1241,18 +1241,26 @@ local function miniShow()
     return { frame = wf, screenFrame = ws:fullFrame() }
   end)
   local pin = hs.settings.get("vox.pref.miniAlienPin")
+  local function setF(tag, f)
+    local cur = mini.canvas:frame()
+    if math.abs(cur.x - f.x) > 2 or math.abs(cur.y - f.y) > 2 then
+      log(string.format("alien MOVED by %s: %d,%d -> %d,%d (pin=%s)",
+        tag, cur.x, cur.y, f.x, f.y, pin and (pin.x .. "," .. pin.y) or "none"))
+    end
+    mini.canvas:frame(f)
+  end
   if pin and pin.x then
-    mini.canvas:frame({ x = pin.x, y = pin.y, w = MW, h = MH })
+    setF("pin", { x = pin.x, y = pin.y, w = MW, h = MH })
   elseif C.alienPos and C.alienPos.window and ok and winInfo and winInfo.frame and winInfo.frame.w > 120 and winInfo.frame.h > 120 then
     local wf = winInfo.frame
     local sf = winInfo.screenFrame
     local targetX = math.max(sf.x + 4, math.min(wf.x + (wf.w - MW) / 2, sf.x + sf.w - MW - 4))
     local targetY = math.max(sf.y + 4, math.min(wf.y + wf.h - 45, sf.y + sf.h - MH - 4))
-    mini.canvas:frame({ x = targetX, y = targetY, w = MW, h = MH })
+    setF("window-follow", { x = targetX, y = targetY, w = MW, h = MH })
   else
     local activeScr = hs.mouse.getCurrentScreen() or hs.screen.mainScreen() or hs.screen.primaryScreen()
     local f = activeScr:fullFrame()
-    mini.canvas:frame({ x = f.x + (f.w - MW) / 2, y = f.y + f.h - 34,
+    setF("bottom-center", { x = f.x + (f.w - MW) / 2, y = f.y + f.h - 34,
                         w = MW, h = MH })
   end
   mini.canvas:show()
