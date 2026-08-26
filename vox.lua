@@ -976,16 +976,13 @@ local function miniEnsure()
   local btnBg = { red = 0.10, green = 0.12, blue = 0.20, alpha = 0.85 }
   c[9]  = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 2, y = 12, w = 17, h = 17 } }
-  c[10] = { type = "text", text = "🎥", textSize = 10,
-            textAlignment = "center", frame = { x = 2, y = 13, w = 17, h = 14 } }
+  c[10] = { type = "text", text = "", frame = { x = 2, y = 13, w = 17, h = 14 } }
   c[11] = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 22, y = 12, w = 17, h = 17 } }
-  c[12] = { type = "text", text = "📝", textSize = 9,
-            textAlignment = "center", frame = { x = 22, y = 13.5, w = 17, h = 13 } }
+  c[12] = { type = "text", text = "", frame = { x = 22, y = 13.5, w = 17, h = 13 } }
   c[13] = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 79, y = 12, w = 17, h = 17 } }
-  c[14] = { type = "text", text = "👁️", textSize = 9,
-            textAlignment = "center", frame = { x = 79, y = 13.5, w = 17, h = 13 } }
+  c[14] = { type = "text", text = "", frame = { x = 79, y = 13.5, w = 17, h = 13 } }
   c[15] = { type = "oval", action = "fill", fillColor = btnBg,
             frame = { x = 99, y = 12, w = 17, h = 17 } }
   c[16] = { type = "oval", action = "stroke", strokeWidth = 1.6,
@@ -994,6 +991,41 @@ local function miniEnsure()
   c[17] = { type = "oval", action = "fill",
             fillColor = { red = 1, green = 0.28, blue = 0.28, alpha = 0.95 },
             frame = { x = 105.5, y = 18, w = 5, h = 5 } }
+  -- BRANDED ICONS, drawn not borrowed: 🛸 camera = a little saucer;
+  -- content = comet quill; absorb = the alien's own eye; record = red
+  -- planet with a saturn ring. Alieny and spacey, per the boss.
+  c[18] = { type = "oval", action = "fill",
+            fillColor = { red = 0.45, green = 0.97, blue = 0.72, alpha = 1 },
+            frame = { x = 4.5, y = 19.5, w = 12, h = 4.6 } }
+  c[19] = { type = "ellipticalArc", action = "fill", startAngle = 270, endAngle = 90,
+            fillColor = { red = 0.55, green = 0.85, blue = 1, alpha = 0.95 },
+            frame = { x = 7.5, y = 15.2, w = 6, h = 6 } }
+  c[20] = { type = "oval", action = "fill",
+            fillColor = { red = 1, green = 1, blue = 1, alpha = 0.9 },
+            frame = { x = 9.7, y = 21, w = 1.6, h = 1.6 } }
+  c[21] = { type = "segments", action = "stroke", strokeWidth = 1.8,
+            strokeColor = { red = 0.72, green = 0.52, blue = 1, alpha = 1 },
+            coordinates = { { x = 27, y = 25 }, { x = 34.5, y = 16.5 } } }
+  c[22] = { type = "oval", action = "fill",
+            fillColor = { red = 1, green = 1, blue = 1, alpha = 0.95 },
+            frame = { x = 25.8, y = 24.2, w = 2.4, h = 2.4 } }
+  c[23] = { type = "oval", action = "fill",
+            fillColor = { red = 0.72, green = 0.52, blue = 1, alpha = 0.55 },
+            frame = { x = 35.2, y = 14.8, w = 1.6, h = 1.6 } }
+  c[24] = { type = "oval", action = "fill",
+            fillColor = { red = 0.72, green = 0.52, blue = 1, alpha = 0.3 },
+            frame = { x = 37, y = 13.2, w = 1.2, h = 1.2 } }
+  c[25] = { type = "oval", action = "strokeAndFill", strokeWidth = 1,
+            fillColor = { red = 0.02, green = 0.06, blue = 0.12, alpha = 1 },
+            strokeColor = { red = 0.45, green = 0.97, blue = 0.72, alpha = 0.9 },
+            frame = { x = 81, y = 17, w = 13, h = 7 } }
+  c[26] = { type = "oval", action = "fill",
+            fillColor = { red = 1, green = 1, blue = 1, alpha = 0.85 },
+            frame = { x = 84, y = 18.4, w = 2, h = 2.6 } }
+  c[27] = { type = "ellipticalArc", action = "stroke", strokeWidth = 1,
+            strokeColor = { red = 1, green = 1, blue = 1, alpha = 0.35 },
+            frame = { x = 100.5, y = 18.5, w = 15, h = 5 },
+            startAngle = 0, endAngle = 360 }
 
   c:alpha(0.95)
   c:canvasMouseEvents(true, false, true, true)
@@ -1682,6 +1714,23 @@ end
 -- menu-selectable, any combo. "window" = he rises out of the window you're
 -- dictating into. One alien is real; extra positions get cheap mirrors.
 local function hudPositions()
+  -- the alien FAMILY shares the pin: when Adam pins the idle alien, the
+  -- working/emote alien appears centered over that same spot instead of
+  -- jumping to its own default stage ("he doesn't stay where I move him"
+  -- was the HUD body-double, not the pinned mini)
+  local pin = hs.settings.get("vox.pref.miniAlienPin")
+  if pin and pin.x then
+    local scr = hs.screen.mainScreen()
+    for _, s in ipairs(hs.screen.allScreens()) do
+      local sf0 = s:fullFrame()
+      if pin.x >= sf0.x and pin.x < sf0.x + sf0.w
+         and pin.y >= sf0.y and pin.y < sf0.y + sf0.h then scr = s; break end
+    end
+    local sf = scr:fullFrame()
+    local x = math.max(sf.x + 4, math.min(pin.x + (MW - CV_W) / 2, sf.x + sf.w - CV_W - 4))
+    local y = math.max(sf.y + 4, math.min(pin.y + MH - CV_H, sf.y + sf.h - CV_H - 4))
+    return { { x = x, y = y } }
+  end
   local f = hs.screen.mainScreen():fullFrame()
   local list, seen = {}, {}
   local function add(x, y, scr)
