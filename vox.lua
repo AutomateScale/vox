@@ -2749,7 +2749,7 @@ function spawnPresenter()
       -- scroll/double-click/voice resizes persist across restarts
       local s = tostring(stdout or "") .. "\n" .. tostring(stderr or "")
       local n = s:match("SIZE_NOW=(%d+)")
-      if n then
+      if n and tonumber(n) >= 240 then   -- sub-240 = launch-animation noise, never a real choice
         C.screenRecWebcamSize = tonumber(n)
         hs.settings.set("vox.pref.screenRecWebcamSize", tonumber(n))
       end

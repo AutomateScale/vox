@@ -200,12 +200,22 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                               y: target.midY - target.height * 0.06,
                               width: target.width * 0.12, height: target.height * 0.12)
             w.setFrame(tiny, display: false)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                NSAnimationContext.runAnimationGroup { ctx in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                NSAnimationContext.runAnimationGroup({ ctx in
                     ctx.duration = 0.65
                     ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 1.35, 0.35, 1.0)
                     w.animator().setFrame(target, display: true)
-                }
+                }, completionHandler: {
+                    // CRITICAL: the layer does not follow the animator — without
+                    // this, the feed renders at the tiny launch size forever
+                    // ("super small camera, looks bad quality")
+                    guard let s = self, let cv = w.contentView else { return }
+                    w.setFrame(target, display: true)
+                    cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+                    s.renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+                    s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+                    s.pillLayer?.frame = CGRect(x: 10, y: 10, width: target.width - 20, height: 22)
+                })
             }
         }
         // FROZEN-FEED WATCHDOG: Canon's virtual camera wedges (twice for
@@ -349,8 +359,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     private func setSize(_ newSize: CGFloat) {
         guard let window = self.window, let contentView = window.contentView else { return }
         currentSize = newSize
-        print("CAM_LOG: SIZE_NOW=\(Int(newSize))")
-        fflush(stdout)
+        if entranceFrame >= 34 {
+            print("CAM_LOG: SIZE_NOW=\(Int(newSize))")
+            fflush(stdout)
+        }
         if captureQuality == "auto", let session = captureSession {
             let lightMode = (filterMode == "raw" || filterMode == "chroma")
             let is4K = session.sessionPreset == .hd4K3840x2160
