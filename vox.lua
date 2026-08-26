@@ -1104,7 +1104,15 @@ local function miniEnsure()
     local startMouse = hs.mouse.absolutePosition()
     local startFrame = mini.canvas:frame()
     local dragged = false
-    if mini.dragTap then mini.dragTap:stop() end
+    if mini.dragTap then mini.dragTap:stop(); mini.dragTap = nil end
+    if timers.dragKill then timers.dragKill:stop() end
+    -- the tap is SYSTEM-WIDE: if its mouse-up ever gets eaten, it must
+    -- not survive to hijack the next window-drag (the "ghost drag" that
+    -- kept yanking the alien back). Two hard guards: a 20s deadline and
+    -- a sanity check that the mouse is still anywhere near the alien.
+    timers.dragKill = hs.timer.doAfter(20, function()
+      if mini.dragTap then mini.dragTap:stop(); mini.dragTap = nil end
+    end)
     mini.dragTap = hs.eventtap.new(
       { hs.eventtap.event.types.leftMouseDragged,
         hs.eventtap.event.types.leftMouseUp }, function(e)
@@ -1112,6 +1120,14 @@ local function miniEnsure()
       local m = hs.mouse.absolutePosition()
       local dx, dy = m.x - startMouse.x, m.y - startMouse.y
       if t == hs.eventtap.event.types.leftMouseDragged then
+        local cf = mini.canvas:frame()
+        if m.x < cf.x - 260 or m.x > cf.x + cf.w + 260
+           or m.y < cf.y - 260 or m.y > cf.y + cf.h + 260 then
+          -- mouse is nowhere near the alien: this is somebody else's
+          -- drag and our tap is stale — stand down without touching him
+          if mini.dragTap then mini.dragTap:stop(); mini.dragTap = nil end
+          return false
+        end
         if math.abs(dx) > 6 or math.abs(dy) > 6 then dragged = true end
         if dragged then
           local nf = { x = startFrame.x + dx, y = startFrame.y + dy,
