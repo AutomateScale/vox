@@ -193,9 +193,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         setupContentView(width: width, height: height)
         setupCamera(requestedDevice: deviceName)
         // WINDOW EMERGENCE: the window itself springs out of its center
-        // point on launch — unmissable, independent of camera warm-up.
-        if let w = self.window {
-            let target = w.frame
+        // point on launch when not flying out from the alien — unmissable,
+        // independent of camera warm-up.
+        if alienPoint == nil, let w = self.window {
+            let target = self.targetWindowRect ?? w.frame
             let tiny = NSRect(x: target.midX - target.width * 0.06,
                               y: target.midY - target.height * 0.06,
                               width: target.width * 0.12, height: target.height * 0.12)
@@ -205,12 +206,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     ctx.duration = 0.65
                     ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 1.35, 0.35, 1.0)
                     w.animator().setFrame(target, display: true)
+                    w.animator().alphaValue = 1.0
                 }, completionHandler: {
                     // CRITICAL: the layer does not follow the animator — without
                     // this, the feed renders at the tiny launch size forever
                     // ("super small camera, looks bad quality")
                     guard let s = self, let cv = w.contentView else { return }
                     w.setFrame(target, display: true)
+                    w.alphaValue = 1.0
                     cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
                     s.renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
                     s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -251,7 +254,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
             win.animator().setFrame(targetRect, display: true)
             win.animator().alphaValue = 1.0
-        }, completionHandler: nil)
+        }, completionHandler: { [weak self] in
+            guard let s = self, let cv = win.contentView else { return }
+            win.setFrame(targetRect, display: true)
+            win.alphaValue = 1.0
+            cv.frame = NSRect(x: 0, y: 0, width: targetRect.width, height: targetRect.height)
+            s.renderLayer?.frame = NSRect(x: 0, y: 0, width: targetRect.width, height: targetRect.height)
+            s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+            s.pillLayer?.frame = CGRect(x: 10, y: 10, width: targetRect.width - 20, height: 22)
+        })
     }
     
     func animateGenieFlyIn(completion: @escaping () -> Void) {
