@@ -1183,7 +1183,7 @@ local function miniEnsure()
       if dragged then
         local f = mini.canvas:frame()
         local kind = saveAlienPin(f.x, f.y)
-        log(string.format("alien pinned (%s) at %d,%d", kind, f.x, f.y))
+        log(string.format("alien pinned (%s) at %.0f,%.0f", kind, f.x, f.y))
         hs.alert.show(kind == "window"
           and "👽 pinned to this spot ON the window — follows the window, sits here"
           or "👽 pinned here — right-click → Unpin to auto-position", 1.8)
@@ -1306,7 +1306,7 @@ local function miniTick()
         c:frame({ x = t.x, y = t.y, w = MW, h = MH })
         if hs.timer.secondsSinceEpoch() - (mini.lastFollowLog or 0) > 5 then
           mini.lastFollowLog = hs.timer.secondsSinceEpoch()
-          log(string.format("tick-follow: win %d,%d -> alien %d,%d", wf2.x, wf2.y, t.x, t.y))
+          log(string.format("tick-follow: win %.0f,%.0f -> alien %.0f,%.0f", wf2.x, wf2.y, t.x, t.y))
         end
       end
     else
@@ -1352,7 +1352,7 @@ local function miniShow()
   local function setF(tag, f)
     local cur = mini.canvas:frame()
     if math.abs(cur.x - f.x) > 2 or math.abs(cur.y - f.y) > 2 then
-      log(string.format("alien MOVED by %s: %d,%d -> %d,%d (pin=%s)",
+      log(string.format("alien MOVED by %s: %.0f,%.0f -> %.0f,%.0f (pin=%s)",
         tag, cur.x, cur.y, f.x, f.y, pin and (pin.x .. "," .. pin.y) or "none"))
     end
     mini.canvas:frame(f)
