@@ -94,6 +94,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var headSmY: CGFloat = -1
     var portalR: CGFloat = -1             // smoothed portal radius
     var entranceFrame: Int = 0            // emergence animation on launch
+    var emergeTarget: NSRect? = nil       // genie pour: hidden until first frame
     var feedWatchdog: Timer? = nil        // frozen-feed detector (Canon wedges)
     var lastWatchFrame: Int = 0
     var frozenTicks: Int = 0
@@ -192,34 +193,23 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         setupMetal()
         setupContentView(width: width, height: height)
         setupCamera(requestedDevice: deviceName)
-        // WINDOW EMERGENCE: the window itself springs out of its center
-        // point on launch when not flying out from the alien — unmissable,
-        // independent of camera warm-up.
-        if alienPoint == nil, let w = self.window {
-            let target = self.targetWindowRect ?? w.frame
-            let tiny = NSRect(x: target.midX - target.width * 0.06,
-                              y: target.midY - target.height * 0.06,
-                              width: target.width * 0.12, height: target.height * 0.12)
-            w.setFrame(tiny, display: false)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = 0.65
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 1.35, 0.35, 1.0)
-                    w.animator().setFrame(target, display: true)
-                    w.animator().alphaValue = 1.0
-                }, completionHandler: {
-                    // CRITICAL: the layer does not follow the animator — without
-                    // this, the feed renders at the tiny launch size forever
-                    // ("super small camera, looks bad quality")
-                    guard let s = self, let cv = w.contentView else { return }
-                    w.setFrame(target, display: true)
-                    w.alphaValue = 1.0
-                    cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
-                    s.renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
-                    s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
-                    s.pillLayer?.frame = CGRect(x: 10, y: 10, width: target.width - 20, height: 22)
-                })
+        // GENIE EMERGENCE: hidden until the camera actually delivers
+        // frames, then pours OUT OF THE ALIEN ICON — a live-video seed at
+        // the alien's position swelling to full size. No more tiny black
+        // square sitting on screen during warm-up.
+        if let w = self.window {
+            let target = w.frame
+            var seedX = target.midX, seedY = target.midY
+            if let ap = self.alienStartPoint,
+               abs(ap.x - target.midX) < 3000, abs(ap.y - target.midY) < 3000 {
+                seedX = ap.x; seedY = ap.y
             }
+            let tiny = NSRect(x: seedX - target.width * 0.05,
+                              y: seedY - target.height * 0.05,
+                              width: target.width * 0.10, height: target.height * 0.10)
+            w.setFrame(tiny, display: false)
+            w.alphaValue = 0
+            self.emergeTarget = target
         }
         // FROZEN-FEED WATCHDOG: Canon's virtual camera wedges (twice for
         // Adam already). If no frames arrive for ~6s, exit(3) — vox.lua
@@ -489,8 +479,29 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         frameCount += 1
-        if frameCount == 1, let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
-            logMsg("capture frames are \(CVPixelBufferGetWidth(pb))x\(CVPixelBufferGetHeight(pb))")
+        if frameCount == 1 {
+            if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
+                logMsg("capture frames are \(CVPixelBufferGetWidth(pb))x\(CVPixelBufferGetHeight(pb))")
+            }
+            if let target = self.emergeTarget {
+                self.emergeTarget = nil
+                DispatchQueue.main.async { [weak self] in
+                    guard let s = self, let w = s.window else { return }
+                    w.alphaValue = 1
+                    NSAnimationContext.runAnimationGroup({ ctx in
+                        ctx.duration = 0.75
+                        ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.30, 0.30, 1.0)
+                        w.animator().setFrame(target, display: true)
+                    }, completionHandler: {
+                        guard let cv = w.contentView else { return }
+                        w.setFrame(target, display: true)
+                        cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+                        s.renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+                        s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+                        s.pillLayer?.frame = CGRect(x: 10, y: 10, width: target.width - 20, height: 22)
+                    })
+                }
+            }
         }
         if frameCount % 30 == 0 {
             logMsg("Frame received #\(frameCount)")
