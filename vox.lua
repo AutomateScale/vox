@@ -2703,7 +2703,7 @@ end
 -- Settings choices (camera, mode, shape, size) apply everywhere.
 function voxCamArgs(extra)
   local args = {
-    "--size", tostring(C.screenRecWebcamSize or 520),
+    "--size", tostring(math.max(C.screenRecWebcamSize or 640, 480)),
     "--mode", C.screenRecBgMode or "mint",
     "--shape", C.screenRecShape or "circle",
     "--framing", C.screenRecFraming or "wide",
