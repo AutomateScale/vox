@@ -1302,7 +1302,18 @@ local function miniTick()
     end)
     if ok2 and wf2 then
       local t = alienPinTarget(wf2)
-      if t then c:frame({ x = t.x, y = t.y, w = MW, h = MH }) end
+      if t then
+        c:frame({ x = t.x, y = t.y, w = MW, h = MH })
+        if hs.timer.secondsSinceEpoch() - (mini.lastFollowLog or 0) > 5 then
+          mini.lastFollowLog = hs.timer.secondsSinceEpoch()
+          log(string.format("tick-follow: win %d,%d -> alien %d,%d", wf2.x, wf2.y, t.x, t.y))
+        end
+      end
+    else
+      if hs.timer.secondsSinceEpoch() - (mini.lastFollowLog or 0) > 5 then
+        mini.lastFollowLog = hs.timer.secondsSinceEpoch()
+        log("tick-follow: no usable focused window")
+      end
     end
   elseif hs.settings.get("vox.pref.miniAlienPin") then
     -- screen-pinned: stay put
@@ -2755,6 +2766,7 @@ function spawnPresenter()
     -- crashed this entire path (cam button did nothing). Use the actual
     -- mini-alien canvas frame when visible; else bottom-center fallback.
     local mainScreen = hs.screen.mainScreen():frame()
+    local primaryH = hs.screen.primaryScreen():fullFrame().h
     local ax, ay = mainScreen.w / 2, mainScreen.h - 120
     local ok, mf = pcall(function()
       if mini and mini.canvas and mini.canvas:isShowing() then
@@ -2763,7 +2775,7 @@ function spawnPresenter()
     end)
     if ok and mf then ax, ay = mf.x + mf.w, mf.y end
     local alienX = ax + 35
-    local alienY = (mainScreen.h - ay) - 35
+    local alienY = (primaryH - ay) - 35   -- AppKit global y flips against PRIMARY height
 
     -- 2. Calculate Active Focused Window Bottom-Right Docking Frame
     local size = C.screenRecWebcamSize or 520
