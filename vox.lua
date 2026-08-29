@@ -2870,7 +2870,20 @@ function listCameraDevices()
 end
 
 function cycleCameraDevice()
-  local cams = listCameraDevices()
+  -- CYCLE ROTATION EXCLUDES the troublemakers: virtual cameras and the
+  -- Canon utility (720p-capped, freeze-prone) kept sneaking back in via
+  -- ⌥⇧V and silently downgrading quality. They remain selectable in
+  -- Settings for deliberate choices — just never by accidental cycling.
+  local SKIP = { ["EOS Webcam Utility"] = true, ["OBS Virtual Camera"] = true,
+                 ["Elgato Virtual Camera"] = true, ["Loom"] = true }
+  local all = listCameraDevices()
+  local cams = {}
+  for _, n in ipairs(all) do
+    local skip = false
+    for pat in pairs(SKIP) do if n:find(pat, 1, true) then skip = true end end
+    if not skip then cams[#cams + 1] = n end
+  end
+  if #cams == 0 then cams = all end
   local count = math.max(#cams, 1)
   local curName = hs.settings.get('vox.pref.camDeviceName')
   local curPos = 0
