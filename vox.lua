@@ -4163,6 +4163,41 @@ local function collapseRepeats(text)
   return table.concat(out)
 end
 
+-- CANON AUTO-MEDIC: the EOS stack freezes chronically; its root-owned
+-- core is untouchable, but bouncing the user-level helpers forces the
+-- pipeline to re-negotiate and un-freezes the feed. Exposed as a voice
+-- command, a menu item, and a background CPU-wedge watchdog.
+function canonReset(silent)   -- global: 200-local limit
+  os.execute("/usr/bin/pkill -9 -f 'EOS Webcam Utility Pro Helper' 2>/dev/null; "
+          .. "/usr/bin/pkill -9 -f 'EWCProxy' 2>/dev/null")
+  log("canon stack reset (user-level helpers bounced)")
+  if not silent then
+    hs.alert.show("🔧 Camera drivers reset — feed re-negotiating (~3s)", 2.5)
+  end
+end
+timers.canonWatch = hs.timer.doEvery(180, function()
+  local p = io.popen("ps -eo pcpu,comm | grep -E 'Pro Helper \\(Renderer\\)|EWCProxy' | grep -v grep")
+  local hot = false
+  if p then
+    for line in p:lines() do
+      local cpu = tonumber(line:match("^%s*([%d%.]+)"))
+      if cpu and cpu > 85 then hot = true end
+    end
+    p:close()
+  end
+  if hot then
+    M.canonHotStrikes = (M.canonHotStrikes or 0) + 1
+    if M.canonHotStrikes >= 2 then
+      M.canonHotStrikes = 0
+      log("canon watchdog: sustained wedge detected — auto-resetting")
+      canonReset(true)
+      hs.alert.show("🔧 Camera drivers were wedged — auto-reset", 2)
+    end
+  else
+    M.canonHotStrikes = 0
+  end
+end)
+
 -- Voom by voice: the sales page promises "just say Voom" — these keep it
 -- true on every path (hold-key dictation, Hey Vox, conversation mode).
 -- EXACT whole-utterance match only, so dictating a sentence that merely
@@ -4271,6 +4306,13 @@ local function applyVoiceCommands(text)
   end
   if bare:find("toggle camera") or bare == "camera" then
     return "", { fn = function() toggleWebcamOverlay() end, label = "Toggle Camera" }
+  end
+  if bare == "fix the camera" or bare == "reset the camera"
+     or bare == "camera fix" or bare == "fix camera" or bare == "reset camera" then
+    return "", { fn = function()
+      canonReset()
+      if screenRec and screenRec.camTask then showWebcamOverlay() end
+    end, label = "Camera drivers reset" }
   end
   if bare:find("camera bigger") or bare:find("bigger camera")
      or bare:find("camera larger") or bare == "make the camera bigger"
@@ -6664,6 +6706,7 @@ menubar:setMenu(function()
     { title = "🎯 Record Focused Window (⌥⇧W)", fn = function() startScreenRecording(true) end },
     { title = "🧍 Presenter Camera on/off (⌥⇧C)", fn = function() toggleWebcamOverlay() end },
     { title = "🛑 Panic reset — kill whatever is running (⌥⇧⎋)", fn = function() panicReset() end },
+    { title = "🔧 Reset camera drivers (or say: fix the camera)", fn = function() canonReset() end },
     { title = "🎥 Camera", menu = camItems },
     { title = "-" },
     { title = "📂 Recordings Folder", fn = function()
