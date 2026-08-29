@@ -81,6 +81,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         return req
     }()
     var trackedBodyRect: CGRect? = nil
+    let faceRequest = VNDetectFaceRectanglesRequest()
+    var trackedFaceRect: CGRect? = nil    // top-down normalized, same convention as body
+    var faceStaleTicks: Int = 0
     var prevMaskData: [Float]? = nil
     var segFrameCounter: Int = 0          // adaptive segmentation cadence
     var rawShape: String = "circle"       // circle | squircle | portrait | hex
@@ -676,7 +679,21 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             if runSeg {
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
             do {
-                try handler.perform([segmentationRequest])
+                let wantFace = (self.filterMode == "portal" || self.filterMode == "portalcam")
+                try handler.perform(wantFace ? [segmentationRequest, faceRequest] : [segmentationRequest])
+                if wantFace {
+                    if let face = (faceRequest.results as? [VNFaceObservation])?
+                        .max(by: { $0.boundingBox.width < $1.boundingBox.width }) {
+                        let bb = face.boundingBox
+                        self.trackedFaceRect = CGRect(x: bb.origin.x,
+                                                      y: 1.0 - bb.origin.y - bb.height,
+                                                      width: bb.width, height: bb.height)
+                        self.faceStaleTicks = 0
+                    } else {
+                        self.faceStaleTicks += 1
+                        if self.faceStaleTicks > 30 { self.trackedFaceRect = nil }
+                    }
+                }
                 if let maskBuffer = segmentationRequest.results?.first?.pixelBuffer {
                     let maskRaw = CIImage(cvPixelBuffer: maskBuffer)
                     let maskNorm = maskRaw.transformed(by: CGAffineTransform(translationX: -maskRaw.extent.origin.x, y: -maskRaw.extent.origin.y))
@@ -975,7 +992,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     // zoom headroom) so your face stays centered in the ring,
                     // like a tiny camera operator lives inside the portal.
                     var hx = ext.midX, hy = ext.midY
-                    if let b = self.trackedBodyRect {
+                    if let fb = self.trackedFaceRect {
+                        // EYE LOCK: face detection centers the actual face —
+                        // the body-box heuristic skewed toward shoulder mass
+                        // ("I appear way to the left"). Eye line sits ~62% up
+                        // the face box; the portal pins it dead center.
+                        hx = (fb.origin.x + fb.width / 2) * ext.width + ext.minX
+                        hy = ((1.0 - fb.origin.y - fb.height) + fb.height * 0.62) * ext.height + ext.minY
+                    } else if let b = self.trackedBodyRect {
                         hx = (b.origin.x + b.size.width / 2) * ext.width + ext.minX
                         let anchorFrac = CGFloat(Double(ProcessInfo.processInfo.environment["PORTAL_ANCHOR"] ?? "") ?? 0.60)
                         hy = ((1.0 - b.origin.y - b.size.height) + b.size.height * anchorFrac) * ext.height + ext.minY
@@ -992,9 +1016,9 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                     // critically-damped spring pursues it. Fluid at all
                     // amplitudes, no thresholds to pop across, jitter
                     // absorbed by damping rather than ignored by rule.
-                    self.headSmX += (hx - self.headSmX) * 0.30
-                    self.headSmY += (hy - self.headSmY) * 0.30
-                    let k: CGFloat = 0.014
+                    self.headSmX += (hx - self.headSmX) * 0.25
+                    self.headSmY += (hy - self.headSmY) * 0.25
+                    let k: CGFloat = 0.011
                     let cD: CGFloat = 2.0 * sqrt(k)
                     self.portalVX += (self.headSmX - self.portalCX) * k - self.portalVX * cD
                     self.portalVY += (self.headSmY - self.portalCY) * k - self.portalVY * cD
