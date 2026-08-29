@@ -2831,7 +2831,7 @@ function spawnPresenter()
       end
       -- capture-quality evidence lands in the console, not a black hole
       for line in s:gmatch("[^\n]+") do
-        if line:match("preset set to") or line:match("quality %->") or line:match("Using video device") or line:match("capture frames") then
+        if line:match("preset set to") or line:match("quality %->") or line:match("Using video device") or line:match("capture frames") or line:match("GENIE") then
           log("cam: " .. line:gsub("^CAM_LOG:%s*", ""))
         end
       end

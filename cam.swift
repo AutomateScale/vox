@@ -195,7 +195,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         setupMetal()
         setupContentView(width: width, height: height)
-        setupCamera(requestedDevice: deviceName)
         // GENIE EMERGENCE: hidden until the camera actually delivers
         // frames, then pours OUT OF THE ALIEN ICON — a live-video seed at
         // the alien's position swelling to full size. No more tiny black
@@ -214,6 +213,26 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             w.alphaValue = 0
             self.emergeTarget = target
         }
+        // BULLETPROOF SIZE GUARANTEE: whatever happens to the pour
+        // (races, missed frames, animation interruptions), the window is
+        // full-size and visible within 3 seconds. Never "barely see it".
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let s = self, let w = s.window else { return }
+            let target = s.emergeTarget ?? w.frame
+            if w.alphaValue < 1.0 || w.frame.width < target.width * 0.9 {
+                logMsg("GENIE fallback: forcing full size")
+                s.emergeTarget = nil
+                w.alphaValue = 1
+                w.setFrame(target, display: true)
+                if let cv = w.contentView {
+                    cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+                }
+                s.renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+                s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+                s.pillLayer?.frame = CGRect(x: 10, y: 10, width: target.width - 20, height: 22)
+            }
+        }
+        setupCamera(requestedDevice: deviceName)
         // FROZEN-FEED WATCHDOG: Canon's virtual camera wedges (twice for
         // Adam already). If no frames arrive for ~6s, exit(3) — vox.lua
         // recycles the Canon helpers and respawns us. Self-healing beats
@@ -488,6 +507,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             }
             if let target = self.emergeTarget {
                 self.emergeTarget = nil
+                logMsg("GENIE pour: first frame -> animating to full size")
                 DispatchQueue.main.async { [weak self] in
                     guard let s = self, let w = s.window else { return }
                     w.alphaValue = 1
