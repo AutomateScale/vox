@@ -33,8 +33,27 @@ all day on Archon, and **auto-update hard-resets every fleet Mac to
   don't leave test artifacts in the repo.
 
 ## cam.swift landmines
-- **Committing cam.swift does nothing until compiled**:
-  `swiftc -O cam.swift -o cam-bin` — on every machine that runs it.
+- **cam-bin rebuilds itself** when cam.swift is newer than the binary
+  (async, ~5s, on the next presenter launch — `showWebcamOverlay`). To
+  test a change by hand: `swiftc -O cam.swift -o cam-bin`.
+- **ONE launch animation.** `startEmergeTween` is a manual 60Hz tween
+  that sets the window frame directly. Never add an NSWindow `animator()`
+  / `NSAnimationContext` frame animation on the presenter window: three
+  overlapping ones snapped it back to a 30x30 box at the alien and it
+  stayed there ("very small camera", 2026-09). The window is created at
+  its FINAL rect for the same reason.
+- **Canon process names (Archon, EOS Webcam Utility 2.x):** the feed
+  process is `EOSWebcamService`; the "Pro Helper"/EWCProxy names are a
+  legacy build. Its idle instance (respawned after a client disconnects)
+  delivers ZERO frames to the next client — `showWebcamOverlay` bounces
+  it pre-flight (`canonBounceHelpers`). The utility's "camera
+  disconnected" splash is a real image at 60 fps: `checkStaticFrame`
+  reports `FEED_STATIC` (pixel-identical for 5s) and vox.lua does one
+  re-negotiation, then alerts — a camera that is switched off cannot be
+  fixed by restarting anything. `system_profiler` never lists "Canon".
+- **Both cameras are fixed-rate formats** (Cam Link 4K 50 fps, EOS 60 fps);
+  the 30 fps cap is software in `captureOutput`. Don't remove it — the
+  full pipeline at 60 fps was ~50% of a core plus WindowServer.
 - `logMsg` writes to **stderr** (vox.lua's stream callback reads both).
 - `trackedBodyRect` is **normalized 0-1 with a flipped Y axis** — map it like
   the bust-dissolve does. Feeding it raw puts things in a corner of nowhere.

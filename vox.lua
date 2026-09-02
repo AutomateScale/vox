@@ -63,7 +63,6 @@ local C = {
   screenRecFraming    = "square",      -- wide | square | tall
   screenRecFollow     = false,         -- optional deadzone follow-me crop
   screenRecWebcam     = true,
-  screenRecWebcamSize = 180,
   screenRecWebcamPos  = "bottom-left",
   screenRecBgMode     = "chroma",
   -- whisperHost: where transcription happens. Keep 127.0.0.1 normally.
@@ -2737,21 +2736,55 @@ function showWebcamOverlay()
   if M.camRestartTimer then M.camRestartTimer:stop(); M.camRestartTimer = nil end
   local camBin = HOME .. "/vox/cam-bin"
   local camSwift = HOME .. "/vox/cam.swift"
-  if not hs.fs.attributes(camBin) and hs.fs.attributes(camSwift) then
-    os.execute("/usr/bin/swiftc -O '" .. camSwift .. "' -o '" .. camBin .. "' 2>/dev/null")
+  -- REBUILD WHEN STALE: fleet Macs pull cam.swift via auto-update, but a
+  -- committed .swift does nothing until compiled on THAT machine — fixes
+  -- shipped to main silently never ran anywhere else. Compare mtimes and
+  -- rebuild asynchronously (~5s on M4; the main thread keeps dictating),
+  -- then continue this launch. Compile to a side file and mv over the
+  -- binary so a running presenter never blocks the write. A failed build
+  -- is remembered per source mtime so a broken commit doesn't cost 5s on
+  -- every toggle.
+  local binA, srcA = hs.fs.attributes(camBin), hs.fs.attributes(camSwift)
+  if srcA and (not binA or srcA.modification > binA.modification)
+     and not M.camBuildTask and M.camBuildFailedFor ~= srcA.modification then
+    hs.alert.show("🔧 Rebuilding presenter camera (~5s)…", 2.5)
+    M.camBuildTask = hs.task.new("/bin/sh", function(code, _, err)
+      M.camBuildTask = nil
+      if code == 0 then
+        log("cam-bin rebuilt from cam.swift")
+        showWebcamOverlay()
+      else
+        M.camBuildFailedFor = srcA.modification
+        log("cam-bin build FAILED (" .. tostring(code) .. "): "
+            .. tostring(err or ""):gsub("%s+", " "):sub(1, 400))
+        if binA then
+          hs.alert.show("⚠️ Presenter rebuild failed — using the previous binary", 3)
+          showWebcamOverlay()
+        else
+          hs.alert.show("⚠️ Presenter camera can't build — see the Hammerspoon console", 4)
+        end
+      end
+    end, { "-c", string.format(
+      "/usr/bin/swiftc -O '%s' -o '%s.new' && /bin/mv -f '%s.new' '%s'",
+      camSwift, camBin, camBin, camBin) })
+    M.camBuildTask:start()
+    return
   end
   if hs.fs.attributes(camBin) then
-    -- remember where the user DRAGGED the presenter so a hot-apply restart
-    -- doesn't teleport it back to the corner (that read as a crash)
-    pcall(function()
-      local app = hs.application.find("cam%-bin")
-      local win = app and app:mainWindow()
-      if win then M.lastCamFrame = win:frame() end
-    end)
+    -- (where the user DRAGGED the presenter arrives as FRAME_NOW on the
+    -- cam-bin stream — hs.application.find never saw the borderless window)
     os.execute("/usr/bin/killall cam-bin 2>/dev/null")
+    -- CANON PRE-FLIGHT: the EOS utility's user-level service respawns
+    -- itself when its last client disconnects, and THAT idle instance
+    -- delivers zero frames to the next client (verified 2026-09-03: 6s of
+    -- nothing -> watchdog exit; after bouncing it, first frame in 0.6s).
+    -- Bounce it right before every EOS launch so cam-bin's connect spawns
+    -- a fresh one. Other camera choices are untouched.
+    local dev = tostring(hs.settings.get('vox.pref.camDeviceName') or "")
+    if dev:find("EOS", 1, true) then canonBounceHelpers() end
     M.camRestartTimer = hs.timer.doAfter(0.9, function()
       M.camRestartTimer = nil
-      os.execute("/usr/bin/pkill -9 -f 'cam-bin' 2>/dev/null")
+      os.execute("/usr/bin/pkill -9 -x cam-bin 2>/dev/null")
       spawnPresenter()
     end)
   end
@@ -2784,19 +2817,23 @@ function spawnPresenter()
     local targetX, targetY
 
     if M.lastCamFrame then
-      local f = M.lastCamFrame
+      local f = M.lastCamFrame          -- FRAME_NOW: already AppKit coords
       M.lastCamFrame = nil
       targetX = f.x
-      targetY = mainScreen.h - f.y - f.h   -- hs top-left -> AppKit bottom-left
+      targetY = f.y
     else
+      -- AppKit's origin is the PRIMARY screen's bottom-left; hs is
+      -- top-left of the same screen. Flip against primaryH — using the
+      -- focused screen's own height put the presenter off-screen whenever
+      -- the focused window lived on one of the side monitors.
       local win = hs.window.focusedWindow()
       if win and win:title() ~= "" and win:role() == "AXWindow" then
         local f = win:frame()
         targetX = f.x + f.w - width - 15
-        targetY = (mainScreen.h - (f.y + f.h)) + 15
+        targetY = (primaryH - (f.y + f.h)) + 15
       else
-        targetX = mainScreen.w - width - 35
-        targetY = 35
+        targetX = mainScreen.x + mainScreen.w - width - 35
+        targetY = (primaryH - (mainScreen.y + mainScreen.h)) + 35
       end
     end
 
@@ -2811,7 +2848,7 @@ function spawnPresenter()
         end
         if (M.camFreezeRecoveries or 0) < 2 then
           M.camFreezeRecoveries = (M.camFreezeRecoveries or 0) + 1
-          os.execute("/usr/bin/pkill -9 -f 'EOS Webcam Utility Pro Helper' 2>/dev/null")
+          canonBounceHelpers()
           hs.alert.show("📷 Camera feed froze — auto-recovering…", 2.5)
           timers.camRecover = hs.timer.doAfter(2.5, function()
             timers.camRecover = nil
@@ -2828,6 +2865,32 @@ function spawnPresenter()
       if n and tonumber(n) >= 240 then   -- sub-240 = launch-animation noise, never a real choice
         C.screenRecWebcamSize = tonumber(n)
         hs.settings.set("vox.pref.screenRecWebcamSize", tonumber(n))
+      end
+      -- where the presenter sits (AppKit coords, last report wins) so a
+      -- hot-apply restart lands where the user dragged it
+      for fx, fy, fw, fh in s:gmatch("FRAME_NOW=(%-?%d+),(%-?%d+),(%d+),(%d+)") do
+        M.lastCamFrame = { x = tonumber(fx), y = tonumber(fy),
+                           w = tonumber(fw), h = tonumber(fh) }
+      end
+      -- STATIC FEED (identical frames for 5s). Two honest cases: the
+      -- Canon utility's "camera disconnected" splash, or a Cam Link whose
+      -- HDMI source is off — neither is fixable by restarting. One Canon
+      -- re-negotiation per 2 minutes covers the stale-stream case; after
+      -- that, say what's happening instead of looping.
+      if s:find("FEED_STATIC", 1, true) then
+        local dev = tostring(hs.settings.get('vox.pref.camDeviceName') or "camera")
+        local now = hs.timer.secondsSinceEpoch()
+        if dev:find("EOS", 1, true) and now - (M.camStaticBounce or 0) > 120 then
+          M.camStaticBounce = now
+          log("cam: static Canon feed — one re-negotiation")
+          hs.alert.show("📷 Canon feed is static — re-negotiating…", 2.5)
+          showWebcamOverlay()          -- pre-flight bounces EOSWebcamService
+        else
+          log("cam: static feed from " .. dev .. " — camera off/asleep/unplugged?")
+          hs.alert.show("📷 " .. dev .. " is sending a static image — camera off, asleep, or unplugged?\nWake it or plug it in; the feed resumes by itself.", 5)
+        end
+      elseif s:find("FEED_LIVE", 1, true) then
+        log("cam: feed live again")
       end
       -- capture-quality evidence lands in the console, not a black hole
       for line in s:gmatch("[^\n]+") do
@@ -2891,7 +2954,7 @@ function cycleCameraDevice()
   local nextIdx = (curPos + 1) % count
   local label = cams[nextIdx + 1] or ("Camera #" .. tostring(nextIdx + 1))
   hs.settings.set('vox.pref.camDeviceName', label)
-  local p2 = io.popen("pgrep -f cam-bin")
+  local p2 = io.popen("pgrep -x cam-bin")
   local isRunning = (p2 and p2:read("*a") or "") ~= ""
   if p2 then p2:close() end
 
@@ -2921,7 +2984,7 @@ function hideWebcamOverlay()
 end
 
 function toggleWebcamOverlay()
-  local p = io.popen("pgrep -f cam-bin")
+  local p = io.popen("pgrep -x cam-bin")
   local out = p and p:read("*a") or ""
   if p then p:close() end
   if out ~= "" then
@@ -4167,16 +4230,47 @@ end
 -- core is untouchable, but bouncing the user-level helpers forces the
 -- pipeline to re-negotiate and un-freezes the feed. Exposed as a voice
 -- command, a menu item, and a background CPU-wedge watchdog.
-function canonReset(silent)   -- global: 200-local limit
-  os.execute("/usr/bin/pkill -9 -f 'EOS Webcam Utility Pro Helper' 2>/dev/null; "
+-- 2026-09 UPGRADE: also detects the EOS "connection drop" failure mode
+-- where the camera falls back to the Canon standby/EOS utility screen.
+-- The EOS helpers stay alive but the actual camera feed is gone — Canon
+-- just shows its branded splash. Bouncing the helpers forces the USB
+-- pipeline to re-negotiate and restores the live feed.
+function canonBounceHelpers()   -- global: 200-local limit
+  -- EOS Webcam Utility 2.x (camera-extension build, what Archon runs):
+  -- EOSWebcamService is the user-level per-client feed process — the one
+  -- whose idle instance starves the next client. The root-owned camera
+  -- extension is untouchable and doesn't need touching. Legacy "Pro"
+  -- helper names kept for fleet Macs still on that build. Until 2026-09
+  -- this only targeted the Pro names, which don't exist here — every
+  -- "auto-reset" was a no-op and Adam had to reset the camera by hand.
+  os.execute("/usr/bin/pkill -9 -x EOSWebcamService 2>/dev/null; "
+          .. "/usr/bin/pkill -9 -f 'EOS Webcam Utility Pro Helper' 2>/dev/null; "
           .. "/usr/bin/pkill -9 -f 'EWCProxy' 2>/dev/null")
+end
+
+function canonReset(silent)   -- global: 200-local limit
+  canonBounceHelpers()
   log("canon stack reset (user-level helpers bounced)")
   if not silent then
     hs.alert.show("🔧 Camera drivers reset — feed re-negotiating (~3s)", 2.5)
   end
+  -- If the presenter cam is running, respawn it after the EOS stack has
+  -- had time to re-negotiate (~3.5s). This way the user never has to
+  -- manually toggle the camera back on after an EOS connection drop.
+  local p = io.popen("pgrep -x cam-bin")
+  local camRunning = (p and p:read("*a") or "") ~= ""
+  if p then p:close() end
+  if camRunning then
+    timers.canonRespawn = hs.timer.doAfter(3.5, function()
+      timers.canonRespawn = nil
+      log("canon auto-medic: respawning presenter after EOS reset")
+      showWebcamOverlay()
+    end)
+  end
 end
-timers.canonWatch = hs.timer.doEvery(180, function()
-  local p = io.popen("ps -eo pcpu,comm | grep -E 'Pro Helper \\(Renderer\\)|EWCProxy' | grep -v grep")
+timers.canonWatch = hs.timer.doEvery(60, function()
+  -- CHECK 1: CPU wedge detection (original) — EOS helper pegging CPU
+  local p = io.popen("ps -eo pcpu,comm | grep -E 'Pro Helper \\(Renderer\\)|EWCProxy|EOSWebcamService' | grep -v grep")
   local hot = false
   if p then
     for line in p:lines() do
@@ -4196,6 +4290,15 @@ timers.canonWatch = hs.timer.doEvery(180, function()
   else
     M.canonHotStrikes = 0
   end
+
+  -- (The former CHECK 2 — "EOS helpers alive but no 'Canon' in
+  -- system_profiler" — is gone: the utility registers as "EOS Webcam
+  -- Utility", never "Canon", so it would have reset the stack every two
+  -- minutes once the process names above were corrected; and
+  -- system_profiler blocks Hammerspoon's main thread. cam-bin's own
+  -- watchdogs — no frames for 6s, pixel-identical frames for 5s — are
+  -- the real detectors; they exit(3) and spawnPresenter bounces the
+  -- service.)
 end)
 
 -- Voom by voice: the sales page promises "just say Voom" — these keep it
@@ -6089,7 +6192,7 @@ function voxSettingsMenu()
             fn = function()
               hs.settings.set('vox.pref.camDeviceName', name)
               hs.alert.show("📷 " .. name, 1.5)
-              local p = io.popen("pgrep -f cam-bin")
+              local p = io.popen("pgrep -x cam-bin")
               local running = (p and p:read("*a") or "") ~= ""
               if p then p:close() end
               if running then showWebcamOverlay() end  -- live-switch
@@ -6621,7 +6724,7 @@ window.addEventListener('keydown', function(e) {
     elseif k == "camera" then
       hs.settings.set('vox.pref.camDeviceName', v)
       hs.alert.show("📷 " .. tostring(v), 1.2)
-      local p = io.popen("pgrep -f cam-bin")
+      local p = io.popen("pgrep -x cam-bin")
       local running = (p and p:read("*a") or "") ~= ""
       if p then p:close() end
       if running then showWebcamOverlay() end
@@ -6640,7 +6743,7 @@ window.addEventListener('keydown', function(e) {
         hs.alert.show("🎛 saved — shapes show in the 'Raw shape' style", 1.8)
         return
       end
-      local p = io.popen("pgrep -f cam-bin")
+      local p = io.popen("pgrep -x cam-bin")
       local running = (p and p:read("*a") or "") ~= ""
       if p then p:close() end
       if running then
@@ -6690,7 +6793,7 @@ menubar:setMenu(function()
         fn = function()
           hs.settings.set('vox.pref.camDeviceName', name)
           hs.alert.show("📷 " .. name, 1.5)
-          local p = io.popen("pgrep -f cam-bin")
+          local p = io.popen("pgrep -x cam-bin")
           local running = (p and p:read("*a") or "") ~= ""
           if p then p:close() end
           if running then showWebcamOverlay() end
