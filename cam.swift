@@ -109,6 +109,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var staticSince: Double = -1          // when identical frames started (Canon splash / stuck image)
     var staticReported: Bool = false      // FEED_STATIC sent; FEED_LIVE clears it
     var lastProcessedPTS: Double = -1     // 30 fps processing cap
+    var statProcessed: Int = 0            // pipeline stats (5s window)
+    var statSeg: Int = 0
+    var statDelivered: Int = 0
+    var statAt: CFTimeInterval = 0
     var frameReport: Timer? = nil         // coalesced FRAME_NOW reporting
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
@@ -688,6 +692,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             if lastProcessedPTS >= 0 && pts > lastProcessedPTS && pts - lastProcessedPTS < (1.0 / 31.0) { return }
             lastProcessedPTS = pts
         }
+        statProcessed += 1
+        let statNow = CACurrentMediaTime()
+        if statAt == 0 { statAt = statNow }
+        if statNow - statAt >= 5.0 {
+            let dt = statNow - statAt
+            logMsg(String(format: "stats: delivered %.0f/s processed %.0f/s segmentation %.0f/s",
+                          Double(frameCount - statDelivered) / dt, Double(statProcessed) / dt, Double(statSeg) / dt))
+            statDelivered = frameCount; statProcessed = 0; statSeg = 0; statAt = statNow
+        }
         
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         if frameCount % 10 == 0 { checkStaticFrame(pixelBuffer) }
@@ -853,10 +866,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             // the raw VIDEO under the matte still refreshes every frame.
             // High motion -> every frame, exactly as before.
             self.segFrameCounter &+= 1
+            // 2026-09: with the 30 fps cap, "every frame when moving" still
+            // meant 28 segmentation passes/s and ~42% of a core with a live
+            // Canon feed. Moving -> every 2nd processed frame (14 Hz, mask
+            // staleness ≤70ms), still -> every 3rd. The video under the
+            // matte still refreshes every processed frame.
+            let segCadence = self.currentMotionVelocity > 0.006 ? 2 : 3
             let runSeg = self.cachedCleanMask == nil
-                      || self.currentMotionVelocity > 0.006
-                      || (self.segFrameCounter % 3 == 0)
+                      || (self.segFrameCounter % segCadence == 0)
             if runSeg {
+            self.statSeg += 1
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
             do {
                 let wantFace = (self.filterMode == "portal" || self.filterMode == "portalcam")
