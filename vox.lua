@@ -3117,6 +3117,7 @@ end
 local function reset()
   state, locked, pendingTap, recMode = "idle", false, false, "dictate"
   duckUp()
+  dreamCloudHide()
   if timers.maxRec then timers.maxRec:stop() end
   if timers.stuckKey then timers.stuckKey:stop() end
   if timers.uiDelay then timers.uiDelay:stop(); timers.uiDelay = nil end
@@ -3287,6 +3288,10 @@ local function insertText(text)
   state, locked, pendingTap = "idle", false, false
   duckUp()
   vignHide()                              -- words landed — glow fades now
+  dreamCloudHide()                        -- the "writing…" cloud too: this
+                                          -- path never calls setUI("idle"),
+                                          -- so it floated until the next
+                                          -- recording (2026-09-04)
   if timers.maxRec then timers.maxRec:stop() end
   if menubar then menubar:setIcon(icons.idle, true) end
   hudEmote(detectEmotion(text))
@@ -4708,6 +4713,7 @@ local function handleTranscript(raw, t0)
       state, locked, pendingTap = "idle", false, false
       duckUp()
       vignHide()
+      dreamCloudHide()
       if menubar then menubar:setIcon(icons.idle, true) end
       return
     end
