@@ -2383,8 +2383,12 @@ function startScreenRecording(windowOnly)
   -- ("Capture screen N"), which is camera-count-proof. And capture the
   -- default mic — Voom promises narration; ":none" shipped silent takes.
   local screenCapName = "Capture screen " .. tostring(targetScreenIndex - 1)
-  -- Use default audio index ":0" so avfoundation never fails with exit code 251
-  local screenDeviceInput = screenCapName .. ":0"
+  -- Audio: the SYSTEM DEFAULT mic, resolved to its avfoundation index by
+  -- name. ":0" is merely whatever avfoundation lists first — on Archon
+  -- that's Loom's virtual audio device: two minutes of narration shipped
+  -- at -91 dB (2026-09-04). Names don't work in the -i string (tested:
+  -- 48-byte file), indexes do.
+  local screenDeviceInput = screenCapName .. ":" .. voomAudioIndex(ffmpegBin)
 
   local args = {
     "-f", "avfoundation",
@@ -2707,6 +2711,35 @@ function cancelScreenRecording()
   end)
 
   hs.alert.show("🗑️ Recording cancelled", 1.5)
+end
+
+-- Resolve the default input device's avfoundation AUDIO index. Falls
+-- back to ":0" (old behaviour) only when the mic isn't in the list.
+function voomAudioIndex(ffmpegBin)   -- global: 200-local limit
+  local dev = hs.audiodevice.defaultInputDevice()
+  local want = dev and dev:name() or nil
+  local idx = nil
+  if want then
+    local p = io.popen("'" .. ffmpegBin .. "' -hide_banner -f avfoundation -list_devices true -i '' 2>&1")
+    if p then
+      local inAudio = false
+      for line in p:lines() do
+        if line:find("audio devices", 1, true) then
+          inAudio = true
+        elseif inAudio then
+          local i, name = line:match("%[(%d+)%]%s+(.-)%s*$")
+          if i and name == want then idx = i; break end
+        end
+      end
+      p:close()
+    end
+  end
+  if idx then
+    log("Voom audio: " .. want .. " -> :" .. idx)
+  else
+    log("Voom audio: default mic '" .. tostring(want) .. "' not in avfoundation list — falling back to :0")
+  end
+  return idx or "0"
 end
 
 -- ONE canonical presenter arg list — every spawn site uses this, so
