@@ -938,8 +938,36 @@ local function showAlienToolsMenu()
     { title = "💬 Hands-free AI Dictation (Click Alien)", fn = function() if mini.act.talk then mini.act.talk() end end },
     { title = "-" },
     { title = "📂 Open Recordings Folder", fn = function() hs.execute("open '" .. (C.screenRecDir or (HOME .. "/Movies/VoxRecordings")) .. "'") end },
+    { title = "🎙 Voom mic: " .. (hs.settings.get('vox.pref.voomAudioDevice') or "System default"),
+      menu = voomMicMenu() },
   })
   menu:popupMenu(hs.mouse.absolutePosition())
+end
+
+-- Voom mic picker: every input macOS knows about, plus "System default".
+-- Adam, 2026-09-04: "we need a place to switch audio — it took the
+-- AirPods." Stored by NAME; voomAudioIndex resolves it at record start.
+function voomMicMenu()   -- global: 200-local limit
+  local cur = hs.settings.get('vox.pref.voomAudioDevice')
+  local items = {
+    { title = "System default (" .. ((hs.audiodevice.defaultInputDevice() or {}).name
+        and hs.audiodevice.defaultInputDevice():name() or "?") .. ")",
+      checked = (cur == nil or cur == ""),
+      fn = function()
+        hs.settings.set('vox.pref.voomAudioDevice', nil)
+        hs.alert.show("🎙 Voom mic: system default", 1.6)
+      end },
+    { title = "-" },
+  }
+  for _, d in ipairs(hs.audiodevice.allInputDevices()) do
+    local name = d:name()
+    items[#items + 1] = { title = name, checked = (cur == name),
+      fn = function()
+        hs.settings.set('vox.pref.voomAudioDevice', name)
+        hs.alert.show("🎙 Voom mic: " .. name, 1.6)
+      end }
+  end
+  return items
 end
 
 local function miniEnsure()
@@ -2714,11 +2742,58 @@ function cancelScreenRecording()
   hs.alert.show("🗑️ Recording cancelled", 1.5)
 end
 
+-- AUTO CAMERA: prefer the HDMI capture (Cam Link 4K) whenever it carries
+-- a picture — the camera's clean HDMI out into the Cam Link involves no
+-- Canon software at all (Adam, 2026-09-04: "cut out Canon"). The chosen
+-- camera in Settings stays the fallback; nothing to reconfigure when the
+-- HDMI cable is unplugged. cam-bin --probe (60s watchdog) keeps
+-- M.camLinkLive current; a transition hot-restarts the presenter unless
+-- Voom is recording.
+function camPickDevice()   -- global: 200-local limit
+  local pref = tostring(hs.settings.get('vox.pref.camDeviceName')
+                 or hs.settings.get('vox.pref.camDeviceIndex') or 0)
+  if M.camLinkLive and hs.settings.get('vox.pref.camAuto') ~= false then
+    return hs.settings.get('vox.pref.camAutoDevice') or "Cam Link 4K"
+  end
+  return pref
+end
+function camAutoProbe()   -- global: 200-local limit
+  if hs.settings.get('vox.pref.camAuto') == false then return end
+  local bin = HOME .. "/vox/cam-bin"
+  if M.camProbe or not hs.fs.attributes(bin) then return end
+  local target = hs.settings.get('vox.pref.camAutoDevice') or "Cam Link 4K"
+  M.camProbe = hs.task.new(bin, function(code, out)
+    M.camProbe = nil
+    local v = tostring(out or ""):match("PROBE [^:]+: (%u+)")
+    if not v then return end
+    local live = (v == "LIVE")
+    if live ~= (M.camLinkLive or false) then
+      M.camLinkLive = live
+      log("cam auto: " .. target .. (live and " has a picture — preferring it (no Canon software in the chain)"
+                                     or " has no picture — back to " .. tostring(hs.settings.get('vox.pref.camDeviceName'))))
+      local p = io.popen("/usr/bin/pgrep -x cam-bin")
+      local running = (p and p:read("*a") or "") ~= ""
+      if p then p:close() end
+      if running and not screenRec.active then
+        hs.alert.show(live and ("📷 " .. target .. " is live — switching to it")
+                           or ("📷 " .. target .. " lost its picture — switching back"), 2.5)
+        showWebcamOverlay()
+      end
+    end
+  end, { "--probe", target })
+  M.camProbe:start()
+end
+timers.camAutoBoot = hs.timer.doAfter(15, function() timers.camAutoBoot = nil; camAutoProbe() end)
+
 -- Resolve the default input device's avfoundation AUDIO index. Falls
 -- back to ":0" (old behaviour) only when the mic isn't in the list.
 function voomAudioIndex(ffmpegBin)   -- global: 200-local limit
-  local dev = hs.audiodevice.defaultInputDevice()
-  local want = dev and dev:name() or nil
+  -- explicit choice (alien menu > Voom mic) beats the system default
+  local want = hs.settings.get('vox.pref.voomAudioDevice')
+  if not want or want == "" then
+    local dev = hs.audiodevice.defaultInputDevice()
+    want = dev and dev:name() or nil
+  end
   local idx = nil
   if want then
     local p = io.popen("'" .. ffmpegBin .. "' -hide_banner -f avfoundation -list_devices true -i '' 2>&1")
@@ -2751,8 +2826,7 @@ function voxCamArgs(extra)
     "--mode", C.screenRecBgMode or "mint",
     "--shape", C.screenRecShape or "circle",
     "--framing", C.screenRecFraming or "wide",
-    "--device", tostring(hs.settings.get('vox.pref.camDeviceName')
-                 or hs.settings.get('vox.pref.camDeviceIndex') or 0),
+    "--device", camPickDevice(),
   }
   args[#args + 1] = "--quality"
   args[#args + 1] = C.screenRecQuality or "auto"
@@ -2954,7 +3028,7 @@ function spawnPresenter()
       local p = screenRec.camTask and screenRec.camTask:pid()
       if p then os.execute("/usr/bin/renice 5 -p " .. p .. " 2>/dev/null") end
     end)
-    local camName = hs.settings.get('vox.pref.camDeviceName') or "default camera"
+    local camName = camPickDevice()
     hs.alert.show("🧞‍♂️ Presenter ON — " .. camName, 1.5)
   end
 end
@@ -4402,6 +4476,7 @@ function canonReset(silent)   -- global: 200-local limit
 end
 timers.canonWatch = hs.timer.doEvery(60, function()
   ensureCanonKeepalive()
+  camAutoProbe()
   -- CHECK 1: CPU wedge detection (original) — legacy EOS helper pegging
   -- CPU. EOSWebcamService is deliberately NOT here: it runs at 85-90%
   -- whenever the camera is live — that's decoding, not a wedge.

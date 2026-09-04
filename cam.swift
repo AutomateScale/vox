@@ -1688,6 +1688,54 @@ if CommandLine.arguments.contains("--list") {
     exit(0)
 }
 
+// --probe <device>: open the device briefly and report whether it carries
+// a picture. "LIVE" = real content, "BLACK" = signal but black (Cam Link
+// with its HDMI source off), "NONE" = no device / no frames in 3s.
+// vox.lua polls this to prefer the Cam Link (HDMI, no Canon software)
+// automatically the moment it has a signal. Runs before the guard.
+if let pi = CommandLine.arguments.firstIndex(of: "--probe"), pi + 1 < CommandLine.arguments.count {
+    let name = CommandLine.arguments[pi + 1]
+    final class ProbeSink: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+        var seen = 0
+        var verdict: String? = nil
+        func captureOutput(_ o: AVCaptureOutput, didOutput sb: CMSampleBuffer, from c: AVCaptureConnection) {
+            seen += 1
+            guard verdict == nil, seen >= 8, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
+            CVPixelBufferLockBaseAddress(pb, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+            guard !CVPixelBufferIsPlanar(pb), let base = CVPixelBufferGetBaseAddress(pb) else { return }
+            let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+            let stride = CVPixelBufferGetBytesPerRow(pb)
+            let p = base.assumingMemoryBound(to: UInt8.self)
+            var sum = 0, n = 0
+            for gy in 0..<16 {
+                for gx in 0..<16 {
+                    let x = w * (2 * gx + 1) / 32, y = h * (2 * gy + 1) / 32
+                    let off = y * stride + x * 4
+                    sum += Int(p[off]) + Int(p[off + 1]) + Int(p[off + 2]); n += 3
+                }
+            }
+            verdict = (sum / max(n, 1)) < 8 ? "BLACK" : "LIVE"
+        }
+    }
+    guard let dev = AVCaptureDevice.devices(for: .video).first(where: { $0.localizedName.localizedCaseInsensitiveContains(name) }) else {
+        print("PROBE \(name): NONE"); exit(0)
+    }
+    let session = AVCaptureSession()
+    if let input = try? AVCaptureDeviceInput(device: dev), session.canAddInput(input) { session.addInput(input) }
+    let out = AVCaptureVideoDataOutput()
+    out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+    let sink = ProbeSink()
+    out.setSampleBufferDelegate(sink, queue: DispatchQueue(label: "probe"))
+    if session.canAddOutput(out) { session.addOutput(out) }
+    session.startRunning()
+    let deadline = Date().addingTimeInterval(3.0)
+    while sink.verdict == nil && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+    session.stopRunning()
+    print("PROBE \(name): \(sink.verdict ?? "NONE")")
+    exit(0)
+}
+
 // Single instance enforcement guard (Exact PID filtering)
 let myPID = getpid()
 let duplicateCount = NSWorkspace.shared.runningApplications.filter { app in
