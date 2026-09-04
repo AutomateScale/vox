@@ -3001,10 +3001,17 @@ function spawnPresenter()
           hs.alert.show("📷 Canon feed is static — re-negotiating…", 2.5)
           showWebcamOverlay()          -- pre-flight bounces EOSWebcamService
         else
-          log("cam: static feed from " .. dev .. " — camera off/asleep/unplugged?")
-          hs.alert.show("📷 " .. dev .. " is sending a static image — camera off or USB dropped?\nPower-cycle it; the feed resumes by itself.", 5)
+          -- Canon's stream stalls for a few seconds now and then and
+          -- recovers by itself; only speak up if it stays static
+          if timers.camStaticAlert then timers.camStaticAlert:stop() end
+          timers.camStaticAlert = hs.timer.doAfter(10, function()
+            timers.camStaticAlert = nil
+            log("cam: static feed from " .. dev .. " for 15s — camera off/USB dropped?")
+            hs.alert.show("📷 " .. dev .. " has been static for 15s — camera off or USB dropped?\nPower-cycle it; the feed resumes by itself.", 5)
+          end)
         end
       elseif s:find("FEED_LIVE", 1, true) then
+        if timers.camStaticAlert then timers.camStaticAlert:stop(); timers.camStaticAlert = nil end
         log("cam: feed live again")
       end
       -- capture-quality evidence lands in the console, not a black hole
@@ -4423,17 +4430,13 @@ function ensureCanonKeepalive()   -- global: 200-local limit
   local present, running = canonPresent(), canonKeepaliveRunning()
   if present and not running then
     M.canonAbsentSince = nil
-    M.keepTask = hs.task.new(bin, function(code)
-      M.keepTask = nil
-      log("cam-keepalive exited (code " .. tostring(code) .. ")")
-    end, function(_, _, stderr)
-      for line in tostring(stderr or ""):gmatch("[^\n]+") do
-        if not line:find("frames/min", 1, true) then log("keepalive: " .. line:gsub("^KEEPALIVE:%s*", "")) end
-      end
-      return true
-    end, { "--device", dev })
-    M.keepTask:start()
-    log("canon keepalive: holding the EOS session (camera on USB)")
+    -- DETACHED, not an hs.task: a child of Hammerspoon dies on every
+    -- hs.reload (auto-update included), and that few-second session gap
+    -- is exactly the drop we're preventing (seen 15:41, 2026-09-04).
+    os.execute(string.format(
+      "/usr/bin/nohup '%s' --device '%s' >> /tmp/vox-keepalive.log 2>&1 &",
+      bin, dev:gsub("'", "")))
+    log("canon keepalive: holding the EOS session (camera on USB, detached; log /tmp/vox-keepalive.log)")
   elseif running and not present then
     -- camera gone (off / unplugged): keep holding for 3 min in case it
     -- comes straight back, then release — no point streaming Canon's

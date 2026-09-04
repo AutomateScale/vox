@@ -278,7 +278,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let seed = self.emergeSeed ?? w.frame
         w.alphaValue = 1
         emergeStarted = CACurrentMediaTime()
-        let duration: CFTimeInterval = 0.7
+        let duration: CFTimeInterval = 0.5
         let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
             guard let s = self, let w = s.window else { timer.invalidate(); return }
             let p = CGFloat(min(1.0, (CACurrentMediaTime() - s.emergeStarted) / duration))
@@ -866,14 +866,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             // the raw VIDEO under the matte still refreshes every frame.
             // High motion -> every frame, exactly as before.
             self.segFrameCounter &+= 1
-            // 2026-09: with the 30 fps cap, "every frame when moving" still
-            // meant 28 segmentation passes/s and ~42% of a core with a live
-            // Canon feed. Moving -> every 2nd processed frame (14 Hz, mask
-            // staleness ≤70ms), still -> every 3rd. The video under the
-            // matte still refreshes every processed frame.
-            let segCadence = self.currentMotionVelocity > 0.006 ? 2 : 3
+            // Moving -> every processed frame; still -> every 3rd. A
+            // half-rate matte while moving was tried (2026-09-04) and
+            // showed as a shadow popping in and out along the trailing
+            // body edge: video at 28 fps under a matte at 14 fps. The
+            // 30 fps cap already halved the load; the matte stays honest.
             let runSeg = self.cachedCleanMask == nil
-                      || (self.segFrameCounter % segCadence == 0)
+                      || self.currentMotionVelocity > 0.006
+                      || (self.segFrameCounter % 3 == 0)
             if runSeg {
             self.statSeg += 1
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
