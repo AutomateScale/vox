@@ -2348,6 +2348,7 @@ function startScreenRecording(windowOnly)
 
   -- 1. Launch Webcam Bubble if enabled
   if C.screenRecWebcam then
+    ensureCanonKeepalive()        -- Voom's stop must not be the Canon session's end
     os.execute("/usr/bin/killall -9 cam-bin 2>/dev/null")
     local camBin = HOME .. "/vox/cam-bin"
     local camSwift = HOME .. "/vox/cam.swift"
@@ -2814,7 +2815,12 @@ function showWebcamOverlay()
     -- Bounce it right before every EOS launch so cam-bin's connect spawns
     -- a fresh one. Other camera choices are untouched.
     local dev = tostring(hs.settings.get('vox.pref.camDeviceName') or "")
-    if dev:find("EOS", 1, true) then canonBounceHelpers() end
+    if dev:find("EOS", 1, true) then
+      ensureCanonKeepalive()
+      -- a held session can't go stale; and bouncing the service under
+      -- the keepalive is the very session-close that drops the camera
+      if not canonKeepaliveRunning() then canonBounceHelpers() end
+    end
     M.camRestartTimer = hs.timer.doAfter(0.9, function()
       M.camRestartTimer = nil
       os.execute("/usr/bin/pkill -9 -x cam-bin 2>/dev/null")
@@ -2825,6 +2831,7 @@ end
 
 function spawnPresenter()
   local camBin = HOME .. "/vox/cam-bin"
+  ensureCanonKeepalive()          -- hold the Canon session before we open/close ours
   if hs.fs.attributes(camBin) then
 
     -- 1. Calculate Alien Hub Origin. C.alienPos is the position PREFERENCE
@@ -2913,14 +2920,15 @@ function spawnPresenter()
       if s:find("FEED_STATIC", 1, true) then
         local dev = tostring(hs.settings.get('vox.pref.camDeviceName') or "camera")
         local now = hs.timer.secondsSinceEpoch()
-        if dev:find("EOS", 1, true) and now - (M.camStaticBounce or 0) > 120 then
+        if dev:find("EOS", 1, true) and not canonKeepaliveRunning()
+           and now - (M.camStaticBounce or 0) > 120 then
           M.camStaticBounce = now
           log("cam: static Canon feed — one re-negotiation")
           hs.alert.show("📷 Canon feed is static — re-negotiating…", 2.5)
           showWebcamOverlay()          -- pre-flight bounces EOSWebcamService
         else
           log("cam: static feed from " .. dev .. " — camera off/asleep/unplugged?")
-          hs.alert.show("📷 " .. dev .. " is sending a static image — camera off, asleep, or unplugged?\nWake it or plug it in; the feed resumes by itself.", 5)
+          hs.alert.show("📷 " .. dev .. " is sending a static image — camera off or USB dropped?\nPower-cycle it; the feed resumes by itself.", 5)
         end
       elseif s:find("FEED_LIVE", 1, true) then
         log("cam: feed live again")
@@ -3001,6 +3009,7 @@ end
 
 
 function hideWebcamOverlay()
+  ensureCanonKeepalive()          -- our session closing must not be the last one
   if screenRec.camTask then
     screenRec.camTask:terminate()
     screenRec.camTask = nil
@@ -4286,8 +4295,93 @@ function canonBounceHelpers()   -- global: 200-local limit
           .. "/usr/bin/pkill -9 -f 'EWCProxy' 2>/dev/null")
 end
 
+-- CANON KEEPALIVE. The EOS M50 Mark II resets its USB link the moment
+-- the EOS Webcam Utility session closes (presenter off, Voom stopped) and,
+-- on Archon's three-deep USB 2.0 hub chain, never re-enumerates — Adam
+-- power-cycled the camera every time (kernel: enumerated 15:09:50, last
+-- client exit 15:13:25, camera gone 15:13:28, 2026-09-04). cam-keepalive
+-- is a frame-discarding client that holds the session open for as long
+-- as the camera is on USB; the presenter and Voom open/close on top of it.
+-- Verified: with it running, closing the presenter left the camera on
+-- USB and the relaunch went straight to live video.
+function canonPresent()   -- global: 200-local limit
+  local p = io.popen("/usr/sbin/ioreg -p IOUSB -n 'Canon Digital Camera' -r 2>/dev/null | /usr/bin/grep -c 'Canon Digital Camera'")
+  local n = p and tonumber((p:read("*a") or ""):match("%d+")) or 0
+  if p then p:close() end
+  return n > 0
+end
+function canonKeepaliveRunning()   -- global: 200-local limit
+  local p = io.popen("/usr/bin/pgrep -x cam-keepalive")
+  local out = p and p:read("*a") or ""
+  if p then p:close() end
+  return out ~= ""
+end
+function ensureCanonKeepalive()   -- global: 200-local limit
+  local dev = tostring(hs.settings.get('vox.pref.camDeviceName') or "")
+  local wantIt = dev:find("EOS", 1, true)
+                 and hs.settings.get('vox.pref.canonKeepalive') ~= false
+  if not wantIt then
+    if canonKeepaliveRunning() then
+      os.execute("/usr/bin/killall cam-keepalive 2>/dev/null")
+      log("canon keepalive: released (camera choice / setting)")
+    end
+    return
+  end
+  local bin, src = HOME .. "/vox/cam-keepalive", HOME .. "/vox/keepalive.swift"
+  local binA, srcA = hs.fs.attributes(bin), hs.fs.attributes(src)
+  if srcA and (not binA or srcA.modification > binA.modification)
+     and not M.keepBuild and M.keepBuildFailedFor ~= srcA.modification then
+    M.keepBuild = hs.task.new("/bin/sh", function(code, _, err)
+      M.keepBuild = nil
+      if code == 0 then
+        log("cam-keepalive built from keepalive.swift")
+        ensureCanonKeepalive()
+      else
+        M.keepBuildFailedFor = srcA.modification
+        log("cam-keepalive build FAILED: " .. tostring(err or ""):gsub("%s+", " "):sub(1, 300))
+      end
+    end, { "-c", string.format(
+      "/usr/bin/swiftc -O '%s' -o '%s.new' && /bin/mv -f '%s.new' '%s'", src, bin, bin, bin) })
+    M.keepBuild:start()
+    return
+  end
+  if not binA then return end
+  local present, running = canonPresent(), canonKeepaliveRunning()
+  if present and not running then
+    M.canonAbsentSince = nil
+    M.keepTask = hs.task.new(bin, function(code)
+      M.keepTask = nil
+      log("cam-keepalive exited (code " .. tostring(code) .. ")")
+    end, function(_, _, stderr)
+      for line in tostring(stderr or ""):gmatch("[^\n]+") do
+        if not line:find("frames/min", 1, true) then log("keepalive: " .. line:gsub("^KEEPALIVE:%s*", "")) end
+      end
+      return true
+    end, { "--device", dev })
+    M.keepTask:start()
+    log("canon keepalive: holding the EOS session (camera on USB)")
+  elseif running and not present then
+    -- camera gone (off / unplugged): keep holding for 3 min in case it
+    -- comes straight back, then release — no point streaming Canon's
+    -- splash all day
+    M.canonAbsentSince = M.canonAbsentSince or hs.timer.secondsSinceEpoch()
+    if hs.timer.secondsSinceEpoch() - M.canonAbsentSince > 180 then
+      os.execute("/usr/bin/killall cam-keepalive 2>/dev/null")
+      M.canonAbsentSince = nil
+      log("canon keepalive: camera off USB for 3 min — released")
+    end
+  elseif present then
+    M.canonAbsentSince = nil
+  end
+end
+timers.keepBoot = hs.timer.doAfter(12, function() timers.keepBoot = nil; ensureCanonKeepalive() end)
+
 function canonReset(silent)   -- global: 200-local limit
   canonBounceHelpers()
+  timers.keepAfterReset = hs.timer.doAfter(3, function()
+    timers.keepAfterReset = nil
+    ensureCanonKeepalive()          -- the bounce starved it; put it back
+  end)
   log("canon stack reset (user-level helpers bounced)")
   if not silent then
     hs.alert.show("🔧 Camera drivers reset — feed re-negotiating (~3s)", 2.5)
@@ -4307,8 +4401,11 @@ function canonReset(silent)   -- global: 200-local limit
   end
 end
 timers.canonWatch = hs.timer.doEvery(60, function()
-  -- CHECK 1: CPU wedge detection (original) — EOS helper pegging CPU
-  local p = io.popen("ps -eo pcpu,comm | grep -E 'Pro Helper \\(Renderer\\)|EWCProxy|EOSWebcamService' | grep -v grep")
+  ensureCanonKeepalive()
+  -- CHECK 1: CPU wedge detection (original) — legacy EOS helper pegging
+  -- CPU. EOSWebcamService is deliberately NOT here: it runs at 85-90%
+  -- whenever the camera is live — that's decoding, not a wedge.
+  local p = io.popen("ps -eo pcpu,comm | grep -E 'Pro Helper \\(Renderer\\)|EWCProxy' | grep -v grep")
   local hot = false
   if p then
     for line in p:lines() do
