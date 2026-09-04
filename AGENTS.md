@@ -67,6 +67,19 @@ all day on Archon, and **auto-update hard-resets every fleet Mac to
 - Single-instance guard: a second cam-bin makes BOTH suicide. Restarts are
   serialized in vox.lua (`showWebcamOverlay`) — use it, don't pkill+spawn.
 
+## Never kill an `hs -c` client mid-call
+- `hs -c` run under a timeout that kills the client (`perl -e 'alarm..'`,
+  `timeout`, Ctrl-C) **crashes Hammerspoon**: hs.ipc replies into the
+  dead client's message port and faults in `CFMessagePortSendRequest`
+  (crash report 2026-09-04 15:49, EXC_BREAKPOINT in libipc.dylib). Before
+  that it floods the console with "already recursing, refusing request"
+  at thousands of lines/second. Stale `hs -c` processes from dead agent
+  shells do the same — `pkill -f '^hs -c'` them, never leave them.
+- Read state through the pulse API instead when you can:
+  `curl -H "Host: localhost" http://127.0.0.1:8091/status`.
+- cam-keepalive is spawned DETACHED (nohup) for exactly this reason: an
+  hs.task child dies with Hammerspoon, and so does the Canon session.
+
 ## Verifying like you mean it
 - Boot check: `hs -c "print(type(panicReset))"` → `function` means loaded.
 - Dictation check: the pipeline self-test logs PASSED/FAILED in the console.
