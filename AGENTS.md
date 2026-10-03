@@ -44,13 +44,18 @@ all day on Archon, and **auto-update hard-resets every fleet Mac to
   its FINAL rect for the same reason.
 - **Canon process names (Archon, EOS Webcam Utility 2.x):** the feed
   process is `EOSWebcamService`; the "Pro Helper"/EWCProxy names are a
-  legacy build. Its idle instance (respawned after a client disconnects)
-  delivers ZERO frames to the next client — `showWebcamOverlay` bounces
-  it pre-flight (`canonBounceHelpers`). The utility's "camera
-  disconnected" splash is a real image at 60 fps: `checkStaticFrame`
-  reports `FEED_STATIC` (pixel-identical for 5s) and vox.lua does one
-  re-negotiation, then alerts — a camera that is switched off cannot be
-  fixed by restarting anything. `system_profiler` never lists "Canon".
+  legacy build. **Do not bounce it.** `pkill EOSWebcamService` is the
+  session-close that knocks the M50 off Archon's USB hub (gone in ~3s,
+  needs a power-cycle). `cam-keepalive` holds the virtual-camera session
+  as a fallback; `eos-bin` (libgphoto2 PTP, `eos.c`) is the replacement
+  path and never opens "EOS Webcam Utility". Canon's camera extension
+  exclusive-owns USB via DriverKit while it is enabled (`gp_camera_init`
+  returns -53). Disable it in System Settings → Camera Extensions;
+  `/tmp/vox-eos.ready` going live auto-switches the presenter. The
+  utility's "camera disconnected" splash is a real image at 60 fps:
+  `checkStaticFrame` reports `FEED_STATIC` — a camera that is switched
+  off cannot be fixed by restarting anything. `system_profiler` never
+  lists "Canon".
 - **Both cameras are fixed-rate formats** (Cam Link 4K 50 fps, EOS 60 fps);
   the 30 fps cap is software in `captureOutput`. Don't remove it — the
   full pipeline at 60 fps was ~50% of a core plus WindowServer.
@@ -62,8 +67,10 @@ all day on Archon, and **auto-update hard-resets every fleet Mac to
 - Motion smoothing: use critically-damped springs, never deadbands
   (deadband = stick-slip = "stiff AND twitchy").
 - Canon's EOS virtual camera lies: accepts the 1080 preset, delivers 720
-  frames, and wedges (frame-freeze watchdogs exit(3) → vox.lua recycles it).
-  The Cam Link path is the honest one.
+  frames, and wedges. `cam.swift` now forces 720p on that device. Prefer
+  **Cam Link (HDMI)** when it has a picture, then **Canon EOS (PTP)**
+  once `eos-bin` is ready, never the utility. Freeze recovery restarts
+  cam-bin only — it must not bounce Canon helpers.
 - Single-instance guard: a second cam-bin makes BOTH suicide. Restarts are
   serialized in vox.lua (`showWebcamOverlay`) — use it, don't pkill+spawn.
 

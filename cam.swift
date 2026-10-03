@@ -4,6 +4,8 @@ import Vision
 import CoreImage
 import Metal
 import QuartzCore
+import Darwin
+import ImageIO
 
 enum CamState {
     static var chromaCube: Data? = nil
@@ -15,6 +17,21 @@ func logMsg(_ msg: String) {
     fputs("CAM_LOG: \(msg)\n", stderr)
     fflush(stderr)
 }
+
+// Canon EOS USB live view via eos-bin (libgphoto2 PTP). The EOS Webcam
+// Utility virtual camera is a different device — never treat it as PTP.
+func isCanonPTP(_ name: String?) -> Bool {
+    guard let n = name, !n.isEmpty else { return false }
+    if n.localizedCaseInsensitiveContains("Webcam Utility") { return false }
+    if n.localizedCaseInsensitiveContains("Cam Link") { return false }
+    return n.compare("Canon EOS", options: .caseInsensitive) == .orderedSame
+        || n.localizedCaseInsensitiveContains("Canon EOS")
+        || n.localizedCaseInsensitiveContains("EOS (USB)")
+        || n.localizedCaseInsensitiveContains("EOS PTP")
+}
+
+let EOS_SOCK_PATH = "/tmp/vox-eos.sock"
+let EOS_MAGIC: UInt32 = 0x31584F56
 
 class ResizableCutoutView: NSView {
     weak var windowController: WebcamWindowController?
@@ -129,6 +146,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevRowMinData: [Int]? = nil
     var prevRowMaxData: [Int]? = nil
     var currentMotionVelocity: Double = 0.0
+    var ptpRunning: Bool = false
     
     init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle", framing: String = "wide", follow: Bool = false, quality: String = "auto") {
         self.currentSize = size
@@ -250,7 +268,11 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak self] in
             self?.assertFinalFrame(reason: "4.5s guarantee")
         }
-        setupCamera(requestedDevice: deviceName)
+        if isCanonPTP(deviceName) {
+            setupPTPFeed()
+        } else {
+            setupCamera(requestedDevice: deviceName)
+        }
         // FROZEN-FEED WATCHDOG: Canon's virtual camera wedges (twice for
         // Adam already). If no frames arrive for ~6s, exit(3) — vox.lua
         // recycles the Canon helpers and respawns us. Self-healing beats
@@ -571,6 +593,124 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         }
     }
     
+    // Canon EOS USB live view: eos-bin holds the PTP session and streams
+    // length-prefixed JPEGs. We decode and enter the same pipeline as
+    // AVFoundation so cutout/portal/watchdogs keep working.
+    func setupPTPFeed() {
+        logMsg("PTP feed: Canon EOS USB live view (no EOS Webcam Utility)")
+        ptpRunning = true
+        let q = DispatchQueue(label: "vox.eos.ptp", qos: .userInteractive)
+        self.sampleQueue = q
+        q.async { [weak self] in self?.ptpLoop() }
+    }
+
+    func ptpLoop() {
+        while ptpRunning {
+            guard let fd = Self.connectUnix(EOS_SOCK_PATH) else {
+                logMsg("PTP feed: waiting for eos-bin on \(EOS_SOCK_PATH)")
+                Thread.sleep(forTimeInterval: 0.5)
+                continue
+            }
+            logMsg("PTP feed: connected")
+            defer { Darwin.close(fd) }
+            while ptpRunning {
+                var hdr = [UInt32](repeating: 0, count: 2)
+                let hdrOk = hdr.withUnsafeMutableBytes { raw -> Bool in
+                    return Self.readFully(fd, raw.baseAddress!, 8)
+                }
+                if !hdrOk { break }
+                if hdr[0] != EOS_MAGIC { logMsg("PTP feed: bad magic, reconnecting"); break }
+                let sz = Int(hdr[1])
+                if sz < 100 || sz > 8 * 1024 * 1024 { logMsg("PTP feed: bad size \(sz)"); break }
+                var jpeg = Data(count: sz)
+                let bodyOk = jpeg.withUnsafeMutableBytes { raw -> Bool in
+                    return Self.readFully(fd, raw.baseAddress!, sz)
+                }
+                if !bodyOk { break }
+                if let pb = Self.pixelBuffer(fromJPEG: jpeg) {
+                    handlePixelBuffer(pb)
+                }
+            }
+        }
+    }
+
+    func handlePixelBuffer(_ pb: CVPixelBuffer) {
+        var format: CMVideoFormatDescription?
+        guard CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: pb,
+            formatDescriptionOut: &format) == noErr, let format else { return }
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 30),
+            presentationTimeStamp: CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 600),
+            decodeTimeStamp: .invalid)
+        var sb: CMSampleBuffer?
+        guard CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: pb,
+            formatDescription: format, sampleTiming: &timing,
+            sampleBufferOut: &sb) == noErr, let sb else { return }
+        handleSampleBuffer(sb)
+    }
+
+    static func connectUnix(_ path: String) -> Int32? {
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let n = path.utf8.count
+        withUnsafeMutablePointer(to: &addr.sun_path) { dst in
+            dst.withMemoryRebound(to: CChar.self, capacity: 104) { dstp in
+                _ = path.withCString { src in
+                    strncpy(dstp, src, 103)
+                }
+                dstp[min(n, 103)] = 0
+            }
+        }
+        let ok = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if ok != 0 { Darwin.close(fd); return nil }
+        return fd
+    }
+
+    static func readFully(_ fd: Int32, _ buf: UnsafeMutableRawPointer, _ n: Int) -> Bool {
+        var got = 0
+        while got < n {
+            let r = Darwin.read(fd, buf.advanced(by: got), n - got)
+            if r <= 0 { return false }
+            got += r
+        }
+        return true
+    }
+
+    static func pixelBuffer(fromJPEG data: Data) -> CVPixelBuffer? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        let w = cg.width, h = cg.height
+        var pb: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any]
+        ]
+        CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA,
+                            attrs as CFDictionary, &pb)
+        guard let buf = pb else { return nil }
+        CVPixelBufferLockBaseAddress(buf, [])
+        defer { CVPixelBufferUnlockBaseAddress(buf, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buf),
+              let ctx = CGContext(
+                data: base, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buf),
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                    | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return buf
+    }
+
     private func setupCamera(requestedDevice: String? = nil) {
         logMsg("Config: mode=\(filterMode) shape=\(rawShape) framing=\(framing) follow=\(followEnabled)")
         logMsg("Setting up camera session with requested device: \(requestedDevice ?? "default")...")
@@ -612,7 +752,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let lightMode = (filterMode == "raw" || filterMode == "chroma")
         let want4K = (captureQuality == "4k")
                   || (captureQuality == "auto" && currentSize >= 720 && lightMode)
-        if captureQuality == "720" && session.canSetSessionPreset(.hd1280x720) {
+        let isEOSUtility = dev.localizedName.localizedCaseInsensitiveContains("EOS Webcam")
+        if isEOSUtility && session.canSetSessionPreset(.hd1280x720) {
+            // Canon's virtual camera accepts the 1080 preset, delivers 720,
+            // then wedges. Ask for what it actually has.
+            session.sessionPreset = .hd1280x720
+            logMsg("EOS Webcam Utility: 720p (it lies about 1080 and wedges)")
+        } else if captureQuality == "720" && session.canSetSessionPreset(.hd1280x720) {
             session.sessionPreset = .hd1280x720
             logMsg("Camera session preset set to 720p (light mode)")
         } else if want4K && session.canSetSessionPreset(.hd4K3840x2160) {
@@ -666,6 +812,10 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        handleSampleBuffer(sampleBuffer)
+    }
+
+    func handleSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         frameCount += 1
         if frameCount == 1 {
             if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {

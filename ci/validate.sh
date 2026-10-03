@@ -12,7 +12,7 @@ fail() { echo "❌ VOX VALIDATE FAILED: $1" >&2; exit 1; }
 command -v luac >/dev/null && { luac -p vox.lua || fail "vox.lua does not parse (luac)"; }
 
 # 2. no leftover conflict markers
-grep -nE '^(<<<<<<< |======$|>>>>>>> )' vox.lua cam.swift bootguard.lua 2>/dev/null \
+grep -nE '^(<<<<<<< |======$|>>>>>>> )' vox.lua cam.swift eos.c bootguard.lua 2>/dev/null \
   && fail "merge conflict markers present"
 
 # 3. adjacent duplicate lines = classic bad-merge artifact

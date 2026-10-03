@@ -56,6 +56,7 @@ binstall whisper-cpp
 binstall sox
 binstall ffmpeg
 binstall ollama
+binstall libgphoto2
 
 echo "==> [2/6] Whisper model ($MODEL_FILE) — download + checksum verify..."
 mkdir -p "$REPO/models"
@@ -188,6 +189,20 @@ if command -v swiftc >/dev/null 2>&1 && [ ! -x "$REPO/cam-bin" ]; then
   swiftc -O "$REPO/cam.swift" -o "$REPO/cam-bin" 2>/dev/null \
     && echo "    cam-bin ready ✅" \
     || echo "    (skipped — compiles itself on first screen recording instead)"
+fi
+if command -v cc >/dev/null 2>&1 && [ -f "$REPO/eos.c" ]; then
+  if pkg-config --exists libgphoto2 2>/dev/null || \
+     /opt/homebrew/bin/pkg-config --exists libgphoto2 2>/dev/null || \
+     /usr/local/bin/pkg-config --exists libgphoto2 2>/dev/null; then
+    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+    pc="$(pkg-config --cflags --libs libgphoto2)"
+    rp="$(brew --prefix)/lib"
+    if cc -O2 "$REPO/eos.c" $pc -Wl,-rpath,"$rp" -o "$REPO/eos-bin" 2>/dev/null; then
+      echo "    eos-bin ready ✅ (Canon USB live view, no EOS Webcam Utility)"
+    else
+      echo "    (eos-bin skipped — compiles itself the first time a Canon is plugged in)"
+    fi
+  fi
 fi
 
 echo "==> [6/6] Applying Vox icon (once — re-branding can reset TCC grants on older macOS)..."

@@ -2755,6 +2755,13 @@ function camPickDevice()   -- global: 200-local limit
   if M.camLinkLive and hs.settings.get('vox.pref.camAuto') ~= false then
     return hs.settings.get('vox.pref.camAutoDevice') or "Cam Link 4K"
   end
+  -- PTP live view is the stable Canon USB path (no EOS Webcam Utility).
+  -- Only auto-switch once eos-bin has actually delivered a frame — claiming
+  -- USB while Canon's camera extension still owns it just fails, and the
+  -- utility path has to keep working until the extension is disabled.
+  if eosPtpReady() and (pref:find("EOS", 1, true) or pref:find("Canon", 1, true)) then
+    return "Canon EOS"
+  end
   return pref
 end
 function camAutoProbe()   -- global: 200-local limit
@@ -2882,18 +2889,13 @@ function showWebcamOverlay()
     -- (where the user DRAGGED the presenter arrives as FRAME_NOW on the
     -- cam-bin stream — hs.application.find never saw the borderless window)
     os.execute("/usr/bin/killall cam-bin 2>/dev/null")
-    -- CANON PRE-FLIGHT: the EOS utility's user-level service respawns
-    -- itself when its last client disconnects, and THAT idle instance
-    -- delivers zero frames to the next client (verified 2026-09-03: 6s of
-    -- nothing -> watchdog exit; after bouncing it, first frame in 0.6s).
-    -- Bounce it right before every EOS launch so cam-bin's connect spawns
-    -- a fresh one. Other camera choices are untouched.
-    local dev = tostring(hs.settings.get('vox.pref.camDeviceName') or "")
-    if dev:find("EOS", 1, true) then
+    -- Do NOT bounce EOSWebcamService here. On Archon's hub chain that
+    -- pkill is the session-close that knocks the M50 off USB (kernel
+    -- drop 2026-09-04 15:13, reproduced 16:00). Keepalive / eos-bin hold
+    -- the session instead; an idle helper is their problem, not ours.
+    local dev = tostring(camPickDevice() or "")
+    if dev:find("EOS", 1, true) or dev:find("Canon", 1, true) then
       ensureCanonKeepalive()
-      -- a held session can't go stale; and bouncing the service under
-      -- the keepalive is the very session-close that drops the camera
-      if not canonKeepaliveRunning() then canonBounceHelpers() end
     end
     M.camRestartTimer = hs.timer.doAfter(0.9, function()
       M.camRestartTimer = nil
@@ -2954,22 +2956,22 @@ function spawnPresenter()
     screenRec.camTask = hs.task.new(camBin, function(code)
       log("camTask exit code: " .. tostring(code))
       if code == 3 then
-        -- cam-bin's frozen-feed watchdog fired: recycle Canon's wedge-prone
-        -- helpers and respawn, max twice per 10 minutes
+        -- Frozen-feed watchdog. Restart the presenter only — bouncing
+        -- EOSWebcamService drops the M50 off USB on this hub. Max twice
+        -- per 10 minutes, then tell the truth.
         if hs.timer.secondsSinceEpoch() - (M.camFreezeWindow or 0) > 600 then
           M.camFreezeRecoveries = 0
           M.camFreezeWindow = hs.timer.secondsSinceEpoch()
         end
         if (M.camFreezeRecoveries or 0) < 2 then
           M.camFreezeRecoveries = (M.camFreezeRecoveries or 0) + 1
-          canonBounceHelpers()
           hs.alert.show("📷 Camera feed froze — auto-recovering…", 2.5)
           timers.camRecover = hs.timer.doAfter(2.5, function()
             timers.camRecover = nil
             spawnPresenter()
           end)
         else
-          hs.alert.show("📷 Camera keeps freezing — Canon's driver is wedged. Try ⌥⇧V to switch camera (Cam Link is solid).", 5)
+          hs.alert.show("📷 Camera keeps freezing. Cam Link (HDMI) is the solid path — or disable EOS Webcam Utility in Camera Extensions and Vox will take the USB body directly.", 6)
         end
       end
     end, function(_, stdout, stderr)
@@ -3050,6 +3052,13 @@ function listCameraDevices()
       if idx then names[tonumber(idx) + 1] = name end
     end
     p:close()
+  end
+  -- PTP replacement: show it when the body is on USB so it can be chosen
+  -- even before the first frame. cam-bin talks to eos-bin, not AVFoundation.
+  if canonPresent() then
+    local has = false
+    for _, n in ipairs(names) do if n == "Canon EOS" then has = true end end
+    if not has then table.insert(names, 1, "Canon EOS") end
   end
   return names
 end
@@ -4354,15 +4363,75 @@ local function collapseRepeats(text)
   return table.concat(out)
 end
 
--- CANON AUTO-MEDIC: the EOS stack freezes chronically; its root-owned
--- core is untouchable, but bouncing the user-level helpers forces the
--- pipeline to re-negotiate and un-freezes the feed. Exposed as a voice
--- command, a menu item, and a background CPU-wedge watchdog.
--- 2026-09 UPGRADE: also detects the EOS "connection drop" failure mode
--- where the camera falls back to the Canon standby/EOS utility screen.
--- The EOS helpers stay alive but the actual camera feed is gone — Canon
--- just shows its branded splash. Bouncing the helpers forces the USB
--- pipeline to re-negotiate and restores the live feed.
+-- CANON PTP REPLACEMENT. eos-bin talks to the M50 over USB via libgphoto2
+-- and never opens "EOS Webcam Utility". Canon's camera extension (DriverKit)
+-- exclusive-owns the USB interface while it is enabled — eos-bin retries
+-- until that extension is disabled (System Settings → Camera Extensions).
+-- Do NOT pkill EOSWebcamService to "help" it: that is the session-close
+-- that knocks the body off Archon's hub (2026-09-04, reproduced same day).
+function eosPtpReady()   -- global: 200-local limit
+  return hs.fs.attributes("/tmp/vox-eos.ready") ~= nil
+end
+function eosBinRunning()   -- global: 200-local limit
+  local p = io.popen("/usr/bin/pgrep -x eos-bin")
+  local out = p and p:read("*a") or ""
+  if p then p:close() end
+  return out ~= ""
+end
+function ensureEosCapture()   -- global: 200-local limit
+  if hs.settings.get('vox.pref.canonPtp') == false then
+    if eosBinRunning() then os.execute("/usr/bin/killall eos-bin 2>/dev/null") end
+    return
+  end
+  local bin, src = HOME .. "/vox/eos-bin", HOME .. "/vox/eos.c"
+  local binA, srcA = hs.fs.attributes(bin), hs.fs.attributes(src)
+  if srcA and (not binA or srcA.modification > binA.modification)
+     and not M.eosBuild and M.eosBuildFailedFor ~= srcA.modification then
+    M.eosBuild = hs.task.new("/bin/sh", function(code, _, err)
+      M.eosBuild = nil
+      if code == 0 then
+        log("eos-bin built from eos.c")
+        ensureEosCapture()
+      else
+        M.eosBuildFailedFor = srcA.modification
+        log("eos-bin build FAILED: " .. tostring(err or ""):gsub("%s+", " "):sub(1, 300))
+      end
+    end, { "-c", "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; "
+      .. "pc=$(pkg-config --cflags --libs libgphoto2 2>/dev/null) || exit 1; "
+      .. "rp=$(brew --prefix 2>/dev/null)/lib; "
+      .. string.format("cc -O2 '%s' $pc -Wl,-rpath,\"$rp\" -o '%s.new' && /bin/mv -f '%s.new' '%s'",
+                       src, bin, bin, bin) })
+    M.eosBuild:start()
+    return
+  end
+  if not binA then return end
+  local present, running = canonPresent(), eosBinRunning()
+  if present and not running then
+    M.eosAbsentSince = nil
+    os.execute(string.format(
+      "/usr/bin/nohup '%s' >> /tmp/vox-eos.log 2>&1 &", bin))
+    log("eos-bin: holding Canon PTP (log /tmp/vox-eos.log)")
+  elseif running and not present then
+    M.eosAbsentSince = M.eosAbsentSince or hs.timer.secondsSinceEpoch()
+    if hs.timer.secondsSinceEpoch() - M.eosAbsentSince > 180 then
+      os.execute("/usr/bin/killall eos-bin 2>/dev/null")
+      M.eosAbsentSince = nil
+      log("eos-bin: camera off USB for 3 min — released")
+    end
+  elseif present then
+    M.eosAbsentSince = nil
+  end
+end
+function openCanonExtensionSettings()   -- global: 200-local limit
+  -- Tahoe: Login Items & Extensions → Camera Extensions. The URL is best-effort.
+  hs.execute('open "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"')
+  hs.alert.show("Turn OFF “EOS Webcam Utility” under Camera Extensions.\nVox will take the M50 over USB (PTP) the moment the driver lets go.", 8)
+  log("canon: opened Camera Extensions settings — disable EOS Webcam Utility for the stable USB path")
+end
+
+-- CANON AUTO-MEDIC: last-resort only. Bouncing EOSWebcamService used to
+-- un-wedge a frozen virtual camera; on this hub it also unplugs the body.
+-- Manual menu / "fix the camera" still calls it. Automatic paths must not.
 function canonBounceHelpers()   -- global: 200-local limit
   -- EOS Webcam Utility 2.x (camera-extension build, what Archon runs):
   -- EOSWebcamService is the user-level per-client feed process — the one
@@ -4398,8 +4467,16 @@ function canonKeepaliveRunning()   -- global: 200-local limit
   return out ~= ""
 end
 function ensureCanonKeepalive()   -- global: 200-local limit
+  ensureEosCapture()              -- PTP holder first; utility keepalive is fallback
+  if eosPtpReady() then
+    if canonKeepaliveRunning() then
+      os.execute("/usr/bin/killall cam-keepalive 2>/dev/null")
+      log("canon keepalive: released (PTP live — no EOS Webcam Utility)")
+    end
+    return
+  end
   local dev = tostring(hs.settings.get('vox.pref.camDeviceName') or "")
-  local wantIt = dev:find("EOS", 1, true)
+  local wantIt = (dev:find("EOS", 1, true) or dev:find("Canon", 1, true))
                  and hs.settings.get('vox.pref.canonKeepalive') ~= false
   if not wantIt then
     if canonKeepaliveRunning() then
@@ -4434,8 +4511,8 @@ function ensureCanonKeepalive()   -- global: 200-local limit
     -- hs.reload (auto-update included), and that few-second session gap
     -- is exactly the drop we're preventing (seen 15:41, 2026-09-04).
     os.execute(string.format(
-      "/usr/bin/nohup '%s' --device '%s' >> /tmp/vox-keepalive.log 2>&1 &",
-      bin, dev:gsub("'", "")))
+      "/usr/bin/nohup '%s' --device 'EOS Webcam Utility' >> /tmp/vox-keepalive.log 2>&1 &",
+      bin))
     log("canon keepalive: holding the EOS session (camera on USB, detached; log /tmp/vox-keepalive.log)")
   elseif running and not present then
     -- camera gone (off / unplugged): keep holding for 3 min in case it
@@ -4454,14 +4531,16 @@ end
 timers.keepBoot = hs.timer.doAfter(12, function() timers.keepBoot = nil; ensureCanonKeepalive() end)
 
 function canonReset(silent)   -- global: 200-local limit
-  canonBounceHelpers()
-  timers.keepAfterReset = hs.timer.doAfter(3, function()
+  -- Prefer the PTP path. Bouncing the Canon utility is a last resort —
+  -- it can drop the M50 off USB on this hub and then needs a power-cycle.
+  if eosBinRunning() then os.execute("/usr/bin/killall eos-bin 2>/dev/null") end
+  timers.keepAfterReset = hs.timer.doAfter(1.5, function()
     timers.keepAfterReset = nil
-    ensureCanonKeepalive()          -- the bounce starved it; put it back
+    ensureCanonKeepalive()
   end)
-  log("canon stack reset (user-level helpers bounced)")
+  log("canon stack reset (eos-bin recycle; utility not bounced)")
   if not silent then
-    hs.alert.show("🔧 Camera drivers reset — feed re-negotiating (~3s)", 2.5)
+    hs.alert.show("🔧 Camera USB reset — PTP re-negotiating (~2s)", 2.5)
   end
   -- If the presenter cam is running, respawn it after the EOS stack has
   -- had time to re-negotiate (~3.5s). This way the user never has to
@@ -4480,6 +4559,21 @@ end
 timers.canonWatch = hs.timer.doEvery(60, function()
   ensureCanonKeepalive()
   camAutoProbe()
+  -- PTP came up (user disabled the Canon camera extension): hot-switch
+  -- the presenter off EOS Webcam Utility onto the USB body.
+  local ptp = eosPtpReady()
+  if ptp ~= (M.eosPtpLive or false) then
+    M.eosPtpLive = ptp
+    log("cam auto: Canon PTP " .. (ptp and "LIVE — switching to USB body" or "lost"))
+    local p = io.popen("/usr/bin/pgrep -x cam-bin")
+    local running = (p and p:read("*a") or "") ~= ""
+    if p then p:close() end
+    if running and not screenRec.active then
+      hs.alert.show(ptp and "📷 Canon USB (PTP) is live — switching to it"
+                         or "📷 Canon USB (PTP) dropped — switching back", 2.5)
+      showWebcamOverlay()
+    end
+  end
   -- CHECK 1: CPU wedge detection (original) — legacy EOS helper pegging
   -- CPU. EOSWebcamService is deliberately NOT here: it runs at 85-90%
   -- whenever the camera is live — that's decoding, not a wedge.
@@ -7024,6 +7118,7 @@ menubar:setMenu(function()
     { title = "🧍 Presenter Camera on/off (⌥⇧C)", fn = function() toggleWebcamOverlay() end },
     { title = "🛑 Panic reset — kill whatever is running (⌥⇧⎋)", fn = function() panicReset() end },
     { title = "🔧 Reset camera drivers (or say: fix the camera)", fn = function() canonReset() end },
+    { title = "📷 Stable Canon USB — disable EOS Webcam Utility", fn = function() openCanonExtensionSettings() end },
     { title = "🎥 Camera", menu = camItems },
     { title = "-" },
     { title = "📂 Recordings Folder", fn = function()
