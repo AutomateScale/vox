@@ -12,6 +12,11 @@ echo "== Vox doctor =="
 
 echo "[1] Dependencies"
 # Voom (screen recording + presenter camera) checks
+if [ -x "$HOME/vox/eos-bin" ]; then
+  echo "  ok   eos-bin present (Canon USB PTP path)"
+elif [ -f "$HOME/vox/eos.c" ]; then
+  echo "  note eos-bin not built yet — plugs in on first Canon connect if libgphoto2 is installed"
+fi
 if [ -x "$HOME/vox/cam-bin" ]; then
   echo "  ok   cam-bin present (presenter camera ready)"
 else

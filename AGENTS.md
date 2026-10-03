@@ -33,8 +33,32 @@ all day on Archon, and **auto-update hard-resets every fleet Mac to
   don't leave test artifacts in the repo.
 
 ## cam.swift landmines
-- **Committing cam.swift does nothing until compiled**:
-  `swiftc -O cam.swift -o cam-bin` — on every machine that runs it.
+- **cam-bin rebuilds itself** when cam.swift is newer than the binary
+  (async, ~5s, on the next presenter launch — `showWebcamOverlay`). To
+  test a change by hand: `swiftc -O cam.swift -o cam-bin`.
+- **ONE launch animation.** `startEmergeTween` is a manual 60Hz tween
+  that sets the window frame directly. Never add an NSWindow `animator()`
+  / `NSAnimationContext` frame animation on the presenter window: three
+  overlapping ones snapped it back to a 30x30 box at the alien and it
+  stayed there ("very small camera", 2026-09). The window is created at
+  its FINAL rect for the same reason.
+- **Canon process names (Archon, EOS Webcam Utility 2.x):** the feed
+  process is `EOSWebcamService`; the "Pro Helper"/EWCProxy names are a
+  legacy build. **Do not bounce it.** `pkill EOSWebcamService` is the
+  session-close that knocks the M50 off Archon's USB hub (gone in ~3s,
+  needs a power-cycle). `cam-keepalive` holds the virtual-camera session
+  as a fallback; `eos-bin` (libgphoto2 PTP, `eos.c`) is the replacement
+  path and never opens "EOS Webcam Utility". Canon's camera extension
+  exclusive-owns USB via DriverKit while it is enabled (`gp_camera_init`
+  returns -53). Disable it in System Settings → Camera Extensions;
+  `/tmp/vox-eos.ready` going live auto-switches the presenter. The
+  utility's "camera disconnected" splash is a real image at 60 fps:
+  `checkStaticFrame` reports `FEED_STATIC` — a camera that is switched
+  off cannot be fixed by restarting anything. `system_profiler` never
+  lists "Canon".
+- **Both cameras are fixed-rate formats** (Cam Link 4K 50 fps, EOS 60 fps);
+  the 30 fps cap is software in `captureOutput`. Don't remove it — the
+  full pipeline at 60 fps was ~50% of a core plus WindowServer.
 - `logMsg` writes to **stderr** (vox.lua's stream callback reads both).
 - `trackedBodyRect` is **normalized 0-1 with a flipped Y axis** — map it like
   the bust-dissolve does. Feeding it raw puts things in a corner of nowhere.
@@ -43,10 +67,25 @@ all day on Archon, and **auto-update hard-resets every fleet Mac to
 - Motion smoothing: use critically-damped springs, never deadbands
   (deadband = stick-slip = "stiff AND twitchy").
 - Canon's EOS virtual camera lies: accepts the 1080 preset, delivers 720
-  frames, and wedges (frame-freeze watchdogs exit(3) → vox.lua recycles it).
-  The Cam Link path is the honest one.
+  frames, and wedges. `cam.swift` now forces 720p on that device. Prefer
+  **Cam Link (HDMI)** when it has a picture, then **Canon EOS (PTP)**
+  once `eos-bin` is ready, never the utility. Freeze recovery restarts
+  cam-bin only — it must not bounce Canon helpers.
 - Single-instance guard: a second cam-bin makes BOTH suicide. Restarts are
   serialized in vox.lua (`showWebcamOverlay`) — use it, don't pkill+spawn.
+
+## Never kill an `hs -c` client mid-call
+- `hs -c` run under a timeout that kills the client (`perl -e 'alarm..'`,
+  `timeout`, Ctrl-C) **crashes Hammerspoon**: hs.ipc replies into the
+  dead client's message port and faults in `CFMessagePortSendRequest`
+  (crash report 2026-09-04 15:49, EXC_BREAKPOINT in libipc.dylib). Before
+  that it floods the console with "already recursing, refusing request"
+  at thousands of lines/second. Stale `hs -c` processes from dead agent
+  shells do the same — `pkill -f '^hs -c'` them, never leave them.
+- Read state through the pulse API instead when you can:
+  `curl -H "Host: localhost" http://127.0.0.1:8091/status`.
+- cam-keepalive is spawned DETACHED (nohup) for exactly this reason: an
+  hs.task child dies with Hammerspoon, and so does the Canon session.
 
 ## Verifying like you mean it
 - Boot check: `hs -c "print(type(panicReset))"` → `function` means loaded.

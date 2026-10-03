@@ -14,3 +14,5 @@ backups/
 .ollama-pull.done
 dist/
 __pycache__/
+cam-keepalive
+eos-bin

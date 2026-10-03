@@ -4,6 +4,8 @@ import Vision
 import CoreImage
 import Metal
 import QuartzCore
+import Darwin
+import ImageIO
 
 enum CamState {
     static var chromaCube: Data? = nil
@@ -15,6 +17,21 @@ func logMsg(_ msg: String) {
     fputs("CAM_LOG: \(msg)\n", stderr)
     fflush(stderr)
 }
+
+// Canon EOS USB live view via eos-bin (libgphoto2 PTP). The EOS Webcam
+// Utility virtual camera is a different device — never treat it as PTP.
+func isCanonPTP(_ name: String?) -> Bool {
+    guard let n = name, !n.isEmpty else { return false }
+    if n.localizedCaseInsensitiveContains("Webcam Utility") { return false }
+    if n.localizedCaseInsensitiveContains("Cam Link") { return false }
+    return n.compare("Canon EOS", options: .caseInsensitive) == .orderedSame
+        || n.localizedCaseInsensitiveContains("Canon EOS")
+        || n.localizedCaseInsensitiveContains("EOS (USB)")
+        || n.localizedCaseInsensitiveContains("EOS PTP")
+}
+
+let EOS_SOCK_PATH = "/tmp/vox-eos.sock"
+let EOS_MAGIC: UInt32 = 0x31584F56
 
 class ResizableCutoutView: NSView {
     weak var windowController: WebcamWindowController?
@@ -97,11 +114,23 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var headSmY: CGFloat = -1
     var portalR: CGFloat = -1             // smoothed portal radius
     var entranceFrame: Int = 0            // emergence animation on launch
-    var emergeTarget: NSRect? = nil       // genie pour: hidden until first frame
+    var emergeTarget: NSRect? = nil       // genie pour: where the window lands
+    var emergeSeed: NSRect? = nil         // where the pour starts (alien icon)
+    var emergeDone: Bool = false          // tween finished; frame is final
+    var emergeTween: Timer? = nil         // the ONE launch animation (manual tween)
+    var emergeStarted: CFTimeInterval = 0
     var feedWatchdog: Timer? = nil        // frozen-feed detector (Canon wedges)
     var lastWatchFrame: Int = 0
     var frozenTicks: Int = 0
-    var zeroMotionStreak: Int = 0         // identical-frame freeze (Canon streams a stuck image)
+    var staticHash: UInt64 = 0            // sparse pixel hash of the last sampled frame
+    var staticSince: Double = -1          // when identical frames started (Canon splash / stuck image)
+    var staticReported: Bool = false      // FEED_STATIC sent; FEED_LIVE clears it
+    var lastProcessedPTS: Double = -1     // 30 fps processing cap
+    var statProcessed: Int = 0            // pipeline stats (5s window)
+    var statSeg: Int = 0
+    var statDelivered: Int = 0
+    var statAt: CFTimeInterval = 0
+    var frameReport: Timer? = nil         // coalesced FRAME_NOW reporting
     var followEnabled: Bool = false       // off by default: fixed center crop
     var cachedCleanMask: CIImage? = nil   // last finished matte (reused on skip frames)
     
@@ -117,6 +146,7 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
     var prevRowMinData: [Int]? = nil
     var prevRowMaxData: [Int]? = nil
     var currentMotionVelocity: Double = 0.0
+    var ptpRunning: Bool = false
     
     init(size: CGFloat = 380.0, cornerPosition: String = "bottom-left", filterMode: String = "mint", alienPoint: CGPoint? = nil, targetPoint: CGPoint? = nil, deviceName: String? = nil, shape: String = "circle", framing: String = "wide", follow: Bool = false, quality: String = "auto") {
         self.currentSize = size
@@ -142,6 +172,15 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         if let tp = targetPoint {
             targetX = tp.x
             targetY = tp.y
+            // vox.lua computes this from its own screen model; if the point
+            // lands off every display (multi-monitor math drift), pull it
+            // onto the nearest screen instead of opening into the void.
+            let probe = NSPoint(x: tp.x + width / 2, y: tp.y + height / 2)
+            let host = NSScreen.screens.first(where: { $0.frame.contains(probe) }) ?? primaryScreen
+            if let vf = host?.visibleFrame {
+                targetX = max(vf.minX, min(vf.maxX - width, targetX))
+                targetY = max(vf.minY, min(vf.maxY - height, targetY))
+            }
         } else {
             if cornerPosition.contains("right") {
                 targetX = screen.maxX - width - margin
@@ -156,16 +195,14 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let finalRect = NSRect(x: targetX, y: targetY, width: width, height: height)
         self.targetWindowRect = finalRect
         
-        // If Alien hub point is provided, start tiny at Alien location for Genie Fly-Out!
-        var initRect = finalRect
-        if let ap = alienPoint {
-            initRect = NSRect(x: ap.x - 15, y: ap.y - 15, width: 30, height: 30)
-        }
-        
-        logMsg("Creating window at initRect: \(initRect), targetRect: \(finalRect)")
+        // The window is CREATED at its final rect (the pour shrinks it to a
+        // seed a few lines below). Creating it 30x30 at the alien was the
+        // "very small camera" bug: overlapping AppKit frame animations
+        // snapped it back to its creation rect and it stayed there.
+        logMsg("Creating window, targetRect: \(finalRect)")
         
         let window = NSWindow(
-            contentRect: initRect,
+            contentRect: finalRect,
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -181,10 +218,6 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         window.sharingType = .readWrite
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         
-        if alienPoint != nil {
-            window.alphaValue = 0.05
-        }
-        
         window.orderFrontRegardless()
         
         super.init(window: window)
@@ -195,10 +228,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         
         setupMetal()
         setupContentView(width: width, height: height)
-        // GENIE EMERGENCE: hidden until the camera actually delivers
-        // frames, then pours OUT OF THE ALIEN ICON — a live-video seed at
-        // the alien's position swelling to full size. No more tiny black
-        // square sitting on screen during warm-up.
+        // GENIE EMERGENCE (2026-09 rewrite): the window shrinks to a tiny
+        // invisible seed at the alien icon and, on the first camera frame,
+        // pours out to full size. The previous version layered THREE AppKit
+        // frame animations on top of each other (fly-out at 0.05s, a second
+        // animator on the first frame, a 3s "guarantee"); when they
+        // overlapped, AppKit snapped the window back to its creation rect —
+        // a 30x30 box at the alien that never grew ("very small camera",
+        // reproduced with a CGWindowList probe). Now there is exactly ONE
+        // animation: a manual 60Hz tween that sets the frame directly.
+        // No animator proxies, nothing to fight.
         if let w = self.window {
             let target = w.frame
             var seedX = target.midX, seedY = target.midY
@@ -211,28 +250,29 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                               width: target.width * 0.10, height: target.height * 0.10)
             w.setFrame(tiny, display: false)
             w.alphaValue = 0
+            self.emergeSeed = tiny
             self.emergeTarget = target
         }
-        // BULLETPROOF SIZE GUARANTEE: whatever happens to the pour
-        // (races, missed frames, animation interruptions), the window is
-        // full-size and visible within 3 seconds. Never "barely see it".
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-            guard let s = self, let w = s.window else { return }
-            let target = s.emergeTarget ?? w.frame
-            if w.alphaValue < 1.0 || w.frame.width < target.width * 0.9 {
-                logMsg("GENIE fallback: forcing full size")
-                s.emergeTarget = nil
-                w.alphaValue = 1
-                w.setFrame(target, display: true)
-                if let cv = w.contentView {
-                    cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
-                }
-                s.renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
-                s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
-                s.pillLayer?.frame = CGRect(x: 10, y: 10, width: target.width - 20, height: 22)
+        // SIZE GUARANTEE: if no frame has arrived by 2.5s (Canon warming
+        // up), pour anyway so the window is full-size and visible; at 4.5s
+        // re-assert the final size unconditionally (with a 1px nudge, since
+        // setFrame to the frame NSWindow already believes in is a no-op —
+        // that shortcut is what made the old guarantee toothless).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let s = self else { return }
+            if !s.emergeDone && s.emergeTween == nil {
+                logMsg("GENIE fallback: no frame yet — pouring anyway")
+                s.startEmergeTween()
             }
         }
-        setupCamera(requestedDevice: deviceName)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak self] in
+            self?.assertFinalFrame(reason: "4.5s guarantee")
+        }
+        if isCanonPTP(deviceName) {
+            setupPTPFeed()
+        } else {
+            setupCamera(requestedDevice: deviceName)
+        }
         // FROZEN-FEED WATCHDOG: Canon's virtual camera wedges (twice for
         // Adam already). If no frames arrive for ~6s, exit(3) — vox.lua
         // recycles the Canon helpers and respawns us. Self-healing beats
@@ -250,11 +290,143 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                 s.lastWatchFrame = s.frameCount
             }
         }
-        
-        // Trigger Genie Fly-Out Spring Animation!
-        if alienPoint != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                self.animateGenieFlyOut()
+    }
+    
+    // The one and only launch animation: ease-out-back from the seed to
+    // the target, frame set directly every tick, ends on the exact target.
+    func startEmergeTween() {
+        guard let w = self.window, let target = self.emergeTarget else { return }
+        if emergeTween != nil || emergeDone { return }
+        let seed = self.emergeSeed ?? w.frame
+        w.alphaValue = 1
+        emergeStarted = CACurrentMediaTime()
+        let duration: CFTimeInterval = 0.5
+        let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
+            guard let s = self, let w = s.window else { timer.invalidate(); return }
+            let p = CGFloat(min(1.0, (CACurrentMediaTime() - s.emergeStarted) / duration))
+            let c1: CGFloat = 1.2
+            let e = 1.0 + (c1 + 1.0) * pow(p - 1.0, 3) + c1 * pow(p - 1.0, 2)
+            let rect = NSRect(x: seed.minX + (target.minX - seed.minX) * e,
+                              y: seed.minY + (target.minY - seed.minY) * e,
+                              width: max(20, seed.width + (target.width - seed.width) * e),
+                              height: max(20, seed.height + (target.height - seed.height) * e))
+            w.setFrame(rect, display: true)
+            if p >= 1.0 {
+                timer.invalidate()
+                s.emergeTween = nil
+                s.emergeDone = true
+                s.syncLayers(to: target)
+                logMsg("GENIE landed: \(Int(target.width))x\(Int(target.height)) at \(Int(target.minX)),\(Int(target.minY))")
+            }
+        }
+        emergeTween = t
+        RunLoop.main.add(t, forMode: .common)
+    }
+    
+    func syncLayers(to target: NSRect) {
+        guard let w = self.window else { return }
+        w.setFrame(target, display: true)
+        w.alphaValue = 1
+        if let cv = w.contentView {
+            cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+        }
+        renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
+        renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        pillLayer?.frame = CGRect(x: 10, y: 10, width: target.width - 20, height: 22)
+    }
+    
+    // Window size the current settings imply (same formula as init/setSize)
+    // — so a user resize during the guarantee window is respected.
+    func expectedWindowSize() -> NSSize {
+        let w = (framing == "tall") ? currentSize * 0.75
+              : (framing == "wide") ? currentSize * 1.3 : currentSize
+        let h = (framing == "wide") ? currentSize * 0.75 : currentSize
+        return NSSize(width: w, height: h)
+    }
+    
+    func assertFinalFrame(reason: String) {
+        guard let w = self.window else { return }
+        if emergeTween != nil { return }          // still pouring — let it land
+        emergeDone = true
+        let f = w.frame
+        let want = expectedWindowSize()
+        let fixed = NSRect(x: f.minX, y: f.minY, width: want.width, height: want.height)
+        if abs(f.width - want.width) > 2 || abs(f.height - want.height) > 2 || w.alphaValue < 1 {
+            logMsg("GENIE \(reason): frame \(Int(f.width))x\(Int(f.height)) != \(Int(want.width))x\(Int(want.height)) — forcing")
+        }
+        // unconditional nudge + set: repairs a window-server desync even
+        // when NSWindow's own idea of the frame already looks right
+        w.setFrame(fixed.insetBy(dx: 1, dy: 1), display: false)
+        syncLayers(to: fixed)
+    }
+    
+    func windowDidMove(_ notification: Notification) { reportFrame() }
+    func windowDidResize(_ notification: Notification) { reportFrame() }
+    
+    // vox.lua remembers the LAST frame so a hot-apply restart lands where
+    // the user dragged the presenter (its old hs.application.find lookup
+    // never saw this borderless window). AppKit coords, coalesced.
+    func reportFrame() {
+        guard emergeDone, emergeTween == nil, self.window != nil else { return }
+        frameReport?.invalidate()
+        let t = Timer(timeInterval: 0.35, repeats: false) { [weak self] _ in
+            guard let f = self?.window?.frame else { return }
+            print("CAM_LOG: FRAME_NOW=\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width)),\(Int(f.height))")
+            fflush(stdout)
+        }
+        frameReport = t
+        RunLoop.main.add(t, forMode: .common)
+    }
+    
+    // Cheap liveness test that works in EVERY mode: hash a sparse 24x24
+    // grid of pixels. A real sensor never produces two bit-identical
+    // frames (noise); the Canon utility's "camera disconnected" splash, a
+    // Cam Link with its HDMI source off (pure black), and a wedged stream
+    // all do. 5s of identical frames -> one FEED_STATIC status line on
+    // stdout; vox.lua decides (one Canon re-negotiation, then an honest
+    // "camera is off or unplugged" alert — never a restart loop, because
+    // no restart can wake a camera that is switched off). FEED_LIVE when
+    // real frames return. Replaces the old mask-delta exit(3), which also
+    // fired when Adam simply stepped out of frame (empty mask == "no
+    // motion").
+    func checkStaticFrame(_ pb: CVPixelBuffer) {
+        if CVPixelBufferIsPlanar(pb) { return }
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+        let stride = CVPixelBufferGetBytesPerRow(pb)
+        if w < 32 || h < 32 { return }
+        let p = base.assumingMemoryBound(to: UInt8.self)
+        var hash: UInt64 = 0xcbf29ce484222325
+        let n = 24
+        for gy in 0..<n {
+            let y = (h * (2 * gy + 1)) / (2 * n)
+            for gx in 0..<n {
+                let x = (w * (2 * gx + 1)) / (2 * n)
+                let o = y * stride + x * 4
+                let v = UInt64(p[o]) | (UInt64(p[o + 1]) << 8) | (UInt64(p[o + 2]) << 16)
+                hash = (hash ^ v) &* 0x100000001b3
+            }
+        }
+        let now = CACurrentMediaTime()
+        if hash == staticHash {
+            if staticSince < 0 {
+                staticSince = now
+            } else if now - staticSince > 5.0 && !staticReported {
+                staticReported = true
+                logMsg("FEED STATIC — identical frames for 5s (camera off / standby splash / stuck stream)")
+                print("CAM_LOG: FEED_STATIC")
+                fflush(stdout)
+            }
+        } else {
+            staticHash = hash
+            staticSince = -1
+            if staticReported {
+                staticReported = false
+                logMsg("FEED LIVE again")
+                print("CAM_LOG: FEED_LIVE")
+                fflush(stdout)
             }
         }
     }
@@ -421,6 +593,124 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         }
     }
     
+    // Canon EOS USB live view: eos-bin holds the PTP session and streams
+    // length-prefixed JPEGs. We decode and enter the same pipeline as
+    // AVFoundation so cutout/portal/watchdogs keep working.
+    func setupPTPFeed() {
+        logMsg("PTP feed: Canon EOS USB live view (no EOS Webcam Utility)")
+        ptpRunning = true
+        let q = DispatchQueue(label: "vox.eos.ptp", qos: .userInteractive)
+        self.sampleQueue = q
+        q.async { [weak self] in self?.ptpLoop() }
+    }
+
+    func ptpLoop() {
+        while ptpRunning {
+            guard let fd = Self.connectUnix(EOS_SOCK_PATH) else {
+                logMsg("PTP feed: waiting for eos-bin on \(EOS_SOCK_PATH)")
+                Thread.sleep(forTimeInterval: 0.5)
+                continue
+            }
+            logMsg("PTP feed: connected")
+            defer { Darwin.close(fd) }
+            while ptpRunning {
+                var hdr = [UInt32](repeating: 0, count: 2)
+                let hdrOk = hdr.withUnsafeMutableBytes { raw -> Bool in
+                    return Self.readFully(fd, raw.baseAddress!, 8)
+                }
+                if !hdrOk { break }
+                if hdr[0] != EOS_MAGIC { logMsg("PTP feed: bad magic, reconnecting"); break }
+                let sz = Int(hdr[1])
+                if sz < 100 || sz > 8 * 1024 * 1024 { logMsg("PTP feed: bad size \(sz)"); break }
+                var jpeg = Data(count: sz)
+                let bodyOk = jpeg.withUnsafeMutableBytes { raw -> Bool in
+                    return Self.readFully(fd, raw.baseAddress!, sz)
+                }
+                if !bodyOk { break }
+                if let pb = Self.pixelBuffer(fromJPEG: jpeg) {
+                    handlePixelBuffer(pb)
+                }
+            }
+        }
+    }
+
+    func handlePixelBuffer(_ pb: CVPixelBuffer) {
+        var format: CMVideoFormatDescription?
+        guard CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: pb,
+            formatDescriptionOut: &format) == noErr, let format else { return }
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: 30),
+            presentationTimeStamp: CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 600),
+            decodeTimeStamp: .invalid)
+        var sb: CMSampleBuffer?
+        guard CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault, imageBuffer: pb,
+            formatDescription: format, sampleTiming: &timing,
+            sampleBufferOut: &sb) == noErr, let sb else { return }
+        handleSampleBuffer(sb)
+    }
+
+    static func connectUnix(_ path: String) -> Int32? {
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let n = path.utf8.count
+        withUnsafeMutablePointer(to: &addr.sun_path) { dst in
+            dst.withMemoryRebound(to: CChar.self, capacity: 104) { dstp in
+                _ = path.withCString { src in
+                    strncpy(dstp, src, 103)
+                }
+                dstp[min(n, 103)] = 0
+            }
+        }
+        let ok = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if ok != 0 { Darwin.close(fd); return nil }
+        return fd
+    }
+
+    static func readFully(_ fd: Int32, _ buf: UnsafeMutableRawPointer, _ n: Int) -> Bool {
+        var got = 0
+        while got < n {
+            let r = Darwin.read(fd, buf.advanced(by: got), n - got)
+            if r <= 0 { return false }
+            got += r
+        }
+        return true
+    }
+
+    static func pixelBuffer(fromJPEG data: Data) -> CVPixelBuffer? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        let w = cg.width, h = cg.height
+        var pb: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:] as [CFString: Any]
+        ]
+        CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA,
+                            attrs as CFDictionary, &pb)
+        guard let buf = pb else { return nil }
+        CVPixelBufferLockBaseAddress(buf, [])
+        defer { CVPixelBufferUnlockBaseAddress(buf, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buf),
+              let ctx = CGContext(
+                data: base, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buf),
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                    | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return buf
+    }
+
     private func setupCamera(requestedDevice: String? = nil) {
         logMsg("Config: mode=\(filterMode) shape=\(rawShape) framing=\(framing) follow=\(followEnabled)")
         logMsg("Setting up camera session with requested device: \(requestedDevice ?? "default")...")
@@ -462,7 +752,13 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
         let lightMode = (filterMode == "raw" || filterMode == "chroma")
         let want4K = (captureQuality == "4k")
                   || (captureQuality == "auto" && currentSize >= 720 && lightMode)
-        if captureQuality == "720" && session.canSetSessionPreset(.hd1280x720) {
+        let isEOSUtility = dev.localizedName.localizedCaseInsensitiveContains("EOS Webcam")
+        if isEOSUtility && session.canSetSessionPreset(.hd1280x720) {
+            // Canon's virtual camera accepts the 1080 preset, delivers 720,
+            // then wedges. Ask for what it actually has.
+            session.sessionPreset = .hd1280x720
+            logMsg("EOS Webcam Utility: 720p (it lies about 1080 and wedges)")
+        } else if captureQuality == "720" && session.canSetSessionPreset(.hd1280x720) {
             session.sessionPreset = .hd1280x720
             logMsg("Camera session preset set to 720p (light mode)")
         } else if want4K && session.canSetSessionPreset(.hd4K3840x2160) {
@@ -496,41 +792,68 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             logMsg("Starting session.startRunning()...")
             session.startRunning()
             logMsg("session.startRunning() finished. Is running: \(session.isRunning)")
+            // 30 fps at the SOURCE when the active format allows it (halves
+            // the Cam Link's 60 fps USB/CMIO traffic). Applied after the
+            // session is running because a preset change resets it. The
+            // software cap in captureOutput covers virtual cameras that
+            // ignore this.
+            do {
+                let ranges = dev.activeFormat.videoSupportedFrameRateRanges
+                if ranges.contains(where: { $0.minFrameRate <= 30 && $0.maxFrameRate > 30.5 }) {
+                    try dev.lockForConfiguration()
+                    dev.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
+                    dev.unlockForConfiguration()
+                    logMsg("Capture rate capped at 30 fps at the source")
+                }
+            } catch {
+                logMsg("frame-rate cap unavailable (\(error)) — software cap only")
+            }
         }
     }
     
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        handleSampleBuffer(sampleBuffer)
+    }
+
+    func handleSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         frameCount += 1
         if frameCount == 1 {
             if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
                 logMsg("capture frames are \(CVPixelBufferGetWidth(pb))x\(CVPixelBufferGetHeight(pb))")
             }
-            if let target = self.emergeTarget {
-                self.emergeTarget = nil
-                logMsg("GENIE pour: first frame -> animating to full size")
-                DispatchQueue.main.async { [weak self] in
-                    guard let s = self, let w = s.window else { return }
-                    w.alphaValue = 1
-                    NSAnimationContext.runAnimationGroup({ ctx in
-                        ctx.duration = 0.75
-                        ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.30, 0.30, 1.0)
-                        w.animator().setFrame(target, display: true)
-                    }, completionHandler: {
-                        guard let cv = w.contentView else { return }
-                        w.setFrame(target, display: true)
-                        cv.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
-                        s.renderLayer?.frame = NSRect(x: 0, y: 0, width: target.width, height: target.height)
-                        s.renderLayer?.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
-                        s.pillLayer?.frame = CGRect(x: 10, y: 10, width: target.width - 20, height: 22)
-                    })
-                }
+            if !self.emergeDone {
+                logMsg("GENIE pour: first frame -> tween to full size")
+                DispatchQueue.main.async { [weak self] in self?.startEmergeTween() }
             }
         }
         if frameCount % 30 == 0 {
             logMsg("Frame received #\(frameCount)")
         }
         
+        // 30 FPS PROCESSING CAP: Cam Link and the Canon utility both push
+        // 60 fps; running the segmentation + filter chain on every frame
+        // cost ~half a core, plus WindowServer compositing a retina overlay
+        // at 60Hz. A presenter bubble is 30 fps content. (frameCount above
+        // still ticks on every delivered frame, so the freeze watchdog stays
+        // honest.) Guarded against invalid/backwards timestamps so a virtual
+        // camera can never make us skip forever.
+        let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        if pts.isFinite {
+            if lastProcessedPTS >= 0 && pts > lastProcessedPTS && pts - lastProcessedPTS < (1.0 / 31.0) { return }
+            lastProcessedPTS = pts
+        }
+        statProcessed += 1
+        let statNow = CACurrentMediaTime()
+        if statAt == 0 { statAt = statNow }
+        if statNow - statAt >= 5.0 {
+            let dt = statNow - statAt
+            logMsg(String(format: "stats: delivered %.0f/s processed %.0f/s segmentation %.0f/s",
+                          Double(frameCount - statDelivered) / dt, Double(statProcessed) / dt, Double(statSeg) / dt))
+            statDelivered = frameCount; statProcessed = 0; statSeg = 0; statAt = statNow
+        }
+        
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        if frameCount % 10 == 0 { checkStaticFrame(pixelBuffer) }
         let rawCIImage = CIImage(cvPixelBuffer: pixelBuffer)
         
         let rawOriginX = rawCIImage.extent.origin.x
@@ -693,10 +1016,16 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
             // the raw VIDEO under the matte still refreshes every frame.
             // High motion -> every frame, exactly as before.
             self.segFrameCounter &+= 1
+            // Moving -> every processed frame; still -> every 3rd. A
+            // half-rate matte while moving was tried (2026-09-04) and
+            // showed as a shadow popping in and out along the trailing
+            // body edge: video at 28 fps under a matte at 14 fps. The
+            // 30 fps cap already halved the load; the matte stays honest.
             let runSeg = self.cachedCleanMask == nil
                       || self.currentMotionVelocity > 0.006
                       || (self.segFrameCounter % 3 == 0)
             if runSeg {
+            self.statSeg += 1
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .upMirrored, options: [:])
             do {
                 let wantFace = (self.filterMode == "portal" || self.filterMode == "portalcam")
@@ -819,15 +1148,8 @@ class WebcamWindowController: NSWindowController, NSWindowDelegate, AVCaptureVid
                         
                         let frameMotion = totalBodyCount > 0 ? Double(totalDeltaSum / Float(totalBodyCount)) : 0.0
                         self.currentMotionVelocity = self.currentMotionVelocity * 0.65 + frameMotion * 0.35
-                        if totalDeltaSum == 0.0 {
-                            self.zeroMotionStreak += 1
-                            if self.zeroMotionStreak >= 24 {
-                                logMsg("FEED FROZEN (identical frames) — exiting for auto-recovery")
-                                exit(3)
-                            }
-                        } else {
-                            self.zeroMotionStreak = 0
-                        }
+                        // (frozen-feed detection lives in checkStaticFrame —
+                        // an empty mask is "nobody in frame", not "frozen")
 
                         // Tight Anatomic Arm & Body Perimeter Gate (Tight 8px margin completely erases chair & room background)
                         var cleanRowMin = rowMin
@@ -1513,6 +1835,54 @@ if CommandLine.arguments.contains("--list") {
     for (idx, dev) in AVCaptureDevice.devices(for: .video).enumerated() {
         print("\(idx)\t\(dev.localizedName)")
     }
+    exit(0)
+}
+
+// --probe <device>: open the device briefly and report whether it carries
+// a picture. "LIVE" = real content, "BLACK" = signal but black (Cam Link
+// with its HDMI source off), "NONE" = no device / no frames in 3s.
+// vox.lua polls this to prefer the Cam Link (HDMI, no Canon software)
+// automatically the moment it has a signal. Runs before the guard.
+if let pi = CommandLine.arguments.firstIndex(of: "--probe"), pi + 1 < CommandLine.arguments.count {
+    let name = CommandLine.arguments[pi + 1]
+    final class ProbeSink: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+        var seen = 0
+        var verdict: String? = nil
+        func captureOutput(_ o: AVCaptureOutput, didOutput sb: CMSampleBuffer, from c: AVCaptureConnection) {
+            seen += 1
+            guard verdict == nil, seen >= 8, let pb = CMSampleBufferGetImageBuffer(sb) else { return }
+            CVPixelBufferLockBaseAddress(pb, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+            guard !CVPixelBufferIsPlanar(pb), let base = CVPixelBufferGetBaseAddress(pb) else { return }
+            let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
+            let stride = CVPixelBufferGetBytesPerRow(pb)
+            let p = base.assumingMemoryBound(to: UInt8.self)
+            var sum = 0, n = 0
+            for gy in 0..<16 {
+                for gx in 0..<16 {
+                    let x = w * (2 * gx + 1) / 32, y = h * (2 * gy + 1) / 32
+                    let off = y * stride + x * 4
+                    sum += Int(p[off]) + Int(p[off + 1]) + Int(p[off + 2]); n += 3
+                }
+            }
+            verdict = (sum / max(n, 1)) < 8 ? "BLACK" : "LIVE"
+        }
+    }
+    guard let dev = AVCaptureDevice.devices(for: .video).first(where: { $0.localizedName.localizedCaseInsensitiveContains(name) }) else {
+        print("PROBE \(name): NONE"); exit(0)
+    }
+    let session = AVCaptureSession()
+    if let input = try? AVCaptureDeviceInput(device: dev), session.canAddInput(input) { session.addInput(input) }
+    let out = AVCaptureVideoDataOutput()
+    out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+    let sink = ProbeSink()
+    out.setSampleBufferDelegate(sink, queue: DispatchQueue(label: "probe"))
+    if session.canAddOutput(out) { session.addOutput(out) }
+    session.startRunning()
+    let deadline = Date().addingTimeInterval(3.0)
+    while sink.verdict == nil && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+    session.stopRunning()
+    print("PROBE \(name): \(sink.verdict ?? "NONE")")
     exit(0)
 }
 
